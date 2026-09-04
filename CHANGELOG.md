@@ -3,6 +3,49 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.3 — 2026-09-04
+
+### Verified
+
+- **Both Fable II expansions are already on the GOTY disc**, so the standalone
+  packages for them are redundant. `data/levels.bnk` holds their level data
+  (`Worlds\Albion\DLC2\*` for *See the Future*,
+  `Worlds\Albion\MysteryIsland` for *Knothole Island*), `scenarios.list`
+  registers the four DLC2 levels, `fasttravellist.txt` has the Knothole Island
+  entry, and the executable itself contains `KnotholeIslandSeasonManager`, the
+  `QD010_KnotholeIsland` quest chain and the expansion achievement text.
+  Of the three packages supplied, only the 12 KB *Collectors' Edition Content*
+  (a single `.txt` token) is not on the disc.
+- All three packages are licensee `FFFFFFFFFFFFFFFF` — unrestricted, not bound
+  to a console or profile — so there is no entitlement to fake. `license_mask`
+  is deliberately left alone.
+
+### Added
+
+- **`tools/stfs_info.py`** — identifies any CON/LIVE/PIRS package from its
+  header: title, display name, content type, size and the licence table.
+- **DLC installation** (`src/fable2_dlc.{h,cpp}`, `--dlc_root`,
+  `tools/install_dlc.cmd`) via the SDK's `ContentManager::InstallContent`.
+  Deliberately not wired into `run.cmd`, so nothing extracts a gigabyte of
+  redundant expansion by accident.
+
+### Fixed
+
+- The duplicate-package guard was ordered wrong: the already-installed check
+  returned *before* the display name was recorded, so a second copy of an
+  already-installed package skipped the duplicate check and installed anyway —
+  which for an expansion means extracting 557 MB twice. Found by putting two
+  copies in a folder and looking at what happened, then fixed and re-verified.
+- `tools/stfs_info.py`'s content-type table had several labels wrong; it now
+  matches the SDK's own `XContentType` enum. (The one that mattered,
+  `0x2 = MarketplaceContent`, was already right.)
+
+### Notes
+
+- Each guard in the installer was verified by making it fire: a package with a
+  patched title id (`DEADBEEF`) is refused, a second launch skips what is
+  already installed, and two copies of one package install once.
+
 ## 0.0.2 — 2026-09-04
 
 ### Added

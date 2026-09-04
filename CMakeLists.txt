@@ -13,6 +13,7 @@ include(generated/rexglue.cmake)
 # Sources
 set(FABLE2_SOURCES
     src/main.cpp
+    src/fable2_dlc.cpp
 )
 
 if(WIN32)

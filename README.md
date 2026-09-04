@@ -120,6 +120,70 @@ It also turns out not to matter much: under SDK 0.10.0 this XEX needed **12**
 function overrides to make codegen validate, and 118 in total once the runtime
 had its say - not 923 (see below).
 
+## Is the DLC already on the disc? Yes.
+
+Both expansions ship on the Game of the Year disc. This was checked, not
+assumed, and it matters because the standalone packages are about a gigabyte
+each:
+
+- **`data/levels.bnk` contains their actual level data**, not just references:
+  `Worlds\Albion\DLC2\{Colosseum,Past,Present,Future}` is *See the Future*,
+  and `Worlds\Albion\MysteryIsland` - with storm/summer/winter heightfields
+  and totems, which are Knothole Island's seasons mechanic - is
+  *Knothole Island* under its internal name.
+- **`data/scenarios.list`** registers all four `albion\dlc2\*` levels.
+- **`data/miscellaneous/fasttravellist.txt`** has the Knothole Island travel
+  entry (`TEXT_DLC1_REGION_KNOTHOLE_ISLAND`).
+- `data/audio/` carries `atmos_dlc2_future` and
+  `region_specific_dlc2_{past,present,future}`.
+- **The executable itself has the expansions built in**:
+  `KnotholeIslandSeasonManager`, `KnotholeIslandShop`,
+  `KnotholeIslandWardrobeChanges`, the `QD010_KnotholeIsland` quest chain and
+  the expansion achievement text are all in `.rdata`/`.reloc`.
+
+So of the three packages in the `DLC/` folder here, two are redundant:
+
+| package | size | on the disc? |
+|---|---|---|
+| Fable II - Knothole Island | 557 MB | **yes** |
+| Fable II - See the Future | 507 MB | **yes** |
+| Collectors' Edition Content | 12 KB | no - it holds one file, `Collectors Edition Content.txt` |
+
+(Each of the two expansions is present twice in that folder, as copies that
+differ only in six signature bytes.)
+
+`tools/stfs_info.py` prints all of this for any CON/LIVE/PIRS package. All
+three are licensee `FFFFFFFFFFFFFFFF` - unrestricted, not bound to a console or
+profile - so there is no entitlement to fake. If content ever does read as
+locked, `--license_mask=-1` is the lever; nothing here sets it, because the
+build works without it.
+
+## Installing content packages anyway
+
+For anything that genuinely is not on the disc:
+
+```
+tools\install_dlc.cmd                       # defaults to ../DLC/4D5307F1/00000002
+tools\install_dlc.cmd path	o\packages
+```
+
+or `--dlc_root <folder>` on any run. It is deliberately **not** wired into
+`run.cmd`, so nothing extracts a gigabyte of redundant expansion by accident.
+
+`src/fable2_dlc.cpp` reads each package's STFS header and then applies three
+guards, each of which was verified by making it fire:
+
+- **wrong title** - a package whose header says another title id is refused
+  (tested by patching a header to `DEADBEEF`);
+- **already installed** - matched against the runtime's own `ListContent`, so a
+  second launch does not re-extract;
+- **duplicate** - two copies of one package install once.
+
+That third one had a real ordering bug: the already-installed check returned
+*before* the display name was recorded, so a second copy of an
+already-installed package sailed through and installed anyway. Caught by
+putting two copies in a folder and looking, not by reading the code.
+
 ## Prerequisites
 
 - The ReXGlue SDK. `tools/build.cmd` looks for `%REXSDK%`, falling back to

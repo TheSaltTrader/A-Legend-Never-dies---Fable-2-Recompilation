@@ -9,9 +9,24 @@
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 #include <rex/runtime.h>
+#include <rex/system/kernel_state.h>
+
+#include <filesystem>
+
+#include "fable2_dlc.h"
+
+// Where to look for Xbox 360 content packages. Empty (the default) means do
+// nothing at all: the two Fable II expansions are already on the GOTY disc, so
+// installing them is a gigabyte of wasted work. tools/run.cmd passes the
+// project's DLC folder.
+REXCVAR_DEFINE_STRING(dlc_root, "", "Content",
+                      "Folder of Xbox 360 content packages to install (DLC)");
 
 class Fable2App : public rex::ReXApp {
  public:
+  // Fable II, from the XEX's own execution-info header.
+  static constexpr uint32_t kTitleId = 0x4D5307F1;
+
   using rex::ReXApp::ReXApp;
 
   static std::unique_ptr<rex::ui::WindowedApp> Create(
@@ -37,6 +52,15 @@ class Fable2App : public rex::ReXApp {
   // behaviour.
   void OnPostLoadXexImage() override {
     REXLOG_INFO("fable2: XEX image loaded");
+  }
+
+  // Install any content packages once the runtime (and so the content
+  // manager) exists, before the guest launches and enumerates its DLC.
+  void OnPostSetup() override {
+    const std::string root = REXCVAR_GET(dlc_root);
+    if (root.empty()) return;
+    fable2::InstallPackages(runtime()->kernel_state()->content_manager(),
+                            std::filesystem::path(root), kTitleId);
   }
 
   void OnPreLaunchModule() override {
