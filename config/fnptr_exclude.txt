@@ -1,4 +1,4 @@
-# Addresses tools/scan_vtables.py must NOT register.
+# Addresses tools/scan_fnptrs.py must NOT register.
 # Each one broke a branch when split out; see the README.
 0x82CB49C0  # split broke a branch
 0x82CC04A4  # split broke a branch
@@ -17,3 +17,5 @@
 0x832B2A7C  # import thunk - codegen drops our entry
 0x832B2A8C  # import thunk - codegen drops our entry
 0x832B2ADC  # import thunk - codegen drops our entry
+0x832B25EC  # import thunk - codegen drops our entry
+0x832B25FC  # import thunk - codegen drops our entry

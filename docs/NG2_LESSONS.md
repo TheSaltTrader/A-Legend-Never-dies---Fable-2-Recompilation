@@ -13,11 +13,12 @@ Status key: **applied** · **not needed here** · **pending** · **unknown**
 
 | Lesson | Status |
 |---|---|
-| `.pdata`-less helpers get absorbed into their neighbour and must be registered by hand | **applied** — 118: 15 hand-found via `resolve_calls.py`/`boot_loop.py`, plus 103 from `scan_vtables.py` |
+| `.pdata`-less helpers get absorbed into their neighbour and must be registered by hand | **applied** — 166: 15 hand-found via `resolve_calls.py`/`boot_loop.py`, plus 151 from `scan_fnptrs.py` (19 excluded) |
 | `setjmp`/`longjmp` must be named in the manifest, or an error path returns instead of unwinding and corrupts memory far from the crash | **applied** — `0x83000200` / `0x82CA9260`, found up front by `find_setjmp.py` |
 | `non_volatile_as_local` + `skip_lr`/`ctr`/`xer`/`cr`/`reserved_as_local` — defaults share one `PPCContext`, so a callee can lose its caller's r14–r31 | **applied**; `skip_lr` verified safe (zero `bl $+4` PC-capture idioms) |
 | When replacing a guest function, check whether anything branches into the **middle** of it | **pending** — NG2 hit this three times (`_setjmp` inside `longjmp`, `SwitchToFiber`'s fast-path second entry, `__savegprlr`). Nothing has needed replacing here yet. |
-| Bulk static discovery of missed functions does not work — `.text` holds pointer tables and a pointer starting `0x82…` decodes as a plausible `lwz` | **applied** — `scan_missed.py` is diagnostic only. But walking vtables in `.rdata`/`.data` DOES work: `scan_vtables.py` found 103 real ones in one pass. |
+| **`b $+4` is not a terminator.** MSVC emits it as a no-op; it is an unconditional `b` that falls through. Splitting a function after one orphans the body from the prologue that set `r31`, and `non_volatile_as_local` then gives the orphan a zeroed `r31` — a clean null read at the exact offset the code uses | **applied** — cost one regression (guest `0x54`), found by `tools/bisect_fnptrs.py` in eight rebuilds |
+| Bulk static discovery of missed functions does not work — `.text` holds pointer tables and a pointer starting `0x82…` decodes as a plausible `lwz` | **applied** — `scan_missed.py` is diagnostic only. But walking vtables in `.rdata`/`.data` DOES work: `scan_fnptrs.py` found 151 in one pass, from two channels (pointer tables in `.rdata`/`.data`, and addresses materialised in code with `lis`/`addi`). But the trap is real and it bit: channel 2 returned nine switch **jump tables** for every real function until they were rejected by reading the target as data rather than as code. |
 
 ## Runtime setup
 
@@ -32,6 +33,7 @@ Status key: **applied** · **not needed here** · **pending** · **unknown**
 | Window cvars (`fullscreen`, size) are read when the window is created, in `SetupPresentation`, which runs **before** `OnPreSetup` — they must be set in `OnConfigurePaths` | **pending** — no settings UI here yet |
 | `PostMessage(WM_KEYDOWN)` does nothing: SDL3 takes input from raw input and ignores synthesised window messages | **applied** — `play_probe.py` uses `SendInput` and checks the window actually reached the foreground first |
 | `tools/ui_probe.py` must call `SetProcessDpiAwareness(2)` first, or every coordinate is off by the display scale | **applied** in `play_probe.py` |
+| Do not guess at controller bindings — pin them. Fable II's character select reads the **left stick**, not the d-pad, and guessing produced a confident wrong conclusion (`right` looked like it worked when `tab`, two presses earlier, had) | **applied** — `play_probe.py` passes explicit `--keybind_*` SDL key names, and a per-key frame-delta measurement identifies which key did what |
 
 ## Video
 

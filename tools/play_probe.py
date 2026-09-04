@@ -40,10 +40,38 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Windows virtual-key codes for the keys worth pressing here.
 KEYS = {
     "return": 0x0D, "enter": 0x0D, "space": 0x20, "escape": 0x1B,
-    "a": 0x41, "b": 0x42, "x": 0x58, "y": 0x59,
+    "backspace": 0x08, "tab": 0x09, "lshift": 0xA0, "lctrl": 0xA2,
     "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
-    "f10": 0x79, "f4": 0x73,
+    "f4": 0x73, "f10": 0x79,
 }
+# Letters, so a probe can try both the likely stick keys (wasd) and whatever
+# the SDK happens to bind the face buttons to.
+KEYS.update({chr(c).lower(): c for c in range(ord("A"), ord("Z") + 1)})
+KEYS.update({str(d): 0x30 + d for d in range(10)})
+
+# Pin the controller mapping instead of guessing at the SDK's defaults.
+#
+# Guessing cost real time: `right` looked like it advanced past character
+# select when in fact `tab` had, two presses earlier, and a whole 220-second
+# probe sat on an unhighlighted card doing nothing. The values are SDL key
+# names (the runtime carries SDL_GetKeyName's table - "Space", "Return",
+# "Left", "Keypad Space" and so on), so these are unambiguous.
+EXPLICIT_BINDS = [
+    "--keybind_a=Space",
+    "--keybind_b=Escape",
+    "--keybind_x=X",
+    "--keybind_y=Y",
+    "--keybind_start=Return",
+    "--keybind_back=Backspace",
+    "--keybind_dpad_up=Up",
+    "--keybind_dpad_down=Down",
+    "--keybind_dpad_left=Left",
+    "--keybind_dpad_right=Right",
+    "--keybind_lstick_up=W",
+    "--keybind_lstick_down=S",
+    "--keybind_lstick_left=A",
+    "--keybind_lstick_right=D",
+]
 
 KEYEVENTF_KEYUP = 0x0002
 INPUT_KEYBOARD = 1
@@ -62,13 +90,16 @@ class INPUT(ctypes.Structure):
     _fields_ = [("type", ctypes.c_ulong), ("u", _U)]
 
 
-def send_key(vk):
+def send_key(vk, hold=0.05):
+    """Press and release. `hold` matters: a menu that samples the pad once a
+    frame can miss a press shorter than a frame or two, and a missed press
+    looks exactly like a key that is not bound to anything."""
     for flags in (0, KEYEVENTF_KEYUP):
         inp = INPUT(type=INPUT_KEYBOARD)
         inp.ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0,
                             dwExtraInfo=None)
         ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
-        time.sleep(0.05)
+        time.sleep(hold if flags == 0 else 0.05)
 
 
 def hwnd_for_pid(pid):
@@ -111,6 +142,8 @@ def main():
                     metavar="SECONDS:KEY", help="repeatable, e.g. 20:return")
     ap.add_argument("--config", default="Release")
     ap.add_argument("--no-mnk", action="store_true")
+    ap.add_argument("--hold", type=float, default=0.20,
+                    help="seconds to hold each key down")
     args = ap.parse_args()
 
     schedule = []
@@ -134,6 +167,7 @@ def main():
            "--log_level", "debug"]
     if not args.no_mnk:
         cmd += ["--mnk_mode=true"]           # a bare --mnk_mode is ignored
+        cmd += EXPLICIT_BINDS
 
     proc = subprocess.Popen(cmd, cwd=os.path.dirname(exe))
     print(f"launched pid {proc.pid}")
@@ -152,12 +186,19 @@ def main():
         return 1
     print(f"window 0x{hwnd:X} '{win32gui.GetWindowText(hwnd)}'")
 
+    # An HWND exists slightly before Windows Graphics Capture will accept it;
+    # binding too early throws "Failed to convert item to GraphicsCaptureItem"
+    # and the whole run is lost. Give it a moment, and retry.
     started = time.time()
-    capture = WindowsCapture(window_hwnd=hwnd, cursor_capture=False,
-                             draw_border=False)
     state = {"n": 0, "next": started}
 
-    @capture.event
+    def build_capture():
+        capture = WindowsCapture(window_hwnd=hwnd, cursor_capture=False,
+                                 draw_border=False)
+        capture.event(on_frame_arrived)
+        capture.event(on_closed)
+        return capture
+
     def on_frame_arrived(frame, control):
         now = time.time()
         elapsed = now - started
@@ -170,7 +211,7 @@ def main():
             if not done and elapsed >= when:
                 item[2] = True
                 ok = focus(hwnd)
-                send_key(KEYS[name])
+                send_key(KEYS[name], args.hold)
                 print(f"  {elapsed:5.1f}s  pressed {name}"
                       f"{'' if ok else '  (WINDOW WAS NOT FOREGROUND)'}")
 
@@ -186,12 +227,24 @@ def main():
         except Exception as exc:            # a dropped frame must not stop the run
             print(f"  save failed: {exc}")
 
-    @capture.event
     def on_closed():
         print("capture closed")
 
     try:
-        capture.start()
+        # start() is where a not-yet-ready window actually fails, with
+        # "Failed to convert item to GraphicsCaptureItem" - and it loses the
+        # whole run. Rebuild and retry rather than hand-retrying the probe.
+        for attempt in range(1, 11):
+            try:
+                started = time.time()
+                state["next"] = started
+                build_capture().start()
+                break
+            except Exception as exc:
+                if "GraphicsCaptureItem" not in str(exc) or attempt == 10:
+                    raise
+                print(f"  capture not ready yet ({attempt}/10); retrying")
+                time.sleep(1.0)
     finally:
         if proc.poll() is None:
             proc.kill()                     # by PID, never by window title

@@ -25,10 +25,10 @@ really the middle of a straight-line function would cut that function short; if
 the preceding instruction cannot fall through, splitting there costs nothing
 even when the guess is wrong.
 
-    python tools/scan_vtables.py                 # report
-    python tools/scan_vtables.py --check         # verify against known answers
-    python tools/scan_vtables.py --write         # (re)generate the TOML block
-    python tools/scan_vtables.py --prune         # write, run codegen, repeat
+    python tools/scan_fnptrs.py                 # report
+    python tools/scan_fnptrs.py --check         # verify against known answers
+    python tools/scan_fnptrs.py --write         # (re)generate the TOML block
+    python tools/scan_fnptrs.py --prune         # write, run codegen, repeat
                                                  # until codegen is clean
 
 ## Why --prune exists
@@ -40,7 +40,7 @@ Codegen reports those as `Unresolved b target 0xT from 0xS`, and a control run
 with only the hand-found overrides produced ZERO of them, so every one is ours.
 
 `--prune` is the fixpoint loop: run codegen, add whatever it complained about to
-`config/vtable_exclude.txt`, regenerate the whole block from scratch, repeat.
+`config/fnptr_exclude.txt`, regenerate the whole block from scratch, repeat.
 
 Regenerating rather than deleting lines matters. Each entry's size is clamped to
 the next function boundary, so removing one entry leaves its predecessor sized
@@ -61,6 +61,7 @@ import bisect
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 
@@ -70,17 +71,18 @@ from xex_image import XexImage, pdata_functions  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOML = os.path.join(ROOT, "config", "functions.toml")
-EXCLUDE = os.path.join(ROOT, "config", "vtable_exclude.txt")
+EXCLUDE = os.path.join(ROOT, "config", "fnptr_exclude.txt")
 PARTITION = os.path.join(ROOT, "generated", "default", "codegen.partition.json")
 MANIFEST = "fable2_manifest.toml"
 
-BLOCK_HEADER = "# --- BEGIN tools/scan_vtables.py ---"
-BLOCK_FOOTER = "# --- END tools/scan_vtables.py ---"
+BLOCK_HEADER = "# --- BEGIN tools/scan_fnptrs.py ---"
+BLOCK_FOOTER = "# --- END tools/scan_fnptrs.py ---"
 
 BLR = 0x4E800020
 BCTR = 0x4E800420
 NOP = 0x60000000
 MIN_RUN = 2          # consecutive code pointers before a table is believable
+MATERIALISE_WINDOW = 8   # instructions a lis result is trusted for
 POINTER_SECTIONS = (".rdata", ".data")
 
 UNRESOLVED_B = re.compile(
@@ -97,8 +99,29 @@ OUTRANKED = re.compile(
 
 # --- image analysis ---------------------------------------------------------
 
+B_NEXT = 0x48000004      # `b $+4`: an unconditional branch that falls through
+
+
 def is_terminator(w):
-    """True if control cannot fall through this instruction."""
+    """True if control cannot fall through this instruction.
+
+    `b $+4` is the exception that cost a build. MSVC emits it as a no-op, and
+    it is an unconditional `b`, so the obvious test says "control cannot fall
+    through" - while it plainly does. Registering the instruction after one as
+    a function start cuts a function in half:
+
+        0x82FFD254  b 0x82FFD258        <- "terminator"
+        0x82FFD258  lwz r3, 0x54(r31)   <- new "function" starts here
+
+    r31 is the frame pointer, set up by the parent's prologue
+    (`addi r31, r1, -0x80`). Under `non_volatile_as_local` each recompiled
+    function owns its own r14-r31, so the split-off half reads 0x54 off a zero
+    r31 - and the runtime says exactly that: "Unhandled guest access violation:
+    read of guest 0x00000054". Found by bisecting 51 registrations over eight
+    rebuilds; it is not something you would spot by reading them.
+    """
+    if w == B_NEXT:
+        return False
     if w in (BLR, BCTR, NOP, 0):
         return True
     op = w >> 26
@@ -156,6 +179,100 @@ def flush(found, run, starts, img, tlo):
         found.setdefault(target, slot)
 
 
+def owner(sorted_starts, addr):
+    """The analyzer function containing `addr`, or None."""
+    i = bisect.bisect_right(sorted_starts, addr) - 1
+    return sorted_starts[i] if i >= 0 else None
+
+
+def looks_like_jump_table(img, addr, tlo, thi, need=3):
+    """True if `addr` starts a run of .text addresses rather than instructions.
+
+    This is what channel 2 mostly finds if you let it. A PowerPC switch is
+
+        lis  r11, hi          <- computes the TABLE's address, not a function's
+        addi r10, r11, lo
+        ...
+        mtctr rN
+        bctr
+        <table of .text addresses>
+
+    so the table base is a `lis`/`addi` result inside .text, immediately after a
+    `bctr`, and it satisfies every other test. Worse, a table entry like
+    0x8221A4F0 disassembles as a perfectly plausible `lwz r17, ...` - which is
+    exactly the trap that made ng2recomp's `scan_missed.py` useless.
+
+    A sample of ten channel-2 candidates before this filter contained nine
+    tables and one real function. Reading the words as data instead of as code
+    separates them cleanly.
+    """
+    for k in range(need):
+        w = img.word(addr + 4 * k)
+        if not (tlo <= w < thi and not w & 3):
+            return False
+    return True
+
+
+def materialised(img, starts, tlo, thi, found):
+    """Channel 2: function pointers BUILT IN CODE, never stored as data.
+
+    A callback handed to another subsystem does not have to live in a table.
+    MSVC materialises its address inline:
+
+        lis  r11, 0x8221
+        addi r10, r11, 0x42D0        -> 0x822142D0
+
+    and that address may appear nowhere else in the image - not as a pointer,
+    not at any alignment. `0x822142D0` was exactly this: a three-instruction
+    getter that the vtable channel could not see, that reached the runtime as
+    `[FATAL] Call to invalid or unregistered function` only once the player got
+    past character select and the world started loading.
+
+    Two details matter. The `addi` destination is usually a DIFFERENT register
+    from the `lis` destination, so matching `addi rD, rD, lo` alone misses most
+    of them. And `lis` results are short-lived, so a register is only trusted
+    until something else writes to it.
+    """
+    va, size = next((v, s) for n, v, s in img.sections if n == ".text")
+    n = size & ~3
+    words = struct.unpack_from(f">{n // 4}I", img.data, img.offset(va))
+    sorted_starts = sorted(starts)
+
+    hi_of = {}                      # register -> (immediate, index it was set)
+    for i, w in enumerate(words):
+        op = w >> 26
+        rD = (w >> 21) & 0x1F
+
+        if op == 15 and ((w >> 16) & 0x1F) == 0:        # lis rD, imm
+            hi_of[rD] = ((w & 0xFFFF) << 16, i)
+            continue
+
+        rA = (w >> 16) & 0x1F
+        base = hi_of.get(rA)
+        if base is not None and i - base[1] <= MATERIALISE_WINDOW:
+            lo = w & 0xFFFF
+            target = None
+            if op == 14:                                 # addi rD, rA, lo
+                target = base[0] + (lo - 0x10000 if lo & 0x8000 else lo)
+            elif op == 24:                               # ori rD, rA, lo
+                target = base[0] | lo
+            site = va + i * 4
+            if (target is not None and tlo <= target < thi and not target & 3
+                    and target not in starts
+                    and is_terminator(img.word(target - 4))
+                    and not looks_like_jump_table(img, target, tlo, thi)
+                    and owner(sorted_starts, site) != owner(sorted_starts, target)):
+                found.setdefault(target, site)
+
+        # Anything that writes a register invalidates the lis we recorded for
+        # it. Being conservative here costs a few candidates; being sloppy
+        # invents addresses out of unrelated instruction pairs.
+        if op in (14, 15, 24, 25, 26, 27, 28, 29, 32, 33, 34, 35, 40, 41,
+                  46, 56, 58) or op == 31:
+            hi_of.pop(rD, None)
+    return found
+
+
 def candidates(img, starts):
     text = next(((va, size) for name, va, size in img.sections
                  if name == ".text"), None)
@@ -178,6 +295,8 @@ def candidates(img, starts):
             flush(found, run, starts, img, tlo)
             run = []
         flush(found, run, starts, img, tlo)
+
+    materialised(img, starts, tlo, thi, found)
     return found
 
 
@@ -237,8 +356,8 @@ def write_block(rows):
     text = strip_block(open(TOML, encoding="utf-8").read()).rstrip("\n")
     lines = [
         "", "", BLOCK_HEADER,
-        "# Regenerated by tools/scan_vtables.py - do not hand-edit; put any",
-        "# address that must NOT be registered in config/vtable_exclude.txt",
+        "# Regenerated by tools/scan_fnptrs.py - do not hand-edit; put any",
+        "# address that must NOT be registered in config/fnptr_exclude.txt",
         "# instead, then re-run with --write.",
         "#",
         "# Each of these is pointed to from a vtable or dispatch table in",
@@ -246,7 +365,7 @@ def write_block(rows):
         "# and is preceded by an instruction control cannot fall through.",
     ]
     for target, size, owner, slot in rows:
-        lines.append(f'0x{target:08X} = {{ name = "sub_{target:08X}_vtable", '
+        lines.append(f'0x{target:08X} = {{ name = "sub_{target:08X}_fnptr", '
                      f'size = 0x{size:X} }}  # in 0x{owner:08X}, ptr at 0x{slot:08X}')
     lines += [BLOCK_FOOTER, ""]
     open(TOML, "w", encoding="utf-8").write(text + "\n".join(lines))
@@ -342,6 +461,9 @@ def main():
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--prune", action="store_true")
+    ap.add_argument("--sample", type=int, metavar="N",
+                    help="disassemble N random candidates for eyeballing")
+    ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--rounds", type=int, default=10)
     ap.add_argument("--limit", type=int, default=20)
     args = ap.parse_args()
@@ -369,6 +491,40 @@ def main():
                    if not is_terminator(img.word(a - 4)) else
                    "MISSED - no pointer to it in .rdata/.data")
             print(f"  0x{a:08X}  {why}")
+        return 0
+
+    if args.sample:
+        # The guard that actually works. Every automated check passed while
+        # channel 2 was returning nine switch jump tables for every real
+        # function; ten disassembled candidates made it obvious in seconds.
+        # Look for repeated `lwz rN, off(rN)` runs - that is a table being
+        # read as code, not a function.
+        import random
+        import struct as _struct
+        from capstone import Cs, CS_ARCH_PPC, CS_MODE_32, CS_MODE_BIG_ENDIAN
+        md = Cs(CS_ARCH_PPC, CS_MODE_32 | CS_MODE_BIG_ENDIAN)
+        starts = known_starts(img) | add_function.existing_addresses(strip_block_file())
+        excluded = read_exclusions()
+        found = {a: s for a, s in candidates(img, starts).items()
+                 if a not in excluded}
+        random.seed(args.seed)
+        picks = random.sample(sorted(found), min(args.sample, len(found)))
+        print(f"{len(found)} candidates; showing {len(picks)}")
+        for target in picks:
+            try:
+                size = add_function.function_extent(img, target)
+            except SystemExit:
+                size = None
+            site = found[target]
+            where = ".text (built by lis/addi)" if img.section_of(site) == ".text" \
+                else f"{img.section_of(site)} (pointer table)"
+            print(f"\n0x{target:08X}  size {size and hex(size)}  "
+                  f"site 0x{site:08X} in {where}")
+            for k in range(0, min(size or 24, 24), 4):
+                w = img.word(target + k)
+                d = list(md.disasm(_struct.pack(">I", w), target + k))
+                print("     " + (f"{d[0].mnemonic} {d[0].op_str}".strip()
+                                 if d else f"<{w:08X}>"))
         return 0
 
     if args.write:

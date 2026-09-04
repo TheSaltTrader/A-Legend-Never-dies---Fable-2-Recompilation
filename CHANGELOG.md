@@ -3,6 +3,77 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.2 — 2026-09-04
+
+### Added
+
+- **`tools/scan_fnptrs.py`** (was `scan_vtables.py`) gained a **second
+  discovery channel**: function pointers **materialised in code** with
+  `lis`/`addi`, which never appear as data anywhere in the image. The first
+  address it found this way, `0x822142D0`, is a three-instruction getter whose
+  value occurs nowhere in the XEX at any alignment — channel 1 could not
+  possibly see it — and it was the crash that stopped the game at character
+  select.
+- **`tools/bisect_fnptrs.py`** — bisects a quarantined set of registrations by
+  rebuilding and relaunching, because reading fifty candidate splits to guess
+  which one broke the game is not a method.
+- `tools/play_probe.py`: explicit controller bindings, a `--hold` duration, and
+  a retry around Windows Graphics Capture's `start()`.
+
+### Fixed
+
+- **`b $+4` is not a terminator.** `is_terminator()` treated every
+  unconditional `b` as "control cannot fall through", but MSVC emits `b $+4` as
+  a no-op and it plainly does fall through. Registering the instruction after
+  one split a function in half; the orphaned half read `0x54` off `r31`, the
+  frame pointer its parent's prologue had set up, and under
+  `non_volatile_as_local` it got its own zeroed `r31` — producing
+  *"Unhandled guest access violation: read of guest 0x00000054"*, the fault
+  address verbatim. Found by bisecting 51 registrations over eight rebuilds to
+  `0x82FFD258`. With the one-line fix the entire channel-2 set goes back in.
+- `0x822142D0` and `0x82988ED8` registered — both were channel-2 finds the
+  runtime then independently demanded, which is the strongest evidence the
+  channel is real.
+- `tools/play_probe.py` no longer loses a whole run when the window exists but
+  Windows Graphics Capture will not yet accept it
+  (*"Failed to convert item to `GraphicsCaptureItem`"*). It retries.
+
+### Verified
+
+- **The game reaches gameplay.** Boots → title → main menu → New Game character
+  select → the opening cinematic in-engine → **Old Bowerstone**, with snow,
+  brazier fire, particles and the tutorial hint up. A 300-second run logs
+  **zero fatals** and 9,314 lines.
+- 168 → 166 function-boundary overrides (15 hand-found, 151 generated,
+  19 excluded).
+
+### Known issues
+
+- **Rendering freezes ~3.5 minutes in.** The presented frame goes static and
+  blue and never changes, while the guest keeps running and the GPU keeps
+  compiling pipelines. No ring-buffer failure is logged, unlike NG2's
+  superficially similar symptom. This is the top blocker.
+- The **3,856 `BaseHeap::AllocFixed ... already reserved range` errors** are
+  **not** blocking and have been demoted. They are one burst at boot, from
+  Lionhead's own `CDynamicMemoryPageAllocator<CPhysicalAlloc>` /
+  `<CVirtualAlloc>` (the names are in `.rdata`), and the game then loads
+  6.5 GB of assets, renders 3D and saves a game on top of them. Upstream
+  replaced the guest's physical allocator with dlmalloc, but it was working
+  from a far earlier failure point; there is no evidence here that this is
+  worth the invasiveness.
+
+### Notes
+
+- **Character select is driven by the left stick, not the d-pad.** Found by
+  pressing ten candidate keys on a schedule and measuring the frame-to-frame
+  delta in the card region: `d` (lstick right) scored 34 against ~11 for
+  everything else, and the picture went static afterwards because the enlarged
+  card covers the animated background. Guessing had already cost a 220-second
+  probe that sat on an unhighlighted card, and a false conclusion that `right`
+  worked when in fact `tab`, two presses earlier, had done it.
+- `play_probe.py` now pins every binding explicitly rather than relying on the
+  SDK defaults. The values are SDL key names.
+
 ## 0.0.1 — 2026-09-03
 
 First day. Project created at `Fable 2 Recompile Xbox/fable2recomp`, carrying
@@ -32,12 +103,12 @@ over the toolchain and the hard-won lessons from `ng2recomp` (Ninja Gaiden II).
   and drive it with real `SendInput` keystrokes. Both NG2 traps are avoided by
   construction: a screen-region grab photographs whatever is on top, and
   `PostMessage` does nothing because SDL3 reads raw input.
-- **`tools/scan_vtables.py`** — finds missed functions in bulk by walking the
+- **`tools/scan_fnptrs.py`** — finds missed functions in bulk by walking the
   vtables and dispatch tables in `.rdata`/`.data`, rather than one runtime
   crash per three-minute rebuild. Converged on **103** of them, taking the
   total to 118 (17 further candidates were excluded along the way). It carries its own `--check` (against the hand-found answers)
   and a `--prune` fixpoint loop with an exclusion list at
-  `config/vtable_exclude.txt`, because the first version broke things three
+  `config/fnptr_exclude.txt`, because the first version broke things three
   ways: unclamped sizes made codegen reject the manifest while the old
   executable stayed in the build directory and looked like a success; four
   splits severed a `b` from its target; and reading
@@ -88,6 +159,30 @@ over the toolchain and the hard-won lessons from `ng2recomp` (Ninja Gaiden II).
   occurrence and rendering is unaffected.
 - `update:\` is not mounted, so the game's probe for a title update fails
   harmlessly. Correct for a disc with no TU.
+
+### Verified
+
+- **The game reaches gameplay.** Boots → title → main menu → New Game character
+  select → the opening cinematic in-engine → **Old Bowerstone**, with snow,
+  brazier fire, particles and the tutorial hint up. A 300-second run logs
+  **zero fatals** and 9,314 lines.
+- 168 → 166 function-boundary overrides (15 hand-found, 151 generated,
+  19 excluded).
+
+### Known issues
+
+- **Rendering freezes ~3.5 minutes in.** The presented frame goes static and
+  blue and never changes, while the guest keeps running and the GPU keeps
+  compiling pipelines. No ring-buffer failure is logged, unlike NG2's
+  superficially similar symptom. This is the top blocker.
+- The **3,856 `BaseHeap::AllocFixed ... already reserved range` errors** are
+  **not** blocking and have been demoted. They are one burst at boot, from
+  Lionhead's own `CDynamicMemoryPageAllocator<CPhysicalAlloc>` /
+  `<CVirtualAlloc>` (the names are in `.rdata`), and the game then loads
+  6.5 GB of assets, renders 3D and saves a game on top of them. Upstream
+  replaced the guest's physical allocator with dlmalloc, but it was working
+  from a far earlier failure point; there is no evidence here that this is
+  worth the invasiveness.
 
 ### Notes
 

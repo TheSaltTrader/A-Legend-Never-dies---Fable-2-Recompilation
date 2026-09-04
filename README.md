@@ -19,22 +19,31 @@ gitignored.
 | `rexglue codegen` | ✅ **zero analysis errors** |
 | `setjmp` / `longjmp` located | ✅ `0x83000200` / `0x82CA9260` |
 | Native build | ✅ `fable2.exe`, 78 MB, ~3 min |
-| Runs | ✅ **title screen → main menu → New Game character select** |
+| Runs | ✅ **boots → menus → character select → opening cinematic → gameplay in Old Bowerstone** |
 | Intro videos | ✅ Bink decodes correctly, no artifacts |
 | Input | ✅ keyboard-to-controller (`--mnk_mode=true`) drives the menus |
+| Current blocker | rendering freezes on a static blue frame ~3.5 min in, while the guest keeps running |
 
-Everything above was reached on 2026-09-03, the first day of the project.
-The game boots through the Microsoft and Lionhead logo videos, arrives at the
-**Fable II title screen**, accepts a button press, opens the **main menu**
-(New Game / Downloadable Content / Language / Subtitles) and goes on to the
-**New Game character-select screen with the 3D boy and girl models rendering on
-their cards** — so this is not just 2D front-end art, it is loading and drawing
-game assets. Screenshots in `out/shots/`.
+Reached on 2026-09-03 (first day) and 2026-09-04. The game boots through its
+Bink logo videos, shows the title screen, accepts input, opens the main menu,
+gets through New Game character select, plays the **opening cinematic in-engine**
+(the sparrow on the pillar, with depth of field and real-time lighting) and
+arrives in **Old Bowerstone with the tutorial hint up** — snow, brazier fire,
+particles, the lot. A full 300-second run logs **zero fatals**.
 
-For scale: `ng2recomp` took two days to render its start menu, and its intro
-video is still wrong.
+For scale: `ng2recomp` took two days to render a start menu, and its intro video
+is still wrong.
 
-Not yet tried: actually entering the world.
+Screenshots in `out/shots/`.
+
+### What is broken
+
+About 3.5 minutes in, the presented image freezes on a static blue frame and
+never changes again, while the guest carries on and the GPU keeps compiling new
+pipelines. No ring-buffer failure is logged (NG2's equivalent symptom came with
+hundreds of `PRIMARY RINGBUFFER: Failed to execute packet`), and there is
+exactly one `WriteRegister index out of bounds: 28685` in the whole run. This is
+the next thing to chase.
 
 ## The game
 
@@ -127,7 +136,7 @@ fable2recomp/
   assets/default.xex          the XEX alone, what codegen reads
   game/                       the whole extracted disc, what the build runs against
   config/functions.toml       function-boundary overrides (hand-found, then a generated block)
-  config/vtable_exclude.txt   addresses scan_vtables.py must never register
+  config/fnptr_exclude.txt   addresses scan_fnptrs.py must never register
   generated/default/          codegen output (500+ files, ~290 MB)
   src/                        the host application
   tools/                      analysis and build scripts
@@ -166,7 +175,7 @@ and silently ignored. Write `--fullscreen=true`.
 | `resolve_calls.py` | **run codegen, register every unresolved call, repeat to a fixpoint** |
 | `add_function.py` | register one missed function, sizing it by walking to its terminator |
 | `find_setjmp.py` | locate `_setjmp` / `longjmp` by shape, since the XEX is stripped |
-| `scan_vtables.py` | **find missed functions in bulk by walking vtables**, instead of one crash per rebuild; `--check`, `--write`, `--prune` |
+| `scan_fnptrs.py` | **find missed functions in bulk by walking vtables**, instead of one crash per rebuild; `--check`, `--write`, `--prune` |
 | `boot.py` | run the build for N seconds, stop it *by PID*, summarise the log |
 | `boot_loop.py` | run → crash → register → rebuild, automated |
 | `whereis.py` | what is at a guest address |
@@ -180,7 +189,7 @@ look like function prologues does not work**: `.text` contains pointer tables,
 and a pointer beginning `0x82…` decodes as a plausible `lwz`. On Ninja Gaiden
 II it produced ~1,340 candidates that were mostly false.
 
-`scan_vtables.py` inverts that and is the tool to use — see below.
+`scan_fnptrs.py` inverts that and is the tool to use — see below.
 
 ## Findings
 
@@ -197,7 +206,7 @@ exposed 2 more: a registered forwarder's own `b` target becomes a call *from* a
 real function, so this has to be iterated to a fixpoint rather than done once.
 `tools/resolve_calls.py` does that automatically and stopped at **12**, with
 codegen reporting zero errors. Three more came from actually running the game,
-and 103 more from walking vtables (next section), for **118 in total**.
+and 153 more from following function pointers (next section), for **168 in total**.
 
 All 12 are the expected shape, e.g.
 
@@ -206,31 +215,115 @@ All 12 are the expected shape, e.g.
 0x82C000FC  b   0x82c106a8
 ```
 
-### Finding missed functions in bulk, safely
+### Finding missed functions in bulk
 
 The functions the analyzer misses are exactly the ones nothing calls directly:
-they are reached through **vtables and dispatch tables**, which is why static
-analysis never sees a call to them and why they only surface at runtime, one
+they are reached through a **pointer**, which is why static analysis never sees
+a call to them and why they surface at runtime one
 `[FATAL] Call to invalid or unregistered function` at a time. At roughly three
 minutes per rebuild, finding a hundred of them that way costs hours.
 
-But vtables are *data*. `tools/scan_vtables.py` reads every 4-byte-aligned word
-in `.rdata` and `.data`, keeps the ones pointing into `.text`, drops the ones
-already registered, and requires two things of what is left:
+`tools/scan_fnptrs.py` finds them in bulk, from **two channels**.
 
-- the pointer must sit in a **run of at least two** consecutive code pointers,
-  so a lone integer that happens to look like an address is ignored;
-- the instruction **before** the target must be one control cannot fall through
-  — `blr`, `bctr`, an unconditional `b`, or padding.
+**Channel 1 — pointers stored as data.** Read every 4-byte-aligned word in
+`.rdata` and `.data`, keep the ones pointing into `.text`, drop the ones the
+analyzer already knows, and require the pointer to sit in a **run of at least
+two** consecutive code pointers (so a lone integer that looks like an address
+is ignored). This is where vtables and dispatch tables live.
 
-That second rule is what makes it safe. A false positive here is not harmless:
-registering an address that is really the middle of a straight-line function
-would cut that function short. If the preceding instruction cannot fall
-through, splitting there costs nothing even when the guess is wrong.
+**Channel 2 — pointers built in code.** A callback address does not have to be
+stored anywhere. MSVC materialises it inline:
 
-**Splitting is not free, though, and the first attempt broke things in four
-distinct ways.** Each one produced a plausible-looking result, which is why the
-tool now has to prove itself before it is believed.
+```
+lis  r11, 0x8221
+addi r10, r11, 0x42D0        -> 0x822142D0
+```
+
+`0x822142D0` is a real three-instruction getter, and the value `0x822142D0`
+appears **nowhere in the image** — not as a pointer, not at any alignment.
+Channel 1 cannot see it. It reached us as a runtime fatal only once the player
+got past character select and the world started loading.
+
+Both channels then require the instruction **before** the target to be one
+control cannot fall through — `blr`, `bctr`, an unconditional `b`, or padding.
+That is what makes a false positive cheap: registering an address that is
+really the middle of a straight-line function would cut that function short,
+but if the preceding instruction cannot fall through, splitting there costs
+nothing even when the guess is wrong.
+
+#### Channel 2 was wrong the first time, and only a human sample caught it
+
+Raw, channel 2 produced **919** candidates. Every automated check passed. A
+random sample of ten, disassembled, contained **nine switch jump tables and one
+real function**:
+
+```
+0x82479F9C   lwz r18, -0x6028(r7)
+             lwz r18, -0x5fb4(r7)
+             lwz r18, -0x5968(r7)
+             lwz r18, -0x5968(r7)      <- this is a table of code addresses,
+             lwz r18, -0x5968(r7)         not code
+```
+
+A PowerPC switch computes its table's address with exactly the `lis`/`addi`
+pair channel 2 looks for, the table sits immediately after a `bctr` (a perfect
+"terminator"), and a table entry like `0x8221A4F0` disassembles as a
+thoroughly plausible `lwz`. **This is the same trap that made ng2recomp's
+`scan_missed.py` useless**, arrived at from the opposite direction — and the
+docstring claiming this approach avoided it was, for a while, simply wrong.
+
+Two filters fix it, and the count falls **919 → 175 → 56**:
+
+1. **Read the target as data, not as code.** If the first three words are all
+   `.text` addresses, it is a jump table, not a function.
+2. **The site and the target must be in different analyzer functions.** A
+   switch base is computed inside the function that owns it, a few instructions
+   away. A genuine callback is taken by code somewhere else entirely — the
+   confirmed one had its site 3.6 MB from its target.
+
+After both, 32 of the 56 survivors are the textbook virtual-dispatch thunk
+(`lwz r12,0(r3); lwz r11,off(r12); mtctr r11; bctr`) and the rest are small
+helpers. `--sample N` exists because eyeballing a disassembled sample is the
+check that actually worked; run it before believing a new channel.
+
+#### `b $+4` is not a terminator, and that one word cost a build
+
+Registering the whole channel-2 set regressed the game from *reaches character
+select* to *unhandled read of guest `0x54`, milliseconds after launch*.
+`tools/bisect_fnptrs.py` narrowed 51 registrations to one over eight rebuilds:
+**`0x82FFD258`**.
+
+```
+0x82FFD250  mr r8, r8
+0x82FFD254  b 0x82FFD258        <- an unconditional b ... to the next instruction
+0x82FFD258  lwz r3, 0x54(r31)   <- registered as a new function starts HERE
+0x82FFD25C  bl 0x82FFCD38
+```
+
+MSVC emits `b $+4` as a no-op. It is an unconditional `b`, so the obvious
+"control cannot fall through" test says terminator — while it plainly does fall
+through. Splitting there cut a function in half, and the orphaned half reads
+`0x54` off `r31`, the frame pointer its parent's prologue set up
+(`addi r31, r1, -0x80`). Under `non_volatile_as_local` every recompiled
+function owns its own r14–r31, so the new half got a zeroed `r31` and read
+guest `0x54` — **which is the fault address in the error message, verbatim**.
+
+Two things are worth keeping from this:
+
+- The safety rule ("only split where control cannot fall through") was sound;
+  the *implementation* of it had one hole, and the hole was the only branch in
+  the instruction set that goes nowhere.
+- `non_volatile_as_local` is what turns a bad split from "subtly wrong" into a
+  clean, immediate, diagnosable null read. That is a good trade — without it
+  the two halves would have shared `r31` and the split would have appeared to
+  work.
+
+With `b $+4` excluded, the whole channel-2 set goes back in and the build is
+clean.
+
+#### The other four ways it broke
+
+Each produced a plausible-looking result:
 
 1. **Sizes must be clamped to the next function start.** `function_extent`
    walks forward to a terminator and will run straight through a later entry
@@ -244,20 +337,19 @@ tool now has to prove itself before it is believed.
    boundary, and the recompiler cannot emit a jump across a C++ function
    boundary. Codegen reports *"Unresolved b target 0xT from 0xS"*. A control
    run with only the 15 hand-found overrides produced **zero** of these, so
-   every one was ours. `--prune` is the fixpoint loop that finds them: run
-   codegen, add whatever it complained about to `config/vtable_exclude.txt`,
-   **regenerate the whole block**, repeat. Regeneration rather than deleting
-   lines matters — remove one entry and its predecessor is still sized to a
-   boundary that no longer exists, leaving a hole that surfaces as a *new*
-   unresolved call.
+   every one was ours. `--prune` is the fixpoint loop: run codegen, add
+   whatever it complained about to `config/fnptr_exclude.txt`, **regenerate the
+   whole block**, repeat. Regeneration rather than deleting lines matters —
+   remove one entry and its predecessor is still sized to a boundary that no
+   longer exists, leaving a hole that surfaces as a *new* unresolved call.
 3. **Some targets are import thunks, and codegen keeps the import.** The last
    few KB of `.text` is the import thunk table. Registering an entry there
    makes codegen log `[functions] 0x832B2A0C outranked by import`, register a
    name, and then never emit a body for it — so the failure lands at *link*
-   time, after a full compile, as `undefined symbol: sub_832B2A0C_vtable`.
+   time, after a full compile, as `undefined symbol: sub_832B2A0C_fnptr`.
    Codegen said so several minutes earlier; `--prune` now reads that line.
 4. **The tool must not read its own output as evidence.** Candidates are
-   compared against the analyzer's function list, which lives in
+   compared against the analyzer's function list in
    `generated/default/codegen.partition.json` — but that file is written by the
    last codegen run, which included whatever this tool wrote last time. Reading
    it raw made the tool treat its own previous output as the analyzer's
@@ -269,14 +361,12 @@ tool now has to prove itself before it is believed.
 And the analyzer's list is the right comparison in the first place: its
 Discover and GapFill phases find thousands of functions beyond the unwind table
 — 60,219 registered against 46,072 `.pdata` entries — so comparing against
-`.pdata` reported 4,323 "missing" functions where there are 121.
+`.pdata` reported 4,323 "missing" functions where there are ~155.
 
-**`--check` is the guard.** NG2's `xrefs.py` shipped three bugs that each gave
-confident wrong answers, so this scan is required to say how it does against
-the functions already registered by hand. It finds 4 of 15 — and that number is
-honest rather than disappointing: the other 11 are reached by a direct `b` from
-code, which is `resolve_calls.py`'s job at codegen time. Of the functions found
-the expensive way, **by crashing at runtime, it finds all of them.**
+**`--check`** re-derives the functions registered by hand and reports how many
+this scan would have found. It finds 4 of 15 — honest rather than
+disappointing: the other 11 are reached by a direct `b` from code, which is
+`resolve_calls.py`'s job at codegen time.
 
 ### `setjmp` / `longjmp` — found before running, on purpose
 
