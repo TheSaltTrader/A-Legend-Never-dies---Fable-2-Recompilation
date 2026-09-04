@@ -31,7 +31,11 @@ CANARY = os.path.join(ROOT, "..", "..", "Ninja Gaiden 2 Xbox360",
 # TODOs, which reported several as "resolved by Canary" when they were merely
 # re-wrapped - the two trees are formatted to different column limits, so this
 # is the common case, not a corner one.
-TODO = re.compile(r"//[ \t]*(TODO\([^)]*\):?[^\n]*(?:\n[ \t]*//[^\n]*)*)", re.M)
+# TODO is not the only marker upstream uses. The unbounded vertex fetch,
+# which is a real Canary fix we lack, is a FIXME - and was invisible to this
+# tool until it was widened. HACK and XXX are in for the same reason.
+TODO = re.compile(
+    r"//[ \t]*((?:TODO|FIXME|HACK|XXX)\([^)]*\):?[^\n]*(?:\n[ \t]*//[^\n]*)*)", re.M)
 
 # Compare a prefix rather than the whole block: the trees also disagree about
 # how much of a trailing thought belongs to the TODO.
@@ -41,7 +45,7 @@ PREFIX_WORDS = 12
 def normalise(s):
     """Comparable text: one line, no author, no punctuation, no case."""
     s = re.sub(r"//", " ", s)
-    s = re.sub(r"TODO\([^)]*\):?", "", s)
+    s = re.sub(r"(?:TODO|FIXME|HACK|XXX)\([^)]*\):?", "", s)
     s = re.sub(r"[^a-z0-9 ]", " ", s.lower())
     return " ".join(s.split()[:PREFIX_WORDS])
 

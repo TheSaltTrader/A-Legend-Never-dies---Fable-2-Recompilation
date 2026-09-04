@@ -12,7 +12,7 @@ thing. These files exist so that is recoverable.
 | file | what it is |
 |---|---|
 | `rexglue-fidelityfx-spatial-only.patch` | unlocks the committed FSR/CAS present effects (`src/ui/CMakeLists.txt`) |
-| `rexglue-canary-extended-range-float16.patch` | ports Canary's Xbox 360 extended-range float16 to both shader translators and widens the PSI clamp |
+| `rexglue-canary-gpu-ports.patch` | the running port of Canary's post-fork GPU work; see `docs/CANARY-PORTED.md` for which commits are in it |
 | `build_vulkan.cmd` | the build script itself (untracked upstream, so not in the patch) |
 
 Apply the FidelityFX patch first; they touch different files and do not

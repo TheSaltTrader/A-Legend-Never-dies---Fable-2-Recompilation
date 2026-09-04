@@ -1,7 +1,30 @@
+diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
+index 4d845c7..b3d7ac6 100644
+--- a/include/rex/graphics/d3d12/texture_cache.h
++++ b/include/rex/graphics/d3d12/texture_cache.h
+@@ -58,6 +58,9 @@ class D3D12TextureCache final : public TextureCache {
+       xenos::AnisoFilter aniso_filter : 3;  // 17
+       uint32_t mip_min_level : 4;           // 21
+       uint32_t mip_base_map : 1;            // 22
++      // Force the border color alpha to 1.0 (only meaningful with a border
++      // clamp mode). Canary d0dd98923.
++      uint32_t force_bc_w_to_max : 1;       // 23
+       // Maximum mip level is in the texture resource itself, but mip_base_map
+       // can be used to limit fetching to mip_min_level.
+     };
 diff --git a/include/rex/graphics/pipeline/shader/dxbc_translator.h b/include/rex/graphics/pipeline/shader/dxbc_translator.h
-index 3b0fd61..fa2fc97 100644
+index 3b0fd61..a399f6b 100644
 --- a/include/rex/graphics/pipeline/shader/dxbc_translator.h
 +++ b/include/rex/graphics/pipeline/shader/dxbc_translator.h
+@@ -547,7 +547,7 @@ class DxbcShaderTranslator : public ShaderTranslator {
+                                     uint32_t f32_temp_component, uint32_t temp_temp,
+                                     uint32_t temp_temp_component, bool round_to_nearest_even,
+                                     bool remap_from_0_to_0_5);
+-  // Converts the 20e4 number in bits [f24_shift, f24_shift + 10) to a 32-bit
++  // Converts the 20e4 number in bits [f24_shift, f24_shift + 24) to a 32-bit
+   // float. Two temporaries must be different, but one can be the same as the
+   // source. The destination may be anything writable. If remap_to_0_to_0_5 is
+   // true, 0...1 in float24 will be remaped to 0...0.5 in float32.
 @@ -778,6 +778,13 @@ class DxbcShaderTranslator : public ShaderTranslator {
    // manually even for RTV to maintain the guest dithering pattern and because
    // alpha can be exponent-biased.
@@ -17,9 +40,18 @@ index 3b0fd61..fa2fc97 100644
    void CompletePixelShader_DSV_DepthTo24Bit();
    void CompletePixelShader_WriteToROV();
 diff --git a/include/rex/graphics/pipeline/shader/spirv_translator.h b/include/rex/graphics/pipeline/shader/spirv_translator.h
-index dce3dbf..fe23929 100644
+index dce3dbf..be81d71 100644
 --- a/include/rex/graphics/pipeline/shader/spirv_translator.h
 +++ b/include/rex/graphics/pipeline/shader/spirv_translator.h
+@@ -459,7 +459,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
+   static spv::Id PreClampedDepthTo20e4(SpirvBuilder& builder, spv::Id f32_scalar,
+                                        bool round_to_nearest_even, bool remap_from_0_to_0_5,
+                                        spv::Id ext_inst_glsl_std_450);
+-  // Converts the 20e4 number in bits [f24_shift, f24_shift + 10) to a 32-bit
++  // Converts the 20e4 number in bits [f24_shift, f24_shift + 24) to a 32-bit
+   // float.
+   static spv::Id Depth20e4To32(SpirvBuilder& builder, spv::Id f24_uint_scalar, uint32_t f24_shift,
+                                bool remap_to_0_to_0_5, bool result_as_uint,
 @@ -722,6 +722,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
    // flow because of taking derivatives of the fragment depth.
    void FSI_DepthStencilTest(spv::Id msaa_samples, bool sample_mask_potentially_narrowed_previouly);
@@ -34,6 +66,28 @@ index dce3dbf..fe23929 100644
    std::array<spv::Id, 2> FSI_ClampAndPackColor(spv::Id color_float4, spv::Id format_with_flags);
    std::array<spv::Id, 4> FSI_UnpackColor(std::array<spv::Id, 2> color_packed,
                                           spv::Id format_with_flags);
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 2be0e8e..e6aae7e 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -941,6 +941,7 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
+       xenos::ClampModeUsesBorder(parameters.clamp_y) ||
+       xenos::ClampModeUsesBorder(parameters.clamp_z)) {
+     parameters.border_color = fetch.border_color;
++    parameters.force_bc_w_to_max = fetch.force_bc_w_to_max;
+   } else {
+     parameters.border_color = xenos::BorderColor::k_ABGR_Black;
+   }
+@@ -1056,6 +1057,9 @@ void D3D12TextureCache::WriteSampler(SamplerParameters parameters,
+       desc.BorderColor[3] = 0.0f;
+       break;
+   }
++  if (parameters.force_bc_w_to_max) {
++    desc.BorderColor[3] = 1.0f;
++  }
+   desc.MinLOD = float(parameters.mip_min_level);
+   if (parameters.mip_base_map) {
+     // "It is undefined whether LOD clamping based on MinLOD and MaxLOD Sampler
 diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
 index 953c5fd..a8555f6 100644
 --- a/src/graphics/pipeline/render_target/cache.cpp
@@ -58,11 +112,95 @@ index 953c5fd..a8555f6 100644
        if (!(write_mask & 0b0001)) {
          keep_mask_low |= 0xFFFFu;
        }
+diff --git a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
+index 31de175..2c6f39b 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
+@@ -143,10 +143,34 @@ void DxbcShaderTranslator::ProcessVertexFetchInstruction(
+   // - Load needed words to system_temp_result_, words 0, 1, 2, 3 to X, Y, Z, W
+   //   respectively.
+ 
+-  // FIXME(Triang3l): Bound checking is not done here, but haven't encountered
+-  // any games relying on out-of-bounds access. On Adreno 200 on Android (LG
+-  // P705), however, words (not full elements) out of glBufferData bounds
+-  // contain 0.
++  // Words at or past the end of the fetch buffer must read as 0. The shared
++  // memory binding covers all of physical memory, so a word out of bounds
++  // would load unrelated guest data where the hardware clamps and returns
++  // zeros. Games rely on that: an overallocated draw expects the vertices it
++  // never wrote to collapse into degenerate primitives. Compute the exclusive
++  // end of the buffer in bytes from the fetch constant and a mask of which
++  // words of the element fall inside it. Ported from Canary 9e9d3cdd3.
++  uint32_t bounds_temp = PushSystemTemp(0, 2);
++  uint32_t word_mask_temp = bounds_temp + 1;
++  // bounds_temp.x = buffer size in words (bits 2:25 of the second fetch
++  // constant word).
++  a_.OpUBFE(dxbc::Dest::R(bounds_temp, 0b0001), dxbc::Src::LU(24), dxbc::Src::LU(2),
++            fetch_constant_src.SelectFromSwizzled(1));
++  // bounds_temp.y = base address of the buffer in bytes.
++  a_.OpAnd(dxbc::Dest::R(bounds_temp, 0b0010), fetch_constant_src.SelectFromSwizzled(0),
++           dxbc::Src::LU(~uint32_t(3)));
++  // bounds_temp.x = exclusive end of the buffer in bytes.
++  a_.OpUMAd(dxbc::Dest::R(bounds_temp, 0b0001), dxbc::Src::R(bounds_temp, dxbc::Src::kXXXX),
++            dxbc::Src::LU(4), dxbc::Src::R(bounds_temp, dxbc::Src::kYYYY));
++  // word_mask_temp = byte addresses of the words of the element.
++  a_.OpIAdd(dxbc::Dest::R(word_mask_temp), address_src,
++            dxbc::Src::LI((0 - int32_t(first_word_index)) * 4,
++                          (1 - int32_t(first_word_index)) * 4,
++                          (2 - int32_t(first_word_index)) * 4,
++                          (3 - int32_t(first_word_index)) * 4));
++  // word_mask_temp = whether each word is within the buffer bounds.
++  a_.OpULT(dxbc::Dest::R(word_mask_temp, needed_words), dxbc::Src::R(word_mask_temp),
++           dxbc::Src::R(bounds_temp, dxbc::Src::kXXXX));
+ 
+   // Loading the FXC way, Load4.xyw becomes Load2 and Load - would be a
+   // compromise between AMD, where there are load_dwordx2/3/4, and Nvidia, where
+@@ -209,6 +233,12 @@ void DxbcShaderTranslator::ProcessVertexFetchInstruction(
+   }
+   a_.OpEndIf();
+ 
++  // Zero the words that fell outside the buffer (OpULT leaves all-ones for the
++  // ones inside), then release bounds_temp and word_mask_temp.
++  a_.OpAnd(dxbc::Dest::R(system_temp_result_, needed_words),
++           dxbc::Src::R(system_temp_result_), dxbc::Src::R(word_mask_temp));
++  PopSystemTemp(2);
++
+   dxbc::Src result_src(dxbc::Src::R(system_temp_result_));
+ 
+   // - Endian swap the words.
 diff --git a/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp b/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
-index e90a622..b1e5fea 100644
+index e90a622..6eead08 100644
 --- a/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
 +++ b/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
-@@ -459,27 +459,33 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
+@@ -185,8 +185,12 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
+         while (rex::bit_scan_forward(eM_remaining, &eM_index)) {
+           eM_remaining &= ~(uint8_t(1) << eM_index);
+           uint32_t eM = system_temps_memexport_data_[eM_index];
+-          a_.OpBFI(dxbc::Dest::R(eM, components), dxbc::Src::LU(31), dxbc::Src::LU(0),
+-                   dxbc::Src::LF(0.5f), dxbc::Src::R(eM));
++          // The bias must land in round_bias_temp, NOT in eM - writing it to eM
++          // destroys the scaled value that is about to be biased, and leaves
++          // the add reading a register nothing has written (PushSystemTemp
++          // does not zero by default). Canary da47dfaac.
++          a_.OpBFI(dxbc::Dest::R(round_bias_temp, components), dxbc::Src::LU(31),
++                   dxbc::Src::LU(0), dxbc::Src::LF(0.5f), dxbc::Src::R(eM));
+           a_.OpAdd(dxbc::Dest::R(eM, components), dxbc::Src::R(eM), dxbc::Src::R(round_bias_temp));
+           a_.OpFToI(dxbc::Dest::R(eM, components), dxbc::Src::R(eM));
+         }
+@@ -398,8 +402,10 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
+         while (rex::bit_scan_forward(eM_remaining, &eM_index)) {
+           eM_remaining &= ~(uint8_t(1) << eM_index);
+           uint32_t eM = system_temps_memexport_data_[eM_index];
+-          a_.OpBFI(dxbc::Dest::R(eM), dxbc::Src::LU(31), dxbc::Src::LU(0), dxbc::Src::LF(0.5f),
+-                   dxbc::Src::R(eM));
++          // Same fix as the packed path above - the bias goes to
++          // round_bias_temp, not over the value being biased.
++          a_.OpBFI(dxbc::Dest::R(round_bias_temp), dxbc::Src::LU(31),
++                   dxbc::Src::LU(0), dxbc::Src::LF(0.5f), dxbc::Src::R(eM));
+           a_.OpAdd(dxbc::Dest::R(eM), dxbc::Src::R(eM), dxbc::Src::R(round_bias_temp));
+           a_.OpFToI(dxbc::Dest::R(eM), dxbc::Src::R(eM));
+         }
+@@ -459,27 +465,33 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
      }
      a_.OpBreak();
  
@@ -105,7 +243,7 @@ index e90a622..b1e5fea 100644
          a_.OpBFI(dxbc::Dest::R(eM, 0b0001), dxbc::Src::LU(16), dxbc::Src::LU(16),
                   dxbc::Src::R(eM, dxbc::Src::kYYYY), dxbc::Src::R(eM, dxbc::Src::kXXXX));
        }
-@@ -489,12 +495,11 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
+@@ -489,12 +501,11 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
  
      a_.OpCase(dxbc::Src::LU(uint32_t(xenos::ColorFormat::k_16_16_16_16_FLOAT)));
      {
@@ -235,6 +373,32 @@ index a7d508a..14dbe2b 100644
  void DxbcShaderTranslator::CompletePixelShader_AlphaToMask() {
    // Check if alpha to coverage can be done at all in this shader.
    if (!current_shader().writes_color_target(0) || IsForceEarlyDepthStencilGlobalFlagEnabled()) {
+diff --git a/src/graphics/pipeline/shader/interpreter.cpp b/src/graphics/pipeline/shader/interpreter.cpp
+index cc726b7..2947ce9 100644
+--- a/src/graphics/pipeline/shader/interpreter.cpp
++++ b/src/graphics/pipeline/shader/interpreter.cpp
+@@ -575,7 +575,8 @@ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+   bool scalar_src_absolute = false;
+   switch (scalar_opcode_info.operand_count) {
+     case 1: {
+-      // r#/c#.w or r#/c#.wx.
++      // r#/c#.w, or r#/c#.wx unless the paired vector opcode has three
++      // operands, in which case r#/c#.wz. Canary 92ada8ebc.
+       const float* scalar_src_ptr;
+       uint32_t scalar_src_register = instr.src_reg(3);
+       std::array<float, 4> scalar_src_float_constant;
+@@ -594,8 +595,10 @@ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+       uint32_t scalar_src_swizzle = instr.src_swizzle(3);
+       scalar_operand_component_count = scalar_opcode_info.single_operand_is_two_component ? 2 : 1;
+       for (uint32_t i = 0; i < scalar_operand_component_count; ++i) {
++        uint32_t source_component =
++            i == 0 ? 3 : (vector_opcode_info.GetOperandCount() == 3 ? 2 : 0);
+         scalar_operands[i] = scalar_src_ptr[ucode::AluInstruction::GetSwizzledComponentIndex(
+-            scalar_src_swizzle, (3 + i) & 3)];
++            scalar_src_swizzle, source_component)];
+       }
+     } break;
+     case 2: {
 diff --git a/src/graphics/pipeline/shader/spirv_translator_memexport.cpp b/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
 index 14c0ea9..9f8ae42 100644
 --- a/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
@@ -473,3 +637,64 @@ index 765c141..45e1255 100644
          for (uint32_t k = 0; k < 2; ++k) {
            unpacked_16_float[i][2 * j + k] =
                builder_->createCompositeExtract(components_float2, type_float_, k);
+diff --git a/src/graphics/pipeline/shader/translator.cpp b/src/graphics/pipeline/shader/translator.cpp
+index e472251..3dc1f93 100644
+--- a/src/graphics/pipeline/shader/translator.cpp
++++ b/src/graphics/pipeline/shader/translator.cpp
+@@ -1156,7 +1156,8 @@ uint32_t ParsedTextureFetchInstruction::GetNonZeroResultComponents() const {
+ 
+ static void ParseAluInstructionOperand(const AluInstruction& op, uint32_t i,
+                                        uint32_t swizzle_component_count,
+-                                       InstructionOperand& out_op) {
++                                       InstructionOperand& out_op,
++                                       uint32_t scalar_second_component = 0) {
+   out_op.is_negated = op.src_negate(i);
+   uint32_t reg = op.src_reg(i);
+   if (op.src_is_temp(i)) {
+@@ -1186,9 +1187,10 @@ static void ParseAluInstructionOperand(const AluInstruction& op, uint32_t i,
+     // Scalar `a` (W).
+     out_op.components[0] = GetSwizzledAluSourceComponent(swizzle, 3);
+   } else if (swizzle_component_count == 2) {
+-    // Scalar left-hand `a` (W) and right-hand `b` (X).
++    // Scalar left-hand `a` (W) and right-hand `b` (X or Z).
+     out_op.components[0] = GetSwizzledAluSourceComponent(swizzle, 3);
+-    out_op.components[1] = GetSwizzledAluSourceComponent(swizzle, 0);
++    out_op.components[1] =
++        GetSwizzledAluSourceComponent(swizzle, scalar_second_component);
+   } else if (swizzle_component_count == 3) {
+     assert_always();
+   } else if (swizzle_component_count == 4) {
+@@ -1348,8 +1350,12 @@ void ParseAluInstruction(const AluInstruction& op, xenos::ShaderType shader_type
+   instr.scalar_operand_count = scalar_opcode_info.operand_count;
+   if (instr.scalar_operand_count) {
+     if (instr.scalar_operand_count == 1) {
++      // The scalar operation shares source 3 with the vector operation. If the
++      // vector operation uses source 3, the scalar `b` component is Z;
++      // otherwise it is X. Canary 92ada8ebc.
+       ParseAluInstructionOperand(op, 3, scalar_opcode_info.single_operand_is_two_component ? 2 : 1,
+-                                 instr.scalar_operands[0]);
++                                 instr.scalar_operands[0],
++                                 vector_opcode_info.GetOperandCount() == 3 ? 2 : 0);
+     } else {
+       // Constant and temporary register.
+ 
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index 76f5600..12f8af2 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -934,8 +934,13 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+   texture_util::GetSubresourcesFromFetchConstant(fetch, &width_minus_1, &height_minus_1,
+                                                  &depth_or_array_size_minus_1, &base_page,
+                                                  &mip_page, nullptr, &mip_max_level);
+-  if (base_page == 0 && mip_page == 0) {
+-    // No texture data at all.
++  if (base_page == 0 && mip_page == 0 &&
++      (fetch.swizzle & 0b110110110110) != 0b100100100100) {
++    // No texture data at all. Any header taking every swizzle component from
++    // literal 0s or 1s may still be valid. 4D530919 binds one as the dummy
++    // alpha plane of Bink movies - which this title plays. Such examples get a
++    // texture with their dimensions for LOD queries. Zero extents skip the
++    // upload and watches. Ported from Canary ec5e0f40e.
+     return;
+   }
+   if (fetch.dimension == xenos::DataDimension::k1D) {
