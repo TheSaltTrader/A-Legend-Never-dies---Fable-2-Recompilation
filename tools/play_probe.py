@@ -1,0 +1,204 @@
+"""Launch fable2, press buttons on a schedule, and photograph the result.
+
+The title screen says "Press A to start", and there is no way to know whether
+the game gets past it without actually pressing it and looking.
+
+Two rules, both learned the hard way on ng2recomp:
+
+  * **Input must be real.** SDL3 takes the keyboard from raw input and ignores
+    synthesised window messages, so PostMessage(WM_KEYDOWN) does nothing at
+    all. This uses SendInput, after bringing the window to the foreground and
+    checking that it actually got there - otherwise the keystroke lands in
+    whatever window did.
+  * **Never capture the screen region under the window**, and never resolve the
+    window by title. PrintWindow cannot read a D3D12 swapchain, a region grab
+    photographs whatever is on top, and a title match can land on somebody
+    else's window. Windows Graphics Capture bound to the HWND of the PID we
+    launched is the only correct answer.
+
+    python tools/play_probe.py --press 20:return --press 26:return \\
+                               --seconds 40 --interval 4
+
+`--press SECONDS:KEY` is repeatable. KEY is a name from KEYS below.
+The SDK's keyboard-to-controller emulation is off by default, so this passes
+--mnk_mode=true unless told otherwise.
+"""
+
+import argparse
+import ctypes
+import os
+import subprocess
+import sys
+import time
+
+import win32gui
+import win32process
+from windows_capture import WindowsCapture
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Windows virtual-key codes for the keys worth pressing here.
+KEYS = {
+    "return": 0x0D, "enter": 0x0D, "space": 0x20, "escape": 0x1B,
+    "a": 0x41, "b": 0x42, "x": 0x58, "y": 0x59,
+    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+    "f10": 0x79, "f4": 0x73,
+}
+
+KEYEVENTF_KEYUP = 0x0002
+INPUT_KEYBOARD = 1
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort),
+                ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulonglong))]
+
+
+class INPUT(ctypes.Structure):
+    class _U(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("padding", ctypes.c_byte * 32)]
+    _anonymous_ = ("u",)
+    _fields_ = [("type", ctypes.c_ulong), ("u", _U)]
+
+
+def send_key(vk):
+    for flags in (0, KEYEVENTF_KEYUP):
+        inp = INPUT(type=INPUT_KEYBOARD)
+        inp.ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=flags, time=0,
+                            dwExtraInfo=None)
+        ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        time.sleep(0.05)
+
+
+def hwnd_for_pid(pid):
+    """Top-level visible window owned by exactly this PID."""
+    found = []
+
+    def cb(h, _):
+        if not win32gui.IsWindowVisible(h):
+            return
+        _, wpid = win32process.GetWindowThreadProcessId(h)
+        if wpid == pid and win32gui.GetWindowText(h):
+            found.append(h)
+
+    win32gui.EnumWindows(cb, None)
+    return found[0] if found else None
+
+
+def focus(hwnd):
+    """Bring the window forward and confirm it. A keystroke sent to the wrong
+    foreground window is silent and looks exactly like the game ignoring it."""
+    try:
+        win32gui.ShowWindow(hwnd, 9)          # SW_RESTORE
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+    time.sleep(0.3)
+    return win32gui.GetForegroundWindow() == hwnd
+
+
+def main():
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)   # must be the first thing
+
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--seconds", type=float, default=45.0)
+    ap.add_argument("--interval", type=float, default=4.0)
+    ap.add_argument("--outdir", default="out/shots")
+    ap.add_argument("--tag", default="play")
+    ap.add_argument("--press", action="append", default=[],
+                    metavar="SECONDS:KEY", help="repeatable, e.g. 20:return")
+    ap.add_argument("--config", default="Release")
+    ap.add_argument("--no-mnk", action="store_true")
+    args = ap.parse_args()
+
+    schedule = []
+    for spec in args.press:
+        when, _, name = spec.partition(":")
+        if name.lower() not in KEYS:
+            sys.exit(f"unknown key {name!r}; known: {', '.join(sorted(KEYS))}")
+        schedule.append([float(when), name.lower(), False])
+    schedule.sort()
+
+    outdir = os.path.join(ROOT, args.outdir)
+    os.makedirs(outdir, exist_ok=True)
+
+    exe = os.path.join(ROOT, "out", "build", f"win-amd64-{args.config}",
+                       "fable2.exe")
+    if not os.path.exists(exe):
+        sys.exit(f"{exe} not found - build first")
+
+    cmd = [exe, "--game_data_root", os.path.join(ROOT, "game"),
+           "--log_file", os.path.join(ROOT, "out", "fable2.log"),
+           "--log_level", "debug"]
+    if not args.no_mnk:
+        cmd += ["--mnk_mode=true"]           # a bare --mnk_mode is ignored
+
+    proc = subprocess.Popen(cmd, cwd=os.path.dirname(exe))
+    print(f"launched pid {proc.pid}")
+
+    hwnd, deadline = None, time.time() + 30
+    while time.time() < deadline and hwnd is None:
+        if proc.poll() is not None:
+            print(f"process exited early rc={proc.returncode}")
+            return 1
+        hwnd = hwnd_for_pid(proc.pid)
+        if hwnd is None:
+            time.sleep(0.25)
+    if hwnd is None:
+        proc.kill()
+        print("no window appeared")
+        return 1
+    print(f"window 0x{hwnd:X} '{win32gui.GetWindowText(hwnd)}'")
+
+    started = time.time()
+    capture = WindowsCapture(window_hwnd=hwnd, cursor_capture=False,
+                             draw_border=False)
+    state = {"n": 0, "next": started}
+
+    @capture.event
+    def on_frame_arrived(frame, control):
+        now = time.time()
+        elapsed = now - started
+        if elapsed >= args.seconds:
+            control.stop()
+            return
+
+        for item in schedule:
+            when, name, done = item
+            if not done and elapsed >= when:
+                item[2] = True
+                ok = focus(hwnd)
+                send_key(KEYS[name])
+                print(f"  {elapsed:5.1f}s  pressed {name}"
+                      f"{'' if ok else '  (WINDOW WAS NOT FOREGROUND)'}")
+
+        if now < state["next"]:
+            return
+        state["next"] = now + args.interval
+        state["n"] += 1
+        path = os.path.join(outdir, f"{args.tag}_{state['n']:02d}.png")
+        try:
+            frame.save_as_image(path)
+            print(f"  {elapsed:5.1f}s  {os.path.basename(path)} "
+                  f"({frame.width}x{frame.height})")
+        except Exception as exc:            # a dropped frame must not stop the run
+            print(f"  save failed: {exc}")
+
+    @capture.event
+    def on_closed():
+        print("capture closed")
+
+    try:
+        capture.start()
+    finally:
+        if proc.poll() is None:
+            proc.kill()                     # by PID, never by window title
+            proc.wait(timeout=10)
+        print(f"stopped pid {proc.pid}; {state['n']} frames in {outdir}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

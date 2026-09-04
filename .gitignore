@@ -1,0 +1,16 @@
+# Build and codegen output
+/out/
+/generated/default/
+/build/
+
+# Game content - never committed. The XEX and every asset belong to the
+# rights holder; this project only ever reads a disc the user owns.
+/assets/
+/game/
+*.xex
+*.iso
+*.bik
+*.bnk
+out/shots/
+__pycache__/
+*.pyc

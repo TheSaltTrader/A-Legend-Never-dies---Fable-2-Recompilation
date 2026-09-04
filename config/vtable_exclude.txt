@@ -1,0 +1,19 @@
+# Addresses tools/scan_vtables.py must NOT register.
+# Each one broke a branch when split out; see the README.
+0x82CB49C0  # split broke a branch
+0x82CC04A4  # split broke a branch
+0x8304101C  # split broke a branch
+0x830FD7F4  # split broke a branch
+0x832B268C  # import thunk - codegen drops our entry
+0x832B277C  # import thunk - codegen drops our entry
+0x832B278C  # import thunk - codegen drops our entry
+0x832B279C  # import thunk - codegen drops our entry
+0x832B27AC  # import thunk - codegen drops our entry
+0x832B27EC  # import thunk - codegen drops our entry
+0x832B27FC  # import thunk - codegen drops our entry
+0x832B29FC  # import thunk - codegen drops our entry
+0x832B2A0C  # import thunk - codegen drops our entry
+0x832B2A1C  # import thunk - codegen drops our entry
+0x832B2A7C  # import thunk - codegen drops our entry
+0x832B2A8C  # import thunk - codegen drops our entry
+0x832B2ADC  # import thunk - codegen drops our entry
