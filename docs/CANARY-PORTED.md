@@ -124,6 +124,19 @@ becomes "implement the feature Canary's commit assumes, then port the commit" -
 a different and much larger job, and one that should be decided deliberately
 rather than slipped in under a porting pass.
 
+## The shader translators are five months more diverged than the GPU code
+
+The GPU code forked around 2026-08-01. The **shader modification layout did
+not** - our DXBC `Modification::kVersion` reads `0x20260226`, February, against
+Canary's `0x20260716` *before* the last commit that touches it. `Modification`
+is the packed key that decides which variant of a shader gets generated, so
+porting anything that adds a mode to it means reconciling five months of
+intervening changes to that structure first. Get it wrong and every shader is
+generated wrong, not just the new path.
+
+That is what blocks `cde5d85ec`, and it is worth knowing before anyone tries a
+"quick" shader-translator port.
+
 | sha | state | note |
 |---|---|---|
 | `3ff230d23` | PORTED | Extended-range float16 in RT pack/unpack. Found independently from the TODOs before the history was available. DXBC + SPIR-V encoders, ROV pack/unpack, all six memexport cases, then the PSI clamp widened to ±131008. Measured: did NOT fix the flat-blue scene. |
@@ -174,3 +187,9 @@ rather than slipped in under a porting pass.
 | `084f14ec4` | SKIP | VK_EXT_custom_border_color for YCbCr borders. **Already ours** - we read customBorderColors / customBorderColorWithoutFormat and there is no TODO left in that function. |
 | `0d3878176` | SKIP | Float controls on geometry shaders. **Already ours** - we read the device properties locally and add the extension, capabilities and execution modes; Canary only cached them as members. |
 | `31168682b` | BLOCKED | draw_resolution_scaled_texture_offsets cancelling itself out. The cvar exists here only in the DXBC translator - the SPIR-V side never implemented the feature, so there is no bug to fix. |
+| `3eab2b8b3` | PORTED | Tessellated triangle strips and fans. Strips and fans are now accepted for tessellation and converted to triangle lists at runtime, since no prebuilt index buffer exists on that path. Cleared the matching TODO. |
+| `090cecd1b` | SKIP | Vertex kill (oPts.z). **Already ours** - we test bits 0:30 of the kill value, store -1 to the cull distance in AND mode and NaN the position W in OR mode. Only the member naming differs. |
+| `2a6e9f4e2` | SKIP | depth_float24_convert_in_pixel_shader on Vulkan. **Already ours** - wired through the Vulkan render target cache, command processor and pipeline cache (two sites). |
+| `66779fb87` | BLOCKED | Adaptive tessellation. Half of it is **already ours** - we set `ExecutionModeVertexOrderCw`, which is the winding fix. The other half reads the patch index from the hull shader output and needs `kConstantBufferTessellation`, a constant buffer our SPIR-V translator does not have at all (ours has System/FloatVertex/FloatPixel/BoolLoop/Fetch and nothing else). |
+| `710102115` | SKIP | Bind shared memory persistently for texture loads and resolves. A Vulkan descriptor-management refactor, 328 lines, with no correctness symptom named in the commit - and our binding model differs (`buffer_relative_offset` does not exist here). Reworking descriptor lifetime on a backend that does not run this game, for no stated defect, is not a good trade. |
+| `cde5d85ec` | BLOCKED | Host RT polygon offset for Z-fighting decals. Adds three DepthStencilMode values and widens the bitfield, i.e. it changes the shader **Modification** layout - and ours is `0x20260226` against Canary's `0x20260716` before this commit. See the section above. It is also cvar-gated off by default and targets decals in 494707EE and 41560881, not this title. |
