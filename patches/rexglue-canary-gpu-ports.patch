@@ -78,6 +78,28 @@ index dce3dbf..be81d71 100644
    std::array<spv::Id, 2> FSI_ClampAndPackColor(spv::Id color_float4, spv::Id format_with_flags);
    std::array<spv::Id, 4> FSI_UnpackColor(std::array<spv::Id, 2> color_packed,
                                           spv::Id format_with_flags);
+diff --git a/include/rex/graphics/pipeline/texture/cache.h b/include/rex/graphics/pipeline/texture/cache.h
+index d26cd4f..74518d2 100644
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -182,6 +182,17 @@ class TextureCache {
+     uint32_t GetHeight() const { return height_minus_1 + 1; }
+     uint32_t GetDepthOrArraySize() const { return depth_or_array_size_minus_1 + 1; }
+ 
++    // True if this is a wide 1D texture (> 8192 wide) mapped onto 2D.
++    bool IsWide1D() const {
++      return dimension == xenos::DataDimension::k1D && height_minus_1 > 0;
++    }
++    uint32_t Get1DWidth() const {
++      if (IsWide1D()) {
++        return GetWidth() * GetHeight();
++      }
++      return GetWidth();
++    }
++
+     texture_util::TextureGuestLayout GetGuestLayout() const {
+       return texture_util::GetGuestTextureLayout(dimension, pitch, GetWidth(), GetHeight(),
+                                                  GetDepthOrArraySize(), tiled, format, packed_mips,
 diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
 index 2be0e8e..f3c91f7 100644
 --- a/src/graphics/d3d12/texture_cache.cpp
@@ -213,7 +235,7 @@ index 953c5fd..a8555f6 100644
          keep_mask_low |= 0xFFFFu;
        }
 diff --git a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
-index 31de175..2c6f39b 100644
+index 31de175..b740142 100644
 --- a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
 +++ b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
 @@ -143,10 +143,34 @@ void DxbcShaderTranslator::ProcessVertexFetchInstruction(
@@ -268,6 +290,132 @@ index 31de175..2c6f39b 100644
    dxbc::Src result_src(dxbc::Src::R(system_temp_result_));
  
    // - Endian swap the words.
+@@ -671,6 +701,13 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+   }
+ 
+   uint32_t tfetch_index = instr.operands[1].storage_index;
++  // A 1D fetch with a multi-component coordinate addresses a 2D grid, so
++  // everything below that depends on the shape of the coordinates must use
++  // this rather than the fetch's own dimension. Canary fbdb1f281.
++  xenos::FetchOpDimension coordinate_dimension =
++      instr.dimension == xenos::FetchOpDimension::k1D && instr.operands[0].component_count > 1
++          ? xenos::FetchOpDimension::k2D
++          : instr.dimension;
+ 
+   // Whether to use gradients (implicit or explicit) for LOD calculation.
+   bool use_computed_lod = instr.attributes.use_computed_lod &&
+@@ -711,7 +748,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     // be floored as expected, but the left/upper pixel is still sampled
+     // instead.
+     const float rounding_offset = 1.5f / 1024.0f;
+-    switch (instr.dimension) {
++    switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+         offsets[0] = instr.attributes.offset_x + rounding_offset;
+         if (instr.opcode == FetchOpcode::kGetTextureWeights) {
+@@ -779,7 +816,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     // calculation with normalized coordinates (or, if a texture filled with LOD
+     // indices is used, coordinates will need to be normalized as normally).
+     if (!instr.attributes.unnormalized_coordinates) {
+-      switch (instr.dimension) {
++      switch (coordinate_dimension) {
+         case xenos::FetchOpDimension::k1D:
+           // Always need size for 1D textures to support wide 1D textures.
+           size_needed_components |= 0b0001;
+@@ -797,7 +834,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     // Size needed for normalization (or, for stacked texture layers,
+     // denormalization) and for offsets.
+     size_needed_components |= offsets_not_zero;
+-    switch (instr.dimension) {
++    switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+         if (instr.attributes.unnormalized_coordinates) {
+           size_needed_components |= 0b0001;
+@@ -836,7 +873,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+   }
+   uint32_t size_and_is_3d_temp = size_needed_components ? PushSystemTemp() : UINT32_MAX;
+   if (size_needed_components) {
+-    switch (instr.dimension) {
++    switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+         a_.OpUBFE(dxbc::Dest::R(size_and_is_3d_temp, 0b0001), dxbc::Src::LU(24), dxbc::Src::LU(0),
+                   RequestTextureFetchConstantWord(tfetch_index, 2));
+@@ -876,6 +913,35 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+       // Fetch constants store size minus 1 - add 1.
+       a_.OpIAdd(dxbc::Dest::R(size_and_is_3d_temp, size_needed_components & 0b0111),
+                 dxbc::Src::R(size_and_is_3d_temp), dxbc::Src::LU(1));
++      // HZB reducers in 555308B6 and 5553080B lock the sampler to one mip
++      // and address it with unnormalized coordinates. Those coordinates are
++      // in the locked mip's grid, but the denominator below was always the
++      // base level size, so each reduction after the first read garbage.
++      // Limit this to 2D unnormalized fetches with a locked mip. This changes
++      // only the denominator. Canary 8486e97a0.
++      bool selected_mip_grid_possible = instr.opcode == FetchOpcode::kTextureFetch &&
++                                        instr.dimension == xenos::FetchOpDimension::k2D &&
++                                        instr.attributes.unnormalized_coordinates;
++      if (selected_mip_grid_possible) {
++        uint32_t selected_mip_temp = PushSystemTemp();
++        // Word 4 has MipMinLevel in bits 2:5 and MipMaxLevel in bits 6:9.
++        a_.OpUBFE(dxbc::Dest::R(selected_mip_temp, 0b0011), dxbc::Src::LU(4, 4, 0, 0),
++                  dxbc::Src::LU(2, 6, 0, 0), RequestTextureFetchConstantWord(tfetch_index, 4));
++        a_.OpIEq(dxbc::Dest::R(selected_mip_temp, 0b0100),
++                 dxbc::Src::R(selected_mip_temp, dxbc::Src::kXXXX),
++                 dxbc::Src::R(selected_mip_temp, dxbc::Src::kYYYY));
++        // max(size >> mip, 1) for non-pow2 textures. Scaling stays unchanged.
++        a_.OpUShR(dxbc::Dest::R(selected_mip_temp, 0b1010),
++                  dxbc::Src::R(size_and_is_3d_temp, 0b01000000),
++                  dxbc::Src::R(selected_mip_temp, dxbc::Src::kXXXX));
++        a_.OpUMax(dxbc::Dest::R(selected_mip_temp, 0b1010), dxbc::Src::R(selected_mip_temp),
++                  dxbc::Src::LU(1));
++        a_.OpMovC(dxbc::Dest::R(size_and_is_3d_temp, 0b0011),
++                  dxbc::Src::R(selected_mip_temp, dxbc::Src::kZZZZ),
++                  dxbc::Src::R(selected_mip_temp, 0b00001101),
++                  dxbc::Src::R(size_and_is_3d_temp));
++        PopSystemTemp();
++      }
+       // Convert the size to float for multiplication/division.
+       a_.OpUToF(dxbc::Dest::R(size_and_is_3d_temp, size_needed_components & 0b0111),
+                 dxbc::Src::R(size_and_is_3d_temp));
+@@ -1002,10 +1068,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     // coordinates need to be transformed back into the cube space.
+     bool coord_operand_temp_pushed = false;
+     dxbc::Src coord_operand = LoadOperand(
+-        instr.operands[0], (1 << xenos::GetFetchOpDimensionComponentCount(instr.dimension)) - 1,
++        instr.operands[0], (1 << xenos::GetFetchOpDimensionComponentCount(coordinate_dimension)) - 1,
+         coord_operand_temp_pushed);
+     uint32_t normalized_components = 0b0000;
+-    switch (instr.dimension) {
++    switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+         normalized_components = 0b0001;
+         break;
+@@ -1145,7 +1211,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+         }
+       }
+     }
+-    switch (instr.dimension) {
++    switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+         // Pad to 2D array coordinates.
+         a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110), dxbc::Src::LF(0.0f));
+@@ -1428,7 +1494,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+         }
+         if (use_computed_lod) {
+           grad_v_temp = PushSystemTemp();
+-          switch (instr.dimension) {
++          switch (coordinate_dimension) {
+             case xenos::FetchOpDimension::k1D:
+               grad_component_count = 1;
+               break;
+@@ -1517,7 +1583,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+             a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask), dxbc::Src::R(grad_v_temp), lod_src);
+ #endif
+           }
+-          if (instr.dimension == xenos::FetchOpDimension::k1D) {
++          if (coordinate_dimension == xenos::FetchOpDimension::k1D) {
+             // Pad the gradients to 2D because 1D textures are fetched as 2D
+             // arrays.
+             a_.OpMov(dxbc::Dest::R(grad_h_lod_temp, 0b0010), dxbc::Src::LF(0.0f));
 diff --git a/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp b/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
 index e90a622..6eead08 100644
 --- a/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
@@ -779,10 +927,10 @@ index e472251..3dc1f93 100644
        // Constant and temporary register.
  
 diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
-index 76f5600..12f8af2 100644
+index 76f5600..1f6703b 100644
 --- a/src/graphics/pipeline/texture/cache.cpp
 +++ b/src/graphics/pipeline/texture/cache.cpp
-@@ -934,8 +934,13 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+@@ -934,19 +934,36 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
    texture_util::GetSubresourcesFromFetchConstant(fetch, &width_minus_1, &height_minus_1,
                                                   &depth_or_array_size_minus_1, &base_page,
                                                   &mip_page, nullptr, &mip_max_level);
@@ -797,4 +945,59 @@ index 76f5600..12f8af2 100644
 +    // upload and watches. Ported from Canary ec5e0f40e.
      return;
    }
++  uint32_t pitch = fetch.pitch;
    if (fetch.dimension == xenos::DataDimension::k1D) {
+     bool is_invalid_1d = false;
+-    // TODO(Triang3l): Support long 1D textures.
++    // Handle wide 1D textures (> 8192 wide) by mapping them to a 2D grid.
++    // The shaders convert 1D coordinates to 2D using the original width from
++    // the fetch constant. Canary 947075f88.
+     if (width_minus_1 >= xenos::kTexture2DCubeMaxWidthHeight) {
+-      REXGPU_ERROR(
+-          "1D texture is too wide ({}) - ignoring! Report the game to Xenia "
+-          "developers",
+-          width_minus_1 + 1);
+-      is_invalid_1d = true;
++      uint32_t total_width = width_minus_1 + 1;
++      uint32_t row_width = xenos::kTexture2DCubeMaxWidthHeight;
++      uint32_t num_rows = (total_width + row_width - 1) / row_width;
++      width_minus_1 = row_width - 1;
++      height_minus_1 = num_rows - 1;
++      // Disable mipmaps for wide 1D textures. The shader's coordinate remapping
++      // assumes base level dimensions (num_rows), but at mip level N the 2D
++      // texture becomes (8192 >> N) x (num_rows >> N), which breaks the mapping
++      // once num_rows >> N reaches 1 while the shader still expects several
++      // rows. Mipmaps are rarely used with 1D lookup textures anyway.
++      mip_max_level = 0;
++      // The guest pitch is meaningless for a texture the guest believes is 1D
++      // (the 9 bit field could not even express the line width).
++      pitch = xenos::kTexture2DCubeMaxWidthHeight >> 5;
+     }
+     assert_false(fetch.tiled);
+     if (fetch.tiled) {
+@@ -977,7 +994,7 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+   key_out.width_minus_1 = width_minus_1;
+   key_out.height_minus_1 = height_minus_1;
+   key_out.depth_or_array_size_minus_1 = depth_or_array_size_minus_1;
+-  key_out.pitch = fetch.pitch;
++  key_out.pitch = pitch;
+   key_out.mip_max_level = mip_max_level;
+   key_out.tiled = fetch.tiled;
+   key_out.packed_mips = fetch.packed_mips;
+diff --git a/src/graphics/pipeline/texture/util.cpp b/src/graphics/pipeline/texture/util.cpp
+index 26d554c..07f7024 100644
+--- a/src/graphics/pipeline/texture/util.cpp
++++ b/src/graphics/pipeline/texture/util.cpp
+@@ -212,7 +212,11 @@ TextureGuestLayout GetGuestTextureLayout(xenos::DataDimension dimension,
+     // GetPackedMipOffset may result in packing along Y for `width > height`
+     // textures.
+     assert_false(has_packed_levels);
+-    height_texels = 1;
++    // For wide 1D textures mapped to 2D, height_texels is the number of rows.
++    // Only force height = 1 for normal 1D textures.
++    if (height_texels <= 1) {
++      height_texels = 1;
++    }
+   }
+   uint32_t depth = dimension == xenos::DataDimension::k3D ? depth_or_array_size : 1;
+   switch (dimension) {

@@ -40,6 +40,17 @@ Three of the 54 are affected, and one of them matters a great deal:
 - `2b3f0cb45` (A8 resolves) and `fc48d37cd` (dead shader code) touch one or two
   shader files each and may be portable in part.
 
+## Port in COMMIT-date topological order, not author date
+
+`947075f88` is authored 2026-07-31 and `fbdb1f281` 2026-08-02, so author date
+puts the wide-1D commit first - but it was committed *second*, and its diff
+already assumes `coordinate_dimension`, which `fbdb1f281` introduces. Sorting by
+author date hands you a dependent commit whose context will not match.
+`tools/canary_backlog.py` now lists `--topo-order --reverse` with commit dates.
+
+Checked while fixing this: `2ddc5ef73` (commit date 2026-07-30, just under the
+cutoff) is already in our tree, so the ~2026-07-31 fork point holds.
+
 | sha | state | note |
 |---|---|---|
 | `3ff230d23` | PORTED | Extended-range float16 in RT pack/unpack. Found independently from the TODOs before the history was available. DXBC + SPIR-V encoders, ROV pack/unpack, all six memexport cases, then the PSI clamp widened to ±131008. Measured: did NOT fix the flat-blue scene. |
@@ -63,3 +74,6 @@ Three of the 54 are affected, and one of them matters a great deal:
 | `0d395ce9a` | SKIP | Move debug cvars to a new TOML block. Config plumbing for cvars we do not have. |
 | `22708301b` | SKIP | Initial XPS support - kernel/memory feature, not a GPU correctness fix, and the kernel half is outside the plugin. |
 | `4a863a0e1` | PORTED | Base map selection with a separate mip page: with kBaseMap filtering and a real base page the base map IS level 0, so keeping the fetch constant's min level sampled the wrong subresource. |
+| `8486e97a0` | PORTED | Locked-mip unnormalized fetches sample in that mip's grid. The denominator was always the base level size, so reductions after the first read garbage. DXBC done; SPIR-V open. |
+| `fbdb1f281` | PORTED | Two-component tfetch1D coordinates: a 1D fetch with a multi-component coordinate addresses a 2D grid, so all seven dimension switches now use coordinate_dimension. Foundation for 947075f88. DXBC done; SPIR-V open. |
+| `947075f88` | PARTIAL | Wide 1D textures (>8192) mapped onto a 2D grid. CPU side done - the texture cache no longer rejects them, IsWide1D/Get1DWidth added, guest layout keeps the row count. The DXBC coordinate remapping (~110 lines) and the SPIR-V side are still open. |

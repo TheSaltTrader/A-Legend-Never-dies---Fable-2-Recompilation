@@ -20,13 +20,20 @@ margin, sampled over the run. Two numbers are reported:
 
 A run that never reaches the tutorial scores 0 and is reported as INCONCLUSIVE
 rather than as a pass - that distinction matters, because a fixed-time input
-schedule does NOT reliably reach the failing state. Debug-level logging alone
-slows the boot enough to desynchronise it, which already produced one run that
-looked clean and had simply stayed in the attract loop.
+schedule does NOT reliably reach the failing state. Anything that slows the boot
+desynchronises it: debug-level logging did once, and CLEARING THE SHADER CACHE
+does it too, because the first launch afterwards recompiles everything.
 
-Reaching the tutorial is detected by the tutorial banner's own dark strip at the
-top of the frame, so "did we get there" is answered from the picture rather than
-assumed from the clock.
+Two picture-based checks, in order, because the first version of this had only
+the second and passed four runs that never left the menu:
+
+  1. Are we out of the menu? The menu and character select are framed by a
+     leather border, so their left and right edge columns are distinctly WARM
+     (R - B around +30); world frames measure -9 to -1. Frames failing this are
+     not scored at all, and a run with none of them is INCONCLUSIVE.
+  2. Have we reached the tutorial? Its banner is a dark strip across the top -
+     but only counted on a frame already known not to be the menu, since the
+     menu's own dark border dips under the same threshold.
 """
 
 import argparse
@@ -106,10 +113,24 @@ def run_case(name, extra, seconds):
     peak = 0.0
     blue_frames = 0
     reached = False
+    in_world_frames = 0
     frames = sorted(f for f in os.listdir(outdir) if f.startswith(tag + "_"))
     for f in frames:
         a = np.asarray(Image.open(os.path.join(outdir, f)).convert("RGB")
                        .resize((120, 68)), dtype=float)
+
+        # Are we out of the menu at all? The menu and character select are
+        # framed by a leather border, which makes the left and right edge
+        # columns distinctly WARM; world frames are neutral to cool. This is
+        # the check that was missing, and its absence produced four separate
+        # false "clean" verdicts from runs that sat in the menu the whole time.
+        edge = np.concatenate([a[:, :9, :], a[:, -9:, :]], axis=1)
+        warm = float((edge[..., 0] - edge[..., 2]).mean())
+        in_world = warm < 20.0
+        if not in_world:
+            continue
+        in_world_frames += 1
+
         # The scene occupies everything below the tutorial banner.
         scene = a[12:, :, :]
         blue = float(((scene[..., 2] > scene[..., 0] + 50) &
@@ -117,15 +138,22 @@ def run_case(name, extra, seconds):
         peak = max(peak, blue)
         if blue > 0.5:
             blue_frames += 1
-        # The tutorial banner: a dark strip across the very top.
+        # The tutorial banner: a dark strip across the very top, in a frame we
+        # already know is not the menu.
         band = a[2:9, :, :]
         if band.mean() < 60 and band.std() < 55:
             reached = True
 
-    verdict = ("BLUE" if blue_frames else
-               "clean" if reached else "INCONCLUSIVE - never reached the tutorial")
-    print(f"   frames {len(frames)}  peak blue {peak*100:.0f}%  "
-          f"blue frames {blue_frames}  -> {verdict}")
+    if not in_world_frames:
+        verdict = "INCONCLUSIVE - never left the menu"
+    elif blue_frames:
+        verdict = "BLUE"
+    elif reached:
+        verdict = "clean"
+    else:
+        verdict = "INCONCLUSIVE - in the world, but never reached the tutorial"
+    print(f"   frames {len(frames)} ({in_world_frames} in the world)  "
+          f"peak blue {peak*100:.0f}%  blue frames {blue_frames}  -> {verdict}")
     return verdict
 
 

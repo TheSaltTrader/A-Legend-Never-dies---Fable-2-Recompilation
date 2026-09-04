@@ -65,7 +65,14 @@ def ledger():
 
 
 def commits():
-    raw = git("log", "--format=%H%x01%ad%x01%s", "--date=short",
+    # TOPOLOGICAL, oldest first, and dated by COMMIT date - not author date.
+    # Author date is the wrong order to port in: fbdb1f281 is authored
+    # 2026-08-02 and 947075f88 2026-07-31, but 947075f88 was committed second
+    # and its diff already assumes fbdb1f281's coordinate_dimension. Sorting by
+    # author date puts the dependent commit first and its context will not
+    # match.
+    raw = git("log", "--reverse", "--topo-order",
+              "--format=%H%x01%cd%x01%s", "--date=short",
               "--since=" + SINCE, "--", "src/xenia/gpu")
     out = []
     for line in raw.splitlines():
