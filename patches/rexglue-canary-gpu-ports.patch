@@ -1,8 +1,8 @@
 diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
-index 96d362b..0f1edb5 100644
+index 96d362b..b6a2b47 100644
 --- a/include/rex/graphics/d3d12/command_processor.h
 +++ b/include/rex/graphics/d3d12/command_processor.h
-@@ -425,6 +425,21 @@ class D3D12CommandProcessor : public CommandProcessor {
+@@ -425,6 +425,31 @@ class D3D12CommandProcessor : public CommandProcessor {
    HANDLE fence_completion_event_ = nullptr;
  
    bool submission_open_ = false;
@@ -19,6 +19,16 @@ index 96d362b..0f1edb5 100644
 +    uint64_t other_failure = 0;
 +    uint64_t memexport = 0;
 +    uint64_t last_report_ms = 0;
++    // Vertex float constants as uploaded - bone matrices for skinned meshes
++    // live here, so garbage in these collapses characters and leaves static
++    // geometry untouched.
++    uint64_t vs_const_uploads = 0;
++    uint64_t vs_const_values = 0;
++    uint64_t vs_const_nan = 0;
++    uint64_t vs_const_inf = 0;
++    uint64_t vs_const_zero = 0;
++    uint64_t vs_const_huge = 0;
++    uint32_t vs_const_max_count = 0;
 +  } draw_census_;
 +  void ReportDrawCensus();
    // Values of submission_fence_.
@@ -51,13 +61,14 @@ index 4d845c7..7a9612e 100644
    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kLoadShaderCount> load_pipelines_;
    // Load pipelines for resolution-scaled resolve targets.
 diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
-index 2cf24c4..a7c4965 100644
+index 2cf24c4..1b57bd7 100644
 --- a/include/rex/graphics/flags.h
 +++ b/include/rex/graphics/flags.h
-@@ -40,6 +40,11 @@ REXCVAR_DECLARE(bool, native_stencil_value_output);
+@@ -40,6 +40,12 @@ REXCVAR_DECLARE(bool, native_stencil_value_output);
  REXCVAR_DECLARE(bool, native_stencil_value_output_d3d12_intel);
  REXCVAR_DECLARE(bool, gamma_render_target_as_unorm16);
  REXCVAR_DECLARE(bool, native_2x_msaa);
++REXCVAR_DECLARE(bool, diag_alpha_test_off);
 +REXCVAR_DECLARE(bool, diag_cull_none);
 +REXCVAR_DECLARE(bool, diag_depth_always);
 +REXCVAR_DECLARE(int32_t, draw_census);
@@ -196,18 +207,19 @@ index f7fd14e..d3cb447 100644
  constexpr uint32_t kTexture2DCubeMaxWidthHeight = 1 << kTexture2DCubeMaxWidthHeightLog2;
  constexpr uint32_t kTexture2DMaxStackDepthLog2 = 6;
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..927dad0 100644
+index 19874a5..941d710 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,8 @@
   * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
   */
  
++#include <cmath>
 +#include <chrono>
  #include <algorithm>
  #include <cstdarg>
  #include <cstring>
-@@ -2290,6 +2291,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2290,6 +2292,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    auto vertex_shader = static_cast<D3D12Shader*>(active_vertex_shader());
    if (!vertex_shader) {
      // Always need a vertex shader.
@@ -216,7 +228,7 @@ index 19874a5..927dad0 100644
      return false;
    }
    pipeline_cache_->AnalyzeShaderUcode(*vertex_shader);
-@@ -2299,6 +2302,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2299,6 +2303,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    bool primitive_polygonal = draw_util::IsPrimitivePolygonal(regs);
    bool is_rasterization_done = draw_util::IsRasterizationPotentiallyDone(regs, primitive_polygonal);
    if (surface_pitch_is_zero && is_rasterization_done) {
@@ -224,7 +236,7 @@ index 19874a5..927dad0 100644
      // Doesn't actually draw.
      // Unlikely that zero would even really be legal though.
      return true;
-@@ -2337,6 +2341,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2337,6 +2342,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      return false;
    }
    if (!primitive_processing_result.host_draw_vertex_count) {
@@ -232,7 +244,7 @@ index 19874a5..927dad0 100644
      // Nothing to draw.
      return true;
    }
-@@ -2400,6 +2405,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2400,6 +2406,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (REXCVAR_GET(async_shader_compilation) &&
        pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
@@ -241,7 +253,7 @@ index 19874a5..927dad0 100644
      return true;
    }
  
-@@ -2727,9 +2734,43 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2727,9 +2735,55 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      }
    }
  
@@ -280,11 +292,71 @@ index 19874a5..927dad0 100644
 +      draw_census_.surface_pitch_zero, draw_census_.not_rasterizing_no_memexport,
 +      draw_census_.no_host_vertices, draw_census_.pipeline_not_ready,
 +      draw_census_.other_failure);
++  if (draw_census_.vs_const_uploads) {
++    double values = double(draw_census_.vs_const_values);
++    REXLOG_INFO(
++        "VS CONSTANTS: {} uploads, {} values (max {} vec4/shader) | NaN {} ({:.2f}%), "
++        "Inf {} ({:.2f}%), zero {} ({:.2f}%), |v|>1e9 {} ({:.2f}%)",
++        draw_census_.vs_const_uploads, draw_census_.vs_const_values,
++        draw_census_.vs_const_max_count, draw_census_.vs_const_nan,
++        100.0 * double(draw_census_.vs_const_nan) / values, draw_census_.vs_const_inf,
++        100.0 * double(draw_census_.vs_const_inf) / values, draw_census_.vs_const_zero,
++        100.0 * double(draw_census_.vs_const_zero) / values, draw_census_.vs_const_huge,
++        100.0 * double(draw_census_.vs_const_huge) / values);
++  }
 +}
 +
  bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_size) {
    if (!total_size || memexport_ranges_.empty()) {
      return true;
+@@ -3691,6 +3745,11 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+   xenos::CompareFunction alpha_test_function = rb_colorcontrol.alpha_test_enable
+                                                    ? rb_colorcontrol.alpha_func
+                                                    : xenos::CompareFunction::kAlways;
++  if (REXCVAR_GET(diag_alpha_test_off)) {
++    // DIAGNOSTIC: never reject a pixel on alpha, to find out whether the
++    // alpha test is what removes geometry that is otherwise submitted.
++    alpha_test_function = xenos::CompareFunction::kAlways;
++  }
+   flags |= uint32_t(alpha_test_function) << DxbcShaderTranslator::kSysFlag_AlphaPassIfLess_Shift;
+   // Gamma writing.
+   if (!render_target_cache_->gamma_render_target_as_unorm16()) {
+@@ -4113,6 +4172,7 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+     if (float_constants == nullptr) {
+       return false;
+     }
++    const uint8_t* float_constants_begin = float_constants;
+     for (uint32_t i = 0; i < 4; ++i) {
+       uint64_t float_constant_map_entry = float_constant_map_vertex.float_bitmap[i];
+       uint32_t float_constant_index;
+@@ -4125,6 +4185,27 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+         float_constants += 4 * sizeof(float);
+       }
+     }
++    if (REXCVAR_GET(draw_census) > 0) {
++      // Read back what was just written, so this reports what the GPU will see.
++      size_t value_count = size_t(float_constants - float_constants_begin) / sizeof(float);
++      const float* values = reinterpret_cast<const float*>(float_constants_begin);
++      ++draw_census_.vs_const_uploads;
++      draw_census_.vs_const_values += value_count;
++      draw_census_.vs_const_max_count =
++          std::max(draw_census_.vs_const_max_count, float_constant_count_vertex);
++      for (size_t vi = 0; vi < value_count; ++vi) {
++        float v = values[vi];
++        if (std::isnan(v)) {
++          ++draw_census_.vs_const_nan;
++        } else if (std::isinf(v)) {
++          ++draw_census_.vs_const_inf;
++        } else if (v == 0.0f) {
++          ++draw_census_.vs_const_zero;
++        } else if (std::fabs(v) > 1.0e9f) {
++          ++draw_census_.vs_const_huge;
++        }
++      }
++    }
+     cbuffer_binding_float_vertex_.up_to_date = true;
+     current_graphics_root_up_to_date_ &= ~(1u << root_parameter_float_constants_vertex);
+   }
 diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
 index 8e6b854..3d67e94 100644
 --- a/src/graphics/d3d12/pipeline_cache.cpp
@@ -472,13 +544,17 @@ index 2be0e8e..fd5aba5 100644
      for (uint32_t slice = 0; slice < array_size; ++slice) {
        command_list.D3DCopyTextureRegion(&location_dest, 0, 0, 0, &location_source, source_box_ptr);
 diff --git a/src/graphics/flags.cpp b/src/graphics/flags.cpp
-index e2983a4..1b29398 100644
+index e2983a4..b1d9eb9 100644
 --- a/src/graphics/flags.cpp
 +++ b/src/graphics/flags.cpp
-@@ -16,6 +16,27 @@
+@@ -16,6 +16,31 @@
  REXCVAR_DEFINE_BOOL(gpu_allow_invalid_fetch_constants, false, "GPU",
                      "Allow invalid fetch constants");
  REXCVAR_DEFINE_BOOL(native_2x_msaa, true, "GPU", "Enable native 2x MSAA");
++REXCVAR_DEFINE_BOOL(diag_alpha_test_off, false, "GPU",
++                    "DIAGNOSTIC: never reject a pixel on the alpha test. Makes alpha-tested "
++                    "geometry render solid - the point is to find out whether the alpha test "
++                    "is what removes geometry that is otherwise submitted.");
 +REXCVAR_DEFINE_BOOL(diag_cull_none, false, "GPU",
 +                    "DIAGNOSTIC: force the rasterizer cull mode to NONE, ignoring the "
 +                    "guest's face culling. Renders back faces that should be hidden - the "
