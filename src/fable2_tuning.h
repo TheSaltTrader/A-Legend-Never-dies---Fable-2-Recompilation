@@ -44,18 +44,24 @@ struct Fable2Tuning {
 
   // Title-specific correctness settings.
   //
-  // DELIBERATELY EMPTY. ng2recomp ships several here, taken from Xenia's
-  // game-compatibility entry for Ninja Gaiden II (clear_memory_page_state,
-  // protect_zero, render_target_path_d3d12=rov, ...). None of that applies to
-  // Fable II, and copying another title's compatibility flags because they are
-  // sitting in a neighbouring project is how a working build gets broken.
-  //
-  // This game currently reaches gameplay on the runtime's own defaults, which
-  // the cvar dump confirms are clear_memory_page_state=true, protect_zero=true
-  // and an empty render_target_path_d3d12. Anything added here needs a
-  // measurement or a citation in the comment, exactly as ng2recomp's entries
-  // have.
-  static std::vector<Entry> Fixed() { return {}; }
+  // The bar for this list is a citation or a measurement, in the comment. It
+  // is NOT a place to copy ng2recomp's entries: those come from Xenia's
+  // game-compatibility record for Ninja Gaiden II (clear_memory_page_state,
+  // protect_zero, render_target_path_d3d12=rov) and none of them is about this
+  // game. Copying a neighbouring project's compatibility flags is how a
+  // working build gets broken.
+  static std::vector<Entry> Fixed() {
+    return {
+        // [community] The Fable II guides are consistent that this must be on
+        // for this title: left at the runtime's default of false the texture
+        // fetch validation is too strict for what the game emits, and textures
+        // get dropped - the visible symptom is missing ground detail, "no
+        // grass". Xenia exposes the same flag for the same reason.
+        {"gpu_allow_invalid_fetch_constants", "true",
+         "[community] Fable II emits fetch constants the strict path rejects; "
+         "without this, textures drop out (missing grass)"},
+    };
+  }
 
   // Settings the player controls. Every one of these is a cvar owned by the
   // GPU plugin or the presenter, so it has to travel the same deferred route.
@@ -94,6 +100,26 @@ struct Fable2Tuning {
       out.push_back({"anisotropic_override", std::to_string(s.anisotropic),
                      "forced anisotropic filtering level"});
     }
+
+    // The black-texture fix. "some" is the femtofork's selective readback;
+    // "full" is the blunt instrument that costs a lot of performance.
+    out.push_back({"readback_resolve", s.readback,
+                   "readback for the hero/dog black-texture bug"});
+
+    // The community patches, read by the midasm hooks in patch_hooks.cpp.
+    out.push_back({"fable2_60fps", s.patch_60fps ? "true" : "false",
+                   "[Xenia/Margen67] 60 fps"});
+    out.push_back({"fable2_720p", s.patch_720p ? "true" : "false",
+                   "[Xenia/Margen67] render 1280 wide instead of 1120"});
+    out.push_back({"fable2_disable_msaa",
+                   s.patch_disable_msaa ? "true" : "false",
+                   "[Xenia/Margen67] disable MSAA"});
+    out.push_back({"fable2_disable_texture_morph",
+                   s.patch_disable_texture_morph ? "true" : "false",
+                   "[Xenia/Guy] disable texture morphing"});
+    out.push_back({"fable2_high_tick_rate",
+                   s.patch_high_tick_rate ? "true" : "false",
+                   "[Xenia/Guy] 15 Hz -> 30 Hz tick rate"});
 
     out.push_back({"audio_mute", s.mute ? "true" : "false", "mute all audio"});
     out.push_back({"audio_maxqframes", std::to_string(s.audio_queue_frames),

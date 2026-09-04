@@ -3,6 +3,72 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.5 — 2026-09-04
+
+### Added
+
+- **Community game patches** from Xenia Canary's patch file for 4D5307F1
+  (Margen67, Guy), as midasm hooks rather than memory patches — the immediates
+  are already C++ constants by the time anything could patch memory. All off by
+  default, all in the settings menu: **60 fps**, **1280 wide** (the game
+  renders 1120 and upscales), **disable MSAA**, **30 Hz tick rate** (from 15,
+  for in-game UI smoothness and input delay) and **disable texture morphing**.
+- **`readback_resolve`** as a Graphics setting (`none`/`fast`/`some`/`full`).
+  This is the real fix for Fable II's black-texture bug — the hero's and the
+  dog's textures turning black once the hero grows up — and `some` is the
+  selective readback the unofficial Xenia fork for this game hand-builds.
+- **`gpu_allow_invalid_fetch_constants = true`** in `Fable2Tuning::Fixed()`,
+  which is now non-empty for the first time. The community reports this title
+  emits fetch constants the strict path rejects, and that leaving it off drops
+  textures (missing grass). It has a citation, which is the bar for that list.
+- `tools/freeze_stacks.cmd` — breaks in *during* the hang and dumps every
+  thread's stack. The freeze is not a fault, so there is no exception for a
+  debugger to catch and the crash-time approach does not apply.
+- `tools/ab_run.py`, and `--freeze-report` / `--extra` on `play_probe.py`.
+
+### Verified
+
+- Every patch address was checked against our own image before use, and all
+  four active hooks then confirmed themselves against the live values at
+  runtime: `frame divider 2 -> 1`, `MSAA samples 2 -> 1`,
+  `render width 1120 -> 1280`, `tick rate 15 Hz -> 30 Hz (guest 0x83319510)`.
+- The patch file demonstrably matches this disc: the tick-rate patch presets a
+  `.data` double, and our image holds exactly **15.0** there, which the patch
+  makes exactly **30.0** — matching its description to the bit. The store it
+  NOPs targets precisely that address.
+
+### Not shipped
+
+- **Unlock Collectors Edition Content** does not apply to this build: its value
+  `li r9, 1` lands immediately before `mtctr r9; bctrl`, so it would make the
+  game call address 1. The real CE package installs properly instead.
+- **Unlock Website Items** is coherent here but is a content unlock, not a fix.
+
+### Diagnosis of the freeze (not yet fixed)
+
+Much sharper than "rendering stops":
+
+- The guest is **not** deadlocked. `XGIUserSetContextEx` still ticks once a
+  second — the presence heartbeat — and ~510 APCs/second keep completing,
+  perfectly steady, indefinitely.
+- What stops is **GPU submission**: after about 3m25s there is zero `[gpu]`
+  activity, permanently. No fatals, no ring-buffer failure, and the only failed
+  file opens are language packs we do not ship and a title update that does not
+  exist.
+- So nothing is crashing or unregistered — the game is alive and running its
+  loop, and something makes it stop submitting work.
+
+### Notes
+
+- A first A/B on the render-target path was **invalid and is recorded as such**:
+  neither run was driven with input, so neither ever left the title screen and
+  reached the state that freezes. Both "passed" 240 s, which proved nothing.
+  `play_probe.py` now drives input *and* measures the freeze directly, by
+  comparing raw frame buffers — a frozen picture repeats byte for byte.
+- An earlier version of that measurement counted `[gpu]` log lines, which was
+  also worthless: those log at `debug`, and at debug the ~510 APC lines a
+  second rotate the transition out of the log entirely.
+
 ## 0.0.4 — 2026-09-04
 
 ### Added

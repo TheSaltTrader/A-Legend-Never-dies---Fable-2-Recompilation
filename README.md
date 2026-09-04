@@ -259,6 +259,78 @@ so there is nothing to install - see above. For a package that genuinely is not
 on the disc, `--dlc_root <folder>` or `tools/install_dlc.cmd` still work, and
 the About section says so.
 
+## Community patches
+
+From [Xenia Canary's patch file for 4D5307F1](https://github.com/xenia-canary/game-patches)
+(Margen67, Guy). Off by default; the settings menu turns them on.
+
+Xenia applies them as guest **memory** patches, which cannot work here: the
+values are immediates inside instructions, and those are already C++ constants
+by the time anything could patch memory. So each is a **midasm hook** that
+rewrites the register the immediate lands in - same effect, one comparison when
+off. `config/hooks/patches.toml` carries the disassembly for every address.
+
+| patch | what it does | verified as |
+|---|---|---|
+| 60 fps | frame divider 2 → 1 | `li r11, 2` in a 3/2/1 selector |
+| 1280 wide | render width 1120 → 1280 | `li r11, 0x460` = 1120, as the patch's own note says |
+| Disable MSAA | sample count 2 → 1 | `li r9, 2` in the same render setup |
+| 30 Hz tick | 15 Hz → 30 Hz simulation | see below |
+| Disable texture morphing | skips the morph path | `beq cr6` forced by zeroing the value the compare tests |
+
+**Every address was checked against our own image before being used.** That is
+not ceremony - the upstream Fable2Recomp config targets GOTY TU1 and 164 of its
+923 entries land past the end of our `.text`, so "a Fable II patch file" is not
+the same thing as "a patch file for this disc".
+
+The proof this one *does* match is the tick-rate patch. It presets a `.data`
+double, and at that address our image holds exactly **15.0**, which the patch
+turns into exactly **30.0** - matching its description ("doubles tickrate to
+30hz") to the bit. The store it NOPs, `stfd f0, -0x6af0(r8)`, targets precisely
+that address. All four hooks then confirmed themselves at runtime against the
+live values:
+
+```
+Patch: frame divider 2 -> 1
+Patch: MSAA samples 2 -> 1
+Patch: render width 1120 -> 1280
+Patch: tick rate 15 Hz -> 30 Hz (guest 0x83319510)
+```
+
+### Two patches deliberately not shipped
+
+**Unlock Collectors Edition Content** does not apply to this build. Its value
+`0x39200001` (`li r9, 1`) lands at `0x824B366C`, which here is
+`lwz r9, 0x10(r3)` immediately before `mtctr r9; bctrl` - so the patch would
+make the game call address 1. The real CE package installs properly instead
+(`--dlc_root`).
+
+**Unlock Website Items** is coherent here (force the branch, and turn the
+`li r3, 0` it lands on into `li r3, 1`) but is a content unlock rather than a
+fix, so it is left out for now.
+
+### The black-texture bug
+
+Fable II's best-known emulation bug: the hero's and the dog's textures turn
+black once the hero grows up. The proper fix is GPU readback, and this runtime
+exposes it as a graduated `readback_resolve` (`none` / `fast` / `some` /
+`full`) - `some` is what the [unofficial Xenia fork for this
+game](https://github.com/just-harry/unofficial-xenia-femtofork-for-fable-ii)
+hand-builds. It is a Graphics row in the settings menu. That fork also notes
+that **stale cached shaders make the bug linger**, and this runtime does cache
+them (in `Documents/fable2/cache/shaders`), so clear that when testing.
+
+Guy's older "Disable Texture Morphing" patch is the cheap fallback; the fork
+dropped it once it had real readback.
+
+### Compatibility flag
+
+`gpu_allow_invalid_fetch_constants = true` is in `Fable2Tuning::Fixed()`. The
+Fable II guides are consistent that this title emits fetch constants the strict
+path rejects, and that leaving it off drops textures - the visible symptom is
+missing ground detail, "no grass". It is the only entry in that list, and it
+has a citation, which is the bar for being there at all.
+
 ## Prerequisites
 
 - The ReXGlue SDK. `tools/build.cmd` looks for `%REXSDK%`, falling back to

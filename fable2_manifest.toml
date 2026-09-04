@@ -10,6 +10,7 @@ file_path = "assets/default.xex"
 out_directory_path = "generated/default"
 includes = [
   "config/functions.toml",
+  "config/hooks/patches.toml",
 ]
 
 # setjmp/longjmp. The recompiler has to model these specially: a longjmp must

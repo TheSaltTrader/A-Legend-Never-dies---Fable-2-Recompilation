@@ -470,9 +470,91 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     if (!live) RestartTag();
     ImGui::EndDisabled();
 
+    ImGui::BeginDisabled(!live);
+    RowStart("Black texture fix",
+             "Fable II's best-known emulation bug: the hero's and the dog's "
+             "textures turn black once the hero grows up. The fix is to read "
+             "those textures back from the GPU. 'Some' reads back only what "
+             "needs it, which is what the unofficial Xenia fork for this game "
+             "does by hand; 'Full' reads everything back and is very "
+             "expensive. Start at Some.");
+    {
+      bool declared = false;
+      const auto values = AllowedValues("readback_resolve", s.readback, &declared);
+      int index = 0;
+      for (size_t i = 0; i < values.size(); ++i)
+        if (values[i] == s.readback) index = static_cast<int>(i);
+      std::vector<const char*> names;
+      names.reserve(values.size());
+      for (const auto& v : values) names.push_back(v.c_str());
+      if (ImGui::Combo("##readback", &index, names.data(),
+                       static_cast<int>(names.size()))) {
+        s.readback = values[index];
+        changed = true;
+      }
+    }
+    if (!live) RestartTag();
+    ImGui::EndDisabled();
+
     RowStart("Dither the output", "Hides colour banding on 8-bit displays.");
     changed |= ImGui::Checkbox("##dither", &s.present_dither);
 
+    ImGui::EndTable();
+  }
+
+  // --- Community patches --------------------------------------------------
+  //
+  // Kept apart from the settings above, and off by default, because they are
+  // not preferences: each one edits how the game itself behaves. They come
+  // from Xenia Canary's patch file for this title, and every address was
+  // checked against our own image - the disassembly is in
+  // config/hooks/patches.toml.
+  SectionHeader("Community patches",
+                "From Xenia Canary's patch file for Fable II (Margen67, Guy). "
+                "These change the game's own behaviour, so they are off by "
+                "default. All of them are applied at startup.");
+  TightRows tight_patches;
+  if (ImGui::BeginTable("patches", 2, kRowTableFlags)) {
+    ImGui::TableSetupColumn("l", ImGuiTableColumnFlags_WidthFixed, kLabelWidth);
+    ImGui::TableSetupColumn("c", ImGuiTableColumnFlags_WidthFixed, kControlWidth);
+
+    ImGui::BeginDisabled(!live);
+
+    RowStart("60 fps",
+             "The game picks a frame divider at startup; this picks the one "
+             "that runs at 60 instead of the 30 it shipped with.");
+    changed |= ImGui::Checkbox("##p60", &s.patch_60fps);
+    if (!live) RestartTag();
+
+    RowStart("Render at 1280 wide",
+             "Fable II renders 1120 pixels wide and scales up to the display. "
+             "This makes it render 1280, so there is no upscale. Separate from "
+             "supersampling above, and they stack.");
+    changed |= ImGui::Checkbox("##p720", &s.patch_720p);
+    if (!live) RestartTag();
+
+    RowStart("Disable MSAA",
+             "Turns off the game's own multisampling. Cheaper, and it frees "
+             "EDRAM. Use the antialiasing setting above instead.");
+    changed |= ImGui::Checkbox("##pmsaa", &s.patch_disable_msaa);
+    if (!live) RestartTag();
+
+    RowStart("30 Hz tick rate",
+             "The simulation ticks at 15 Hz. This doubles it to 30, which its "
+             "author says markedly improves the in-game UI's frame rate and "
+             "input delay. Their own note warns of minor side effects.");
+    changed |= ImGui::Checkbox("##ptick", &s.patch_high_tick_rate);
+    if (!live) RestartTag();
+
+    RowStart("Disable texture morphing",
+             "The older workaround for the black hero and dog textures. Prefer "
+             "the black texture fix above - the unofficial Xenia fork for this "
+             "game dropped this patch once it had proper readback. Its author "
+             "warns makeup stays broken and morphs can look strange.");
+    changed |= ImGui::Checkbox("##pmorph", &s.patch_disable_texture_morph);
+    if (!live) RestartTag();
+
+    ImGui::EndDisabled();
     ImGui::EndTable();
   }
 

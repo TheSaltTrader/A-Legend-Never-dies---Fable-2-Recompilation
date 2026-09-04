@@ -144,6 +144,10 @@ def main():
     ap.add_argument("--no-mnk", action="store_true")
     ap.add_argument("--hold", type=float, default=0.20,
                     help="seconds to hold each key down")
+    ap.add_argument("--extra", action="append", default=[], metavar="ARG",
+                    help="extra argument passed to the game, repeatable")
+    ap.add_argument("--freeze-report", action="store_true",
+                    help="report the last second at which the picture changed")
     args = ap.parse_args()
 
     schedule = []
@@ -168,6 +172,7 @@ def main():
     if not args.no_mnk:
         cmd += ["--mnk_mode=true"]           # a bare --mnk_mode is ignored
         cmd += EXPLICIT_BINDS
+    cmd += args.extra
 
     proc = subprocess.Popen(cmd, cwd=os.path.dirname(exe))
     print(f"launched pid {proc.pid}")
@@ -190,7 +195,8 @@ def main():
     # binding too early throws "Failed to convert item to GraphicsCaptureItem"
     # and the whole run is lost. Give it a moment, and retry.
     started = time.time()
-    state = {"n": 0, "next": started}
+    state = {"n": 0, "next": started, "prev": None, "last_change": 0.0,
+             "changes": 0, "same": 0}
 
     def build_capture():
         capture = WindowsCapture(window_hwnd=hwnd, cursor_capture=False,
@@ -219,6 +225,24 @@ def main():
             return
         state["next"] = now + args.interval
         state["n"] += 1
+
+        # A frozen picture repeats byte for byte. Comparing the raw buffer is
+        # the direct measure of the symptom - far better than counting [gpu]
+        # log lines, which only exist at debug level, where ~510 APC lines a
+        # second rotate the transition out of the log entirely.
+        if args.freeze_report:
+            try:
+                buf = bytes(frame.frame_buffer)
+                if state["prev"] is not None:
+                    if buf == state["prev"]:
+                        state["same"] += 1
+                    else:
+                        state["changes"] += 1
+                        state["last_change"] = elapsed
+                state["prev"] = buf
+            except Exception:
+                pass
+
         path = os.path.join(outdir, f"{args.tag}_{state['n']:02d}.png")
         try:
             frame.save_as_image(path)
@@ -250,6 +274,10 @@ def main():
             proc.kill()                     # by PID, never by window title
             proc.wait(timeout=10)
         print(f"stopped pid {proc.pid}; {state['n']} frames in {outdir}")
+        if args.freeze_report:
+            print(f"FREEZE: last picture change at {state['last_change']:.0f}s "
+                  f"of {args.seconds:.0f}s "
+                  f"(changed {state['changes']}, identical {state['same']})")
     return 0
 
 

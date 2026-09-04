@@ -67,6 +67,24 @@ struct Fable2Settings {
   bool present_dither = false;
   bool letterbox = true;
 
+  // The fix for Fable II's black-texture bug - the hero's and the dog's
+  // textures turning black once the hero reaches adulthood. The unofficial
+  // Xenia femtofork for this game solves it by reading back only the textures
+  // that need it; this runtime already exposes that as a graduated setting
+  // (readback_resolve: none / fast / some / full), so "some" is that fix
+  // rather than the all-or-nothing readback that cripples performance.
+  std::string readback = "none";   // none | fast | some | full
+
+  // --- Community patches ---------------------------------------------------
+  // Xenia Canary's patch file for 4D5307F1 (Margen67, Guy). Each is verified
+  // against our own image in config/hooks/patches.toml. All off by default -
+  // they change how the game shipped.
+  bool patch_60fps = false;
+  bool patch_720p = false;
+  bool patch_disable_msaa = false;
+  bool patch_disable_texture_morph = false;
+  bool patch_high_tick_rate = false;
+
   // --- Audio --------------------------------------------------------------
   bool mute = false;
   int audio_queue_frames = 8;      // audio_maxqframes; lower = less latency
@@ -159,6 +177,9 @@ struct Fable2Settings {
     audio_queue_frames = std::clamp(audio_queue_frames, 4, 64);
     mouse_sensitivity = std::clamp(mouse_sensitivity, 0.01, 10.0);
     cursor_hide_seconds = std::clamp(cursor_hide_seconds, 0, 60);
+    if (readback != "none" && readback != "fast" && readback != "some" &&
+        readback != "full")
+      readback = "none";
   }
 
  private:
@@ -180,6 +201,12 @@ struct Fable2Settings {
     else if (k == "antialias") antialias = v;
     else if (k == "present_dither") present_dither = Truthy(v);
     else if (k == "letterbox") letterbox = Truthy(v);
+    else if (k == "readback") readback = v;
+    else if (k == "patch_60fps") patch_60fps = Truthy(v);
+    else if (k == "patch_720p") patch_720p = Truthy(v);
+    else if (k == "patch_disable_msaa") patch_disable_msaa = Truthy(v);
+    else if (k == "patch_disable_texture_morph") patch_disable_texture_morph = Truthy(v);
+    else if (k == "patch_high_tick_rate") patch_high_tick_rate = Truthy(v);
     else if (k == "mute") mute = Truthy(v);
     else if (k == "audio_queue_frames") audio_queue_frames = std::atoi(v.c_str());
     else if (k == "cursor_hide_seconds") cursor_hide_seconds = std::atoi(v.c_str());
