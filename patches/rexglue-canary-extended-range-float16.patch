@@ -1,0 +1,475 @@
+diff --git a/include/rex/graphics/pipeline/shader/dxbc_translator.h b/include/rex/graphics/pipeline/shader/dxbc_translator.h
+index 3b0fd61..fa2fc97 100644
+--- a/include/rex/graphics/pipeline/shader/dxbc_translator.h
++++ b/include/rex/graphics/pipeline/shader/dxbc_translator.h
+@@ -778,6 +778,13 @@ class DxbcShaderTranslator : public ShaderTranslator {
+   // manually even for RTV to maintain the guest dithering pattern and because
+   // alpha can be exponent-biased.
+   void CompletePixelShader_AlphaToMask();
++
++  // Xbox 360 float16 <-> float32. NOT the IEEE binary16 the hardware
++  // instructions implement: the guest's format has no Inf and no NaN, and
++  // exponent 31 holds finite values up to 131008. Ported from Xenia Canary,
++  // whose fix the SDK's fork predates.
++  void Float32ToF16ExtendedRange(uint32_t reg, uint32_t components);
++  void Float16ExtendedRangeTo32(uint32_t reg, uint32_t components);
+   void CompletePixelShader_WriteToRTVs();
+   void CompletePixelShader_DSV_DepthTo24Bit();
+   void CompletePixelShader_WriteToROV();
+diff --git a/include/rex/graphics/pipeline/shader/spirv_translator.h b/include/rex/graphics/pipeline/shader/spirv_translator.h
+index dce3dbf..fe23929 100644
+--- a/include/rex/graphics/pipeline/shader/spirv_translator.h
++++ b/include/rex/graphics/pipeline/shader/spirv_translator.h
+@@ -722,6 +722,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
+   // flow because of taking derivatives of the fragment depth.
+   void FSI_DepthStencilTest(spv::Id msaa_samples, bool sample_mask_potentially_narrowed_previouly);
+   // Returns the first and the second 32 bits as two uints.
++  // Xbox 360 float16 <-> float32, two components at a time. NOT the IEEE
++  // binary16 that GLSLstd450PackHalf2x16 implements: the guest's format has no
++  // Inf and no NaN, and exponent 31 holds finite values up to 131008. Ported
++  // from Xenia Canary, whose fix the SDK's fork predates.
++  spv::Id PackFloat16x2ExtendedRange(spv::Id float2_value);
++  spv::Id UnpackFloat16x2ExtendedRange(spv::Id packed_uint);
++
+   std::array<spv::Id, 2> FSI_ClampAndPackColor(spv::Id color_float4, spv::Id format_with_flags);
+   std::array<spv::Id, 4> FSI_UnpackColor(std::array<spv::Id, 2> color_packed,
+                                          spv::Id format_with_flags);
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 953c5fd..a8555f6 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -115,11 +115,14 @@ void RenderTargetCache::GetPSIColorFormatInfo(xenos::ColorRenderTargetFormat for
+       break;
+     case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
+     case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
+-      // No NaNs on the Xbox 360 GPU, though can't use the extended range with
+-      // Direct3D and Vulkan conversions.
+-      // TODO(Triang3l): Use the extended-range encoding in all implementations.
+-      clamp_rgb_low = clamp_alpha_low = -65504.0f;
+-      clamp_rgb_high = clamp_alpha_high = 65504.0f;
++      // No NaNs on the Xbox 360 GPU. The interlock paths of both backends
++      // emulate the extended-range encoding in their pack and unpack, so the
++      // whole guest range survives the clamp - exponent 31 is a finite value
++      // there, not Inf, and reaches 131008. Clamping to the IEEE binary16
++      // maximum of 65504 instead, as this did before, silently crushed the top
++      // of every HDR render target.
++      clamp_rgb_low = clamp_alpha_low = -131008.0f;
++      clamp_rgb_high = clamp_alpha_high = 131008.0f;
+       if (!(write_mask & 0b0001)) {
+         keep_mask_low |= 0xFFFFu;
+       }
+diff --git a/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp b/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
+index e90a622..b1e5fea 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
+@@ -459,27 +459,33 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
+     }
+     a_.OpBreak();
+ 
++    // Convert to extended-range float16 with the helper shared with the ROV
++    // render target packing: the guest's float16 has no Inf and no NaN, and
++    // exponent 31 holds finite values up to 131008.
++    auto f32_to_f16_extended_range = [&](uint32_t components) {
++      uint8_t eM_remaining_ext = export_eM;
++      uint32_t eM_index_ext;
++      while (rex::bit_scan_forward(eM_remaining_ext, &eM_index_ext)) {
++        eM_remaining_ext &= ~(uint8_t(1) << eM_index_ext);
++        Float32ToF16ExtendedRange(system_temps_memexport_data_[eM_index_ext],
++                                  components);
++      }
++    };
++
+     a_.OpCase(dxbc::Src::LU(uint32_t(xenos::ColorFormat::k_16_FLOAT)));
+     {
+-      // TODO(Triang3l): Use extended range conversion.
+-      eM_remaining = export_eM;
+-      while (rex::bit_scan_forward(eM_remaining, &eM_index)) {
+-        eM_remaining &= ~(uint8_t(1) << eM_index);
+-        uint32_t eM = system_temps_memexport_data_[eM_index];
+-        a_.OpF32ToF16(dxbc::Dest::R(eM, 0b0001), dxbc::Src::R(eM, dxbc::Src::kXXXX));
+-      }
++      f32_to_f16_extended_range(0b0001);
+       a_.OpMov(element_size_dest, dxbc::Src::LU(1));
+     }
+     a_.OpBreak();
+ 
+     a_.OpCase(dxbc::Src::LU(uint32_t(xenos::ColorFormat::k_16_16_FLOAT)));
+     {
+-      // TODO(Triang3l): Use extended range conversion.
++      f32_to_f16_extended_range(0b0011);
+       eM_remaining = export_eM;
+       while (rex::bit_scan_forward(eM_remaining, &eM_index)) {
+         eM_remaining &= ~(uint8_t(1) << eM_index);
+         uint32_t eM = system_temps_memexport_data_[eM_index];
+-        a_.OpF32ToF16(dxbc::Dest::R(eM, 0b0011), dxbc::Src::R(eM));
+         a_.OpBFI(dxbc::Dest::R(eM, 0b0001), dxbc::Src::LU(16), dxbc::Src::LU(16),
+                  dxbc::Src::R(eM, dxbc::Src::kYYYY), dxbc::Src::R(eM, dxbc::Src::kXXXX));
+       }
+@@ -489,12 +495,11 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
+ 
+     a_.OpCase(dxbc::Src::LU(uint32_t(xenos::ColorFormat::k_16_16_16_16_FLOAT)));
+     {
+-      // TODO(Triang3l): Use extended range conversion.
++      f32_to_f16_extended_range(0b1111);
+       eM_remaining = export_eM;
+       while (rex::bit_scan_forward(eM_remaining, &eM_index)) {
+         eM_remaining &= ~(uint8_t(1) << eM_index);
+         uint32_t eM = system_temps_memexport_data_[eM_index];
+-        a_.OpF32ToF16(dxbc::Dest::R(eM), dxbc::Src::R(eM));
+         a_.OpBFI(dxbc::Dest::R(eM, 0b0011), dxbc::Src::LU(16), dxbc::Src::LU(16),
+                  dxbc::Src::R(eM, 0b1101), dxbc::Src::R(eM, 0b1000));
+       }
+diff --git a/src/graphics/pipeline/shader/dxbc_translator_om.cpp b/src/graphics/pipeline/shader/dxbc_translator_om.cpp
+index a7d508a..14dbe2b 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator_om.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_om.cpp
+@@ -1185,8 +1185,9 @@ void DxbcShaderTranslator::ROV_UnpackColor(uint32_t rt_index, uint32_t packed_te
+     // Unpack the components.
+     a_.OpUBFE(color_components_dest, dxbc::Src::LU(16), dxbc::Src::LU(0, 16, 0, 16),
+               dxbc::Src::R(packed_temp, 0b01010000 + packed_temp_components * 0b01010101));
+-    // Convert from 16-bit float.
+-    a_.OpF16ToF32(color_components_dest, dxbc::Src::R(color_temp));
++    // Convert from extended-range float16, exponent 31 holds finite values on
++    // the guest.
++    Float16ExtendedRangeTo32(color_temp, i ? 0b1111 : 0b0011);
+     a_.OpBreak();
+   }
+ 
+@@ -1344,15 +1345,21 @@ void DxbcShaderTranslator::ROV_PackPreClampedColor(uint32_t rt_index, uint32_t c
+     a_.OpCase(dxbc::Src::LU(RenderTargetCache::AddPSIColorFormatFlags(
+         i ? xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT
+           : xenos::ColorRenderTargetFormat::k_16_16_FLOAT)));
++    // Convert to extended-range float16 instead of the plain IEEE conversion,
++    // exponent 31 holds finite values on the guest. Done for the whole
++    // register up front rather than per component, because the helper needs
++    // its own scratch registers.
++    Float32ToF16ExtendedRange(color_temp, i ? 0b1111 : 0b0011);
+     for (uint32_t j = 0; j < (uint32_t(2) << i); ++j) {
+       dxbc::Dest packed_dest_half(
+           dxbc::Dest::R(packed_temp, 1 << (packed_temp_components + (j >> 1))));
+-      // Convert to 16-bit float.
+-      a_.OpF32ToF16((j & 1) ? temp1_dest : packed_dest_half, dxbc::Src::R(color_temp).Select(j));
+-      // Pack green or alpha.
++      // Pack green or alpha into the high half.
+       if (j & 1) {
+-        a_.OpBFI(packed_dest_half, dxbc::Src::LU(16), dxbc::Src::LU(16), temp1_src,
++        a_.OpBFI(packed_dest_half, dxbc::Src::LU(16), dxbc::Src::LU(16),
++                 dxbc::Src::R(color_temp).Select(j),
+                  dxbc::Src::R(packed_temp).Select(packed_temp_components + (j >> 1)));
++      } else {
++        a_.OpMov(packed_dest_half, dxbc::Src::R(color_temp).Select(j));
+       }
+     }
+     a_.OpBreak();
+@@ -1709,6 +1716,73 @@ void DxbcShaderTranslator::CompletePixelShader_AlphaToMaskSample(
+   }
+ }
+ 
++void DxbcShaderTranslator::Float32ToF16ExtendedRange(uint32_t reg,
++                                                     uint32_t components) {
++  uint32_t original_temp = PushSystemTemp();
++  uint32_t mask_temp = PushSystemTemp();
++  // The Xbox 360 float16 has no NaN, map it to 0 before converting. Otherwise
++  // the overflow check below reads its exponent as an overflow, and since min
++  // and max drop the NaN operand in DXBC, the clamp would turn it into
++  // +131008.
++  a_.OpNE(dxbc::Dest::R(mask_temp, components), dxbc::Src::R(reg),
++          dxbc::Src::R(reg));
++  a_.OpMovC(dxbc::Dest::R(reg, components), dxbc::Src::R(mask_temp),
++            dxbc::Src::LF(0.0f), dxbc::Src::R(reg));
++  // Keep the original float32 values for the overflow path.
++  a_.OpMov(dxbc::Dest::R(original_temp, components), dxbc::Src::R(reg));
++  // The standard conversion covers magnitudes up to 65504, anything larger
++  // becomes Inf with all five exponent bits set.
++  a_.OpF32ToF16(dxbc::Dest::R(reg, components), dxbc::Src::R(reg));
++  // Find the lanes that overflowed.
++  a_.OpAnd(dxbc::Dest::R(mask_temp, components), dxbc::Src::R(reg),
++           dxbc::Src::LU(0x7C00));
++  a_.OpIEq(dxbc::Dest::R(mask_temp, components), dxbc::Src::R(mask_temp),
++           dxbc::Src::LU(0x7C00));
++  // Encode the overflowed lanes into exponent 31, which the Xbox 360 treats
++  // as finite. Clamp to the 131008 limit, halve so the exponent lands at 30
++  // or below, convert, then add one to the exponent to undo the halving.
++  a_.OpMin(dxbc::Dest::R(original_temp, components),
++           dxbc::Src::R(original_temp), dxbc::Src::LF(131008.0f));
++  a_.OpMax(dxbc::Dest::R(original_temp, components),
++           dxbc::Src::R(original_temp), dxbc::Src::LF(-131008.0f));
++  a_.OpMul(dxbc::Dest::R(original_temp, components),
++           dxbc::Src::R(original_temp), dxbc::Src::LF(0.5f));
++  a_.OpF32ToF16(dxbc::Dest::R(original_temp, components),
++                dxbc::Src::R(original_temp));
++  a_.OpIAdd(dxbc::Dest::R(original_temp, components),
++            dxbc::Src::R(original_temp), dxbc::Src::LU(0x0400));
++  // Choose the encoded value for the overflowed lanes.
++  a_.OpMovC(dxbc::Dest::R(reg, components), dxbc::Src::R(mask_temp),
++            dxbc::Src::R(original_temp), dxbc::Src::R(reg));
++  // Release original_temp and mask_temp.
++  PopSystemTemp(2);
++}
++
++void DxbcShaderTranslator::Float16ExtendedRangeTo32(uint32_t reg,
++                                                    uint32_t components) {
++  uint32_t reduced_temp = PushSystemTemp();
++  uint32_t mask_temp = PushSystemTemp();
++  // Find the exponent 31 lanes, which hold finite values on the Xbox 360
++  // rather than Inf or NaN.
++  a_.OpAnd(dxbc::Dest::R(mask_temp, components), dxbc::Src::R(reg),
++           dxbc::Src::LU(0x7C00));
++  a_.OpIEq(dxbc::Dest::R(mask_temp, components), dxbc::Src::R(mask_temp),
++           dxbc::Src::LU(0x7C00));
++  // Lower their exponent by one so the conversion sees a normal float16, then
++  // double the result to undo it.
++  a_.OpIAdd(dxbc::Dest::R(reduced_temp, components), dxbc::Src::R(reg),
++            dxbc::Src::LI(-0x0400));
++  a_.OpMovC(dxbc::Dest::R(reg, components), dxbc::Src::R(mask_temp),
++            dxbc::Src::R(reduced_temp), dxbc::Src::R(reg));
++  a_.OpF16ToF32(dxbc::Dest::R(reg, components), dxbc::Src::R(reg));
++  a_.OpMul(dxbc::Dest::R(reduced_temp, components), dxbc::Src::R(reg),
++           dxbc::Src::LF(2.0f));
++  a_.OpMovC(dxbc::Dest::R(reg, components), dxbc::Src::R(mask_temp),
++            dxbc::Src::R(reduced_temp), dxbc::Src::R(reg));
++  // Release reduced_temp and mask_temp.
++  PopSystemTemp(2);
++}
++
+ void DxbcShaderTranslator::CompletePixelShader_AlphaToMask() {
+   // Check if alpha to coverage can be done at all in this shader.
+   if (!current_shader().writes_color_target(0) || IsForceEarlyDepthStencilGlobalFlagEnabled()) {
+diff --git a/src/graphics/pipeline/shader/spirv_translator_memexport.cpp b/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
+index 14c0ea9..9f8ae42 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
+@@ -534,7 +534,8 @@ void SpirvShaderTranslator::ExportToMemory(uint8_t export_eM) {
+     add_format_case(fixed16_packed, 3);
+   }
+ 
+-  // TODO(Triang3l): Use the extended range float16 conversion.
++  // Xbox 360 float16 uses extended range: exponent 31 is a large finite value,
++  // not Inf/NaN. See PackFloat16x2ExtendedRange.
+ 
+   // k_16_FLOAT
+   format_switch.makeBeginCase(static_cast<unsigned int>(xenos::ColorFormat::k_16_FLOAT));
+@@ -545,8 +546,7 @@ void SpirvShaderTranslator::ExportToMemory(uint8_t export_eM) {
+       id_vector_temp_.push_back(
+           builder_->createCompositeExtract(eM_swapped[eM_index], type_float_, 0));
+       id_vector_temp_.push_back(const_float_0_);
+-      spv::Id format_packed_16_float_x = builder_->createUnaryBuiltinCall(
+-          type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16,
++      spv::Id format_packed_16_float_x = PackFloat16x2ExtendedRange(
+           builder_->createCompositeConstruct(type_float2_, id_vector_temp_));
+       id_vector_temp_.clear();
+       id_vector_temp_.resize(4, const_uint_0_);
+@@ -565,10 +565,10 @@ void SpirvShaderTranslator::ExportToMemory(uint8_t export_eM) {
+       uint_vector_temp_.clear();
+       uint_vector_temp_.push_back(0);
+       uint_vector_temp_.push_back(1);
+-      spv::Id format_packed_16_16_float_xy = builder_->createUnaryBuiltinCall(
+-          type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16,
+-          builder_->createRvalueSwizzle(spv::NoPrecision, type_float2_, eM_swapped[eM_index],
+-                                        uint_vector_temp_));
++      spv::Id format_packed_16_16_float_xy =
++          PackFloat16x2ExtendedRange(builder_->createRvalueSwizzle(
++              spv::NoPrecision, type_float2_, eM_swapped[eM_index],
++              uint_vector_temp_));
+       id_vector_temp_.clear();
+       id_vector_temp_.resize(4, const_uint_0_);
+       id_vector_temp_.front() = format_packed_16_16_float_xy;
+@@ -588,10 +588,10 @@ void SpirvShaderTranslator::ExportToMemory(uint8_t export_eM) {
+         uint_vector_temp_.clear();
+         uint_vector_temp_.push_back(2 * component_index);
+         uint_vector_temp_.push_back(2 * component_index + 1);
+-        format_packed_16_16_16_16_float_xy_zw[component_index] = builder_->createUnaryBuiltinCall(
+-            type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16,
+-            builder_->createRvalueSwizzle(spv::NoPrecision, type_float2_, eM_swapped[eM_index],
+-                                          uint_vector_temp_));
++        format_packed_16_16_16_16_float_xy_zw[component_index] =
++            PackFloat16x2ExtendedRange(builder_->createRvalueSwizzle(
++                spv::NoPrecision, type_float2_, eM_swapped[eM_index],
++                uint_vector_temp_));
+       }
+       id_vector_temp_.clear();
+       id_vector_temp_.push_back(format_packed_16_16_16_16_float_xy_zw[0]);
+diff --git a/src/graphics/pipeline/shader/spirv_translator_rb.cpp b/src/graphics/pipeline/shader/spirv_translator_rb.cpp
+index 765c141..45e1255 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_rb.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_rb.cpp
+@@ -2284,6 +2284,130 @@ void SpirvShaderTranslator::FSI_DepthStencilTest(spv::Id msaa_samples,
+   }
+ }
+ 
++spv::Id SpirvShaderTranslator::PackFloat16x2ExtendedRange(spv::Id float2_value) {
++  // The Xbox 360 float16 has no NaN, map it to 0. Also keeps the overflow
++  // detection below from misreading a NaN's exponent 31 as a finite extended
++  // value, and FClamp's NaN result is undefined.
++  float2_value = builder_->createTriOp(
++      spv::OpSelect, type_float2_,
++      builder_->createUnaryOp(spv::OpIsNan, type_bool2_, float2_value),
++      const_float2_0_, float2_value);
++  // The standard conversion covers magnitudes up to 65504. Anything larger
++  // overflows to Inf (exponent field 0x7C00). Re-encode the overflowed lanes
++  // using the extended range: halve into the standard range, convert
++  // (exponent <= 30), then bump the exponent by 1 into the exponent 31 slot
++  // the Xbox 360 treats as finite.
++  spv::Id standard = builder_->createUnaryBuiltinCall(
++      type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16, float2_value);
++  spv::Id const_0x7C00 = builder_->makeUintConstant(0x7C00);
++  spv::Id lower_overflow =
++      builder_->createBinOp(spv::OpIEqual, type_bool_,
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  standard, const_0x7C00),
++                            const_0x7C00);
++  spv::Id upper_overflow = builder_->createBinOp(
++      spv::OpIEqual, type_bool_,
++      builder_->createBinOp(
++          spv::OpBitwiseAnd, type_uint_,
++          builder_->createBinOp(spv::OpShiftRightLogical, type_uint_, standard,
++                                builder_->makeUintConstant(16)),
++          const_0x7C00),
++      const_0x7C00);
++  id_vector_temp_.clear();
++  id_vector_temp_.resize(2, builder_->makeFloatConstant(-131008.0f));
++  spv::Id const_neg_131008 =
++      builder_->makeCompositeConstant(type_float2_, id_vector_temp_);
++  id_vector_temp_.clear();
++  id_vector_temp_.resize(2, builder_->makeFloatConstant(131008.0f));
++  spv::Id const_131008 =
++      builder_->makeCompositeConstant(type_float2_, id_vector_temp_);
++  spv::Id clamped = builder_->createTriBuiltinCall(
++      type_float2_, ext_inst_glsl_std_450_, GLSLstd450FClamp, float2_value,
++      const_neg_131008, const_131008);
++  id_vector_temp_.clear();
++  id_vector_temp_.resize(2, builder_->makeFloatConstant(0.5f));
++  spv::Id halved = builder_->createBinOp(
++      spv::OpFMul, type_float2_, clamped,
++      builder_->makeCompositeConstant(type_float2_, id_vector_temp_));
++  spv::Id halved_packed = builder_->createUnaryBuiltinCall(
++      type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16, halved);
++  // halved_packed has exponent <= 30 in both lanes, so adding 0x0400 per lane
++  // bumps the exponent without ever carrying across lanes.
++  spv::Id extended =
++      builder_->createBinOp(spv::OpIAdd, type_uint_, halved_packed,
++                            builder_->makeUintConstant(0x04000400));
++  spv::Id const_0xFFFF = builder_->makeUintConstant(0xFFFF);
++  spv::Id const_0xFFFF0000 = builder_->makeUintConstant(0xFFFF0000);
++  spv::Id result_lower =
++      builder_->createTriOp(spv::OpSelect, type_uint_, lower_overflow,
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  extended, const_0xFFFF),
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  standard, const_0xFFFF));
++  spv::Id result_upper =
++      builder_->createTriOp(spv::OpSelect, type_uint_, upper_overflow,
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  extended, const_0xFFFF0000),
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  standard, const_0xFFFF0000));
++  return builder_->createBinOp(spv::OpBitwiseOr, type_uint_, result_lower,
++                               result_upper);
++}
++
++spv::Id SpirvShaderTranslator::UnpackFloat16x2ExtendedRange(spv::Id packed_uint) {
++  // Inverse of PackFloat16x2ExtendedRange. Exponent 31 lanes are large finite
++  // values rather than Inf or NaN. Decrement their exponent by 1 into the
++  // standard range, unpack, then double to compensate.
++  spv::Id const_0x7C00 = builder_->makeUintConstant(0x7C00);
++  spv::Id lower_overflow =
++      builder_->createBinOp(spv::OpIEqual, type_bool_,
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  packed_uint, const_0x7C00),
++                            const_0x7C00);
++  spv::Id upper_overflow = builder_->createBinOp(
++      spv::OpIEqual, type_bool_,
++      builder_->createBinOp(
++          spv::OpBitwiseAnd, type_uint_,
++          builder_->createBinOp(spv::OpShiftRightLogical, type_uint_,
++                                packed_uint, builder_->makeUintConstant(16)),
++          const_0x7C00),
++      const_0x7C00);
++  spv::Id standard =
++      builder_->createUnaryBuiltinCall(type_float2_, ext_inst_glsl_std_450_,
++                                       GLSLstd450UnpackHalf2x16, packed_uint);
++  // Decrement the exponent only in overflowed lanes (0x0400 in the low lane,
++  // 0x04000000 in the high one) so the subtraction never borrows across lanes.
++  spv::Id sub_lower =
++      builder_->createTriOp(spv::OpSelect, type_uint_, lower_overflow,
++                            builder_->makeUintConstant(0x0400), const_uint_0_);
++  spv::Id sub_upper = builder_->createTriOp(
++      spv::OpSelect, type_uint_, upper_overflow,
++      builder_->makeUintConstant(0x04000000), const_uint_0_);
++  spv::Id reduced =
++      builder_->createBinOp(spv::OpISub, type_uint_, packed_uint,
++                            builder_->createBinOp(spv::OpBitwiseOr, type_uint_,
++                                                  sub_lower, sub_upper));
++  spv::Id reduced_unpacked = builder_->createUnaryBuiltinCall(
++      type_float2_, ext_inst_glsl_std_450_, GLSLstd450UnpackHalf2x16, reduced);
++  id_vector_temp_.clear();
++  id_vector_temp_.resize(2, builder_->makeFloatConstant(2.0f));
++  spv::Id extended = builder_->createBinOp(
++      spv::OpFMul, type_float2_, reduced_unpacked,
++      builder_->makeCompositeConstant(type_float2_, id_vector_temp_));
++  spv::Id result_x = builder_->createTriOp(
++      spv::OpSelect, type_float_, lower_overflow,
++      builder_->createCompositeExtract(extended, type_float_, 0),
++      builder_->createCompositeExtract(standard, type_float_, 0));
++  spv::Id result_y = builder_->createTriOp(
++      spv::OpSelect, type_float_, upper_overflow,
++      builder_->createCompositeExtract(extended, type_float_, 1),
++      builder_->createCompositeExtract(standard, type_float_, 1));
++  id_vector_temp_.clear();
++  id_vector_temp_.push_back(result_x);
++  id_vector_temp_.push_back(result_y);
++  return builder_->createCompositeConstruct(type_float2_, id_vector_temp_);
++}
++
+ std::array<spv::Id, 2> SpirvShaderTranslator::FSI_ClampAndPackColor(spv::Id color_float4,
+                                                                     spv::Id format_with_flags) {
+   spv::Block& block_format_head = *builder_->getBuildPoint();
+@@ -2552,30 +2676,15 @@ std::array<spv::Id, 2> SpirvShaderTranslator::FSI_ClampAndPackColor(spv::Id colo
+   std::array<spv::Id, 2> packed_16_float;
+   {
+     builder_->setBuildPoint(&block_format_16_float);
+-    // TODO(Triang3l): Xenos extended-range float16.
+-    id_vector_temp_.clear();
+-    id_vector_temp_.resize(4, builder_->makeFloatConstant(-65504.0f));
+-    spv::Id const_float4_minus_float16_max =
+-        builder_->makeCompositeConstant(type_float4_, id_vector_temp_);
+-    id_vector_temp_.clear();
+-    id_vector_temp_.resize(4, builder_->makeFloatConstant(65504.0f));
+-    spv::Id const_float4_float16_max =
+-        builder_->makeCompositeConstant(type_float4_, id_vector_temp_);
+-    // NaN to 0, not to -max.
+-    spv::Id color_clamped = builder_->createTriBuiltinCall(
+-        type_float4_, ext_inst_glsl_std_450_, GLSLstd450FClamp,
+-        builder_->createTriOp(spv::OpSelect, type_float4_,
+-                              builder_->createUnaryOp(spv::OpIsNan, type_bool4_, color_float4),
+-                              const_float4_0_, color_float4),
+-        const_float4_minus_float16_max, const_float4_float16_max);
++    // NaN is flushed to 0, and the clamp to the guest's own +-131008 range,
++    // inside PackFloat16x2ExtendedRange.
+     for (uint32_t i = 0; i < 2; ++i) {
+       uint_vector_temp_.clear();
+       uint_vector_temp_.push_back(2 * i);
+       uint_vector_temp_.push_back(2 * i + 1);
+-      packed_16_float[i] = builder_->createUnaryBuiltinCall(
+-          type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16,
+-          builder_->createRvalueSwizzle(spv::NoPrecision, type_float2_, color_clamped,
+-                                        uint_vector_temp_));
++      packed_16_float[i] =
++          PackFloat16x2ExtendedRange(builder_->createRvalueSwizzle(
++              spv::NoPrecision, type_float2_, color_float4, uint_vector_temp_));
+     }
+     builder_->createBranch(&block_format_merge);
+   }
+@@ -2841,10 +2950,9 @@ std::array<spv::Id, 4> SpirvShaderTranslator::FSI_UnpackColor(std::array<spv::Id
+   {
+     for (uint32_t i = 0; i < 2; ++i) {
+       builder_->setBuildPoint(i ? &block_format_16_16_16_16_float : &block_format_16_16_float);
+-      // TODO(Triang3l): Xenos extended-range float16.
+       for (uint32_t j = 0; j <= i; ++j) {
+-        spv::Id components_float2 = builder_->createUnaryBuiltinCall(
+-            type_float2_, ext_inst_glsl_std_450_, GLSLstd450UnpackHalf2x16, color_packed[j]);
++        spv::Id components_float2 =
++            UnpackFloat16x2ExtendedRange(color_packed[j]);
+         for (uint32_t k = 0; k < 2; ++k) {
+           unpacked_16_float[i][2 * j + k] =
+               builder_->createCompositeExtract(components_float2, type_float_, k);

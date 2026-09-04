@@ -3,6 +3,74 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.9 — 2026-09-04
+
+### Supersampling now goes to the runtime's real maximum
+
+The cvar range is 1-8 (`draw_resolution_scale_x`); the menu offered 1-3 while
+`Clamp()` allowed 1-8, so a config holding 4 displayed as "3x" and was written
+back as 3. All eight are now offered, with the pixel count shown next to the
+control from 4x up — the cost is the square of the number, and 8x at
+this guest's 1280x720 is 10240x5760.
+
+### Ported from Canary: extended-range float16
+
+**The Xbox 360's float16 has no Inf and no NaN.** Exponent 31 holds finite
+values, up to 131008, where IEEE binary16 reads Inf. Our fork predates Canary's
+fix for this and still carried `TODO(Triang3l): Use extended range conversion.`
+in three places and `Xenos extended-range float16.` in two more, converting HDR
+render targets with the plain hardware instruction and clamping them to 65504.
+
+Ported in full:
+
+- `Float32ToF16ExtendedRange` / `Float16ExtendedRangeTo32` (DXBC, D3D12)
+- `PackFloat16x2ExtendedRange` / `UnpackFloat16x2ExtendedRange` (SPIR-V, Vulkan)
+- wired into the ROV colour pack and unpack on both backends, and into all six
+  memexport float16 cases
+- **then** the shared `GetPSIColorFormatInfo` clamp widened 65504 -> 131008
+
+That order is load-bearing, and the port script enforces it: widening the clamp
+before both backends can encode the range sends everything above 65504 into a
+plain IEEE conversion, which turns it into Inf — worse than
+clamping. The script refuses to widen unless it finds both encoders defined and
+called.
+
+**This did NOT fix the flat-blue scene.** A 400 s reproduction run after the
+port still scores `BLUE` — 34 frames, peak blue 100%, 11 blue
+frames. Characters are still missing from scenes that should have them. The port
+is correct on its own merits and matches Canary, but it is not this bug.
+
+### How to find Canary's fixes: read TODOs, not diffs
+
+Function- and line-count deltas rank Canary's **performance** work above its
+fixes. The largest apparent gap in `draw_util` is `GetScissorTmpl`, 59 lines we
+"lack", which is our own `GetScissor` arithmetic rewritten in SSE4 with a scalar
+fallback that matches ours line for line. There are 165 such functions.
+
+`tools/canary_todos.py` compares TODOs instead. Both trees inherit the same
+comments from the same author, so one still in our copy and gone from Canary's
+marks work finished after the fork: 88 ours, 155 theirs, **11** in that state.
+The float16 cluster was five of them, and after porting it the tool no longer
+lists it — the check validates itself.
+
+One trap, found by chasing a false lead: the trees are formatted to different
+column limits, so a TODO that wraps differently looked like two different TODOs
+and was reported resolved when Canary had merely re-wrapped it. The tool now
+joins each comment block and compares a fixed prefix, and four candidates
+disappeared. **A tool that reads comments reads formatting as well as meaning
+— check a candidate against the code before porting it.** Canary
+had also simply deleted some TODOs without implementing anything.
+
+`tools/canary_survey.py` is the census half: every Canary GPU source file is
+mapped to one of ours or explicitly ignored with a reason, so a file nobody has
+compared reads as UNMAPPED rather than being silently skipped.
+
+### Also
+
+- The Canary checkout was a **shallow clone** — one commit, no
+  history. `git fetch --unshallow` before any archaeology.
+- `build_vulkan.cmd` anchors itself to its own directory.
+
 ## 0.0.8 — 2026-09-04
 
 ### Upscaling: FSR and CAS, which this runtime had all along

@@ -498,13 +498,29 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     ImGui::BeginDisabled(!live);
     RowStart("Supersampling",
              "Renders the game's own framebuffer at a multiple of its size and "
-             "filters it back down. The sharpest setting here, and the most "
-             "expensive: 2x is four times the pixels.");
-    int scale_index = std::clamp(s.resolution_scale - 1, 0, 2);
-    const char* scales[] = {"Off", "2x", "3x"};
-    if (ImGui::Combo("##scale", &scale_index, scales, 3)) {
+             "filters it back down. The sharpest setting here, and by far the "
+             "most expensive - the cost is the SQUARE of the number, so 2x is "
+             "four times the pixels and 8x is sixty-four. The runtime's own "
+             "range is 1-8 and all of it is offered; the high end is there for "
+             "a card that can afford it, not as a recommendation.");
+    // The cvar range really is 1..8 (draw_resolution_scale_x, read from the
+    // live dump). This used to offer 1..3 while Clamp() allowed 1..8, so a
+    // config with 4 displayed as "3x" and was silently written back as 3.
+    int scale_index = std::clamp(s.resolution_scale - 1, 0, 7);
+    const char* scales[] = {"Off", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
+    if (ImGui::Combo("##scale", &scale_index, scales, IM_ARRAYSIZE(scales))) {
       s.resolution_scale = scale_index + 1;
       changed = true;
+    }
+    // Said once, next to the control, rather than left for the player to
+    // discover: at the guest's 1280x720 this is 1280*scale by 720*scale.
+    if (s.resolution_scale >= 4) {
+      ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.7f, 0.35f, 1.0f));
+      ImGui::Text("(%dx%d, %dx the pixels)", 1280 * s.resolution_scale,
+                  720 * s.resolution_scale,
+                  s.resolution_scale * s.resolution_scale);
+      ImGui::PopStyleColor();
     }
     if (!live) RestartTag();
     ImGui::EndDisabled();

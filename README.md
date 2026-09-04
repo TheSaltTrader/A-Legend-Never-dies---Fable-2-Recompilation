@@ -281,6 +281,48 @@ temporal upscaler needing real depth and motion vectors, which this runtime
 synthesizes, warns about, and falls back to spatial FSR from anyway. Three
 names for one filter is not a choice.
 
+### Porting fixes from Xenia Canary
+
+`rexgpu-xenos` is a fork of Canary, old enough to be missing 33 of its GPU
+cvars. Canary plays this disc through the point where ours fails, so its
+history is the obvious place to look for what we lack. The hard part is telling
+a FIX from a REFACTOR.
+
+**Function and line counts do not do it.** By that measure the biggest gap in
+`draw_util` is `GetScissorTmpl`, 59 lines we "do not have" —
+which turns out to be the same arithmetic as our `GetScissor`, written in SSE4,
+with a scalar fallback in the same file that matches ours line for line. Canary
+has done a lot of performance work, and it swamps the ranking.
+
+**`tools/canary_todos.py` does.** Both trees inherit the same comments from the
+same upstream author, so a `TODO` still in our copy and gone from Canary's marks
+work finished after the SDK forked. Of 88 TODOs in our GPU tree, 11 are in that
+state — a list small enough to read.
+
+That is how the float16 defect was found. Our tree carried
+`TODO(Triang3l): Use extended range conversion.` in three places and
+`Xenos extended-range float16.` in two more. **The Xbox 360's float16 has no Inf
+and no NaN: exponent 31 holds finite values, up to 131008**, where IEEE binary16
+reads Inf. We were converting HDR render targets with the plain hardware
+instruction and clamping them to 65504, so the top of every such surface was
+being crushed. Canary implements the encoding on both backends. Now so do we.
+
+**The order was load-bearing.** Widening the clamp is only safe once both
+backends can encode the wider range; do it first and values above 65504 reach a
+plain IEEE conversion and become Inf, which is worse than clamping. The port
+script refuses to widen unless it finds both encoders defined and called.
+
+`tools/canary_survey.py` is the census half: every Canary GPU source file is
+either mapped to one of ours or explicitly listed as ignored with a reason, so a
+file nobody has compared shows up as UNMAPPED instead of being quietly missed.
+
+One caveat worth knowing, because it cost a false lead: the two trees are
+formatted to different column limits, so a TODO that wraps differently used to
+look like two different TODOs and got reported as resolved. The tool now joins
+each comment block and compares a fixed-length prefix. **A tool that reads
+comments is reading formatting as well as meaning — check a
+candidate against the actual code before porting anything.**
+
 ### Getting a value into the GPU plugin
 
 The plugin's cvars do not exist when the app starts - `rexgpu-xenos.dll`
