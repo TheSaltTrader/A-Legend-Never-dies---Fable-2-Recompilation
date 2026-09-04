@@ -109,7 +109,16 @@ def main():
         same = digest(src) == digest(dst)
         found = markers_present(dst)
         want = MARKERS.get(name, [])
-        state = "ours" if same else "STOCK (overwritten by the app build)"
+        # Three states, not two. A DLL carrying our markers but not matching the
+        # current SDK build is STALE - an older build of ours, which happens
+        # simply by rebuilding the SDK after staging. Calling that "STOCK" is
+        # wrong and reads as though the app build clobbered it.
+        if same:
+            state = "ours (current)"
+        elif len(found) == len(want) and want:
+            state = "STALE (ours, but older than the SDK build - re-stage)"
+        else:
+            state = "STOCK (the app build overwrote it)"
         print("  %-20s %s  sha=%s  markers=%d/%d"
               % (name, state, digest(dst), len(found), len(want)))
         for m in want:

@@ -285,7 +285,7 @@ index 953c5fd..a8555f6 100644
          keep_mask_low |= 0xFFFFu;
        }
 diff --git a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
-index 31de175..b740142 100644
+index 31de175..0afd7b7 100644
 --- a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
 +++ b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
 @@ -143,10 +143,34 @@ void DxbcShaderTranslator::ProcessVertexFetchInstruction(
@@ -457,9 +457,60 @@ index 31de175..b740142 100644
              case xenos::FetchOpDimension::k1D:
                grad_component_count = 1;
                break;
-@@ -1517,7 +1583,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
-             a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask), dxbc::Src::R(grad_v_temp), lod_src);
- #endif
+@@ -1444,11 +1510,11 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+           uint32_t grad_mask = (1 << grad_component_count) - 1;
+           // Convert the bias to a gradient scale.
+           a_.OpExp(lod_dest, lod_src);
+-          // FIXME(Triang3l): Gradient exponent adjustment is currently not done
+-          // in getCompTexLOD, so don't do it here too.
+-#if 0
+-          // Extract gradient exponent biases from the fetch constant and merge
+-          // them with the LOD bias.
++          // Merge the per-axis gradient exponent biases into the gradient
++          // scale. Zero, the common case, is a no-op. getCompTexLOD keeps
++          // returning the raw queried LOD, treating this like the fetch
++          // constant LOD bias, which is also not folded into it.
++          // Canary 0f2980de4.
+           a_.OpIBFE(dxbc::Dest::R(grad_h_lod_temp, 0b0011), dxbc::Src::LU(5),
+                     dxbc::Src::LU(22, 27, 0, 0),
+                     RequestTextureFetchConstantWord(tfetch_index, 4));
+@@ -1459,22 +1525,14 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+                    dxbc::Src::R(grad_h_lod_temp, dxbc::Src::kYYYY));
+           a_.OpMul(lod_dest, lod_src,
+                    dxbc::Src::R(grad_h_lod_temp, dxbc::Src::kXXXX));
+-#endif
+           // Obtain the gradients and apply biases to them.
+           if (instr.attributes.use_register_gradients) {
+             // Register gradients are already in the cube space for cube maps.
+             a_.OpMul(dxbc::Dest::R(grad_h_lod_temp, grad_mask),
+                      dxbc::Src::R(system_temp_grad_h_lod_), lod_src);
+-            // FIXME(Triang3l): Gradient exponent adjustment is currently not
+-            // done in getCompTexLOD, so don't do it here too.
+-#if 0
+             a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask),
+                      dxbc::Src::R(system_temp_grad_v_vfetch_address_),
+                      dxbc::Src::R(grad_v_temp, dxbc::Src::kWWWW));
+-#else
+-            a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask),
+-                     dxbc::Src::R(system_temp_grad_v_vfetch_address_), lod_src);
+-#endif
+             // TODO(Triang3l): Are cube map register gradients unnormalized if
+             // the coordinates themselves are unnormalized?
+             if (instr.attributes.unnormalized_coordinates &&
+@@ -1507,17 +1565,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+                      lod_src);
+             a_.OpDerivRTYCoarse(dxbc::Dest::R(grad_v_temp, grad_mask),
+                                 dxbc::Src::R(coord_and_sampler_temp));
+-            // FIXME(Triang3l): Gradient exponent adjustment is currently not
+-            // done in getCompTexLOD, so don't do it here too.
+-#if 0
+-            a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask),
+-                     dxbc::Src::R(grad_v_temp),
++            a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask), dxbc::Src::R(grad_v_temp),
+                      dxbc::Src::R(grad_v_temp, dxbc::Src::kWWWW));
+-#else
+-            a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask), dxbc::Src::R(grad_v_temp), lod_src);
+-#endif
            }
 -          if (instr.dimension == xenos::FetchOpDimension::k1D) {
 +          if (coordinate_dimension == xenos::FetchOpDimension::k1D) {
@@ -1133,3 +1184,135 @@ index ec0df7c..543feda 100644
      memory().EnablePhysicalMemoryAccessCallbacks(
          valid_page_first << page_size_log2_,
          (valid_page_last - valid_page_first + 1) << page_size_log2_, true, false);
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..7bf1ffd 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -5764,9 +5764,14 @@ void VulkanCommandProcessor::UpdateDynamicState(const draw_util::ViewportInfo& v
+           stencil_ref_mask_back_reg = XE_GPU_REG_RB_STENCILREFMASK_BF;
+         } else {
+           // Choose the back face values only if drawing only back faces.
+-          stencil_ref_mask_front_reg = regs.Get<reg::PA_SU_SC_MODE_CNTL>().cull_front
+-                                           ? XE_GPU_REG_RB_STENCILREFMASK_BF
+-                                           : XE_GPU_REG_RB_STENCILREFMASK;
++          // Back-face values only when drawing ONLY back faces - culling the
++          // front alone is not enough, the back must not also be culled.
++          // Canary 77597d62a.
++          auto pa_su_sc_mode_cntl = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
++          stencil_ref_mask_front_reg =
++              (pa_su_sc_mode_cntl.cull_front && !pa_su_sc_mode_cntl.cull_back)
++                  ? XE_GPU_REG_RB_STENCILREFMASK_BF
++                  : XE_GPU_REG_RB_STENCILREFMASK;
+           stencil_ref_mask_back_reg = stencil_ref_mask_front_reg;
+         }
+       } else {
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+index 91ac08f..cf70c29 100644
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -1326,15 +1326,38 @@ void VulkanPipelineCache::WritePipelineRenderTargetDescription(
+         /* 15 */ PipelineBlendFactor::kOneMinusConstantAlpha,
+         /* 16 */ PipelineBlendFactor::kSrcAlphaSaturate,
+     };
++
++    // Like kBlendFactorMap, but with the colour factors replaced by their alpha
++    // equivalents. Alpha is scalar, so the hardware treats a _COLOR factor in
++    // the alpha slot as the matching _ALPHA factor. Canary 53061c63f.
++    static const PipelineBlendFactor kBlendFactorAlphaMap[32] = {
++        /*  0 */ PipelineBlendFactor::kZero,
++        /*  1 */ PipelineBlendFactor::kOne,
++        /*  2 */ PipelineBlendFactor::kZero,  // ?
++        /*  3 */ PipelineBlendFactor::kZero,  // ?
++        /*  4 */ PipelineBlendFactor::kSrcAlpha,
++        /*  5 */ PipelineBlendFactor::kOneMinusSrcAlpha,
++        /*  6 */ PipelineBlendFactor::kSrcAlpha,
++        /*  7 */ PipelineBlendFactor::kOneMinusSrcAlpha,
++        /*  8 */ PipelineBlendFactor::kDstAlpha,
++        /*  9 */ PipelineBlendFactor::kOneMinusDstAlpha,
++        /* 10 */ PipelineBlendFactor::kDstAlpha,
++        /* 11 */ PipelineBlendFactor::kOneMinusDstAlpha,
++        /* 12 */ PipelineBlendFactor::kConstantAlpha,
++        /* 13 */ PipelineBlendFactor::kOneMinusConstantAlpha,
++        /* 14 */ PipelineBlendFactor::kConstantAlpha,
++        /* 15 */ PipelineBlendFactor::kOneMinusConstantAlpha,
++        /* 16 */ PipelineBlendFactor::kSrcAlphaSaturate,
++    };
+     render_target_out.src_color_blend_factor =
+         kBlendFactorMap[uint32_t(blend_control.color_srcblend)];
+     render_target_out.dst_color_blend_factor =
+         kBlendFactorMap[uint32_t(blend_control.color_destblend)];
+     render_target_out.color_blend_op = blend_control.color_comb_fcn;
+     render_target_out.src_alpha_blend_factor =
+-        kBlendFactorMap[uint32_t(blend_control.alpha_srcblend)];
++        kBlendFactorAlphaMap[uint32_t(blend_control.alpha_srcblend)];
+     render_target_out.dst_alpha_blend_factor =
+-        kBlendFactorMap[uint32_t(blend_control.alpha_destblend)];
++        kBlendFactorAlphaMap[uint32_t(blend_control.alpha_destblend)];
+     render_target_out.alpha_blend_op = blend_control.alpha_comb_fcn;
+     if (!command_processor_.GetVulkanDevice()->properties().constantAlphaColorBlendFactors) {
+       if (blend_control.color_srcblend == xenos::BlendFactor::kConstantAlpha) {
+diff --git a/src/graphics/vulkan/texture_cache.cpp b/src/graphics/vulkan/texture_cache.cpp
+index ecbd940..3573e2b 100644
+--- a/src/graphics/vulkan/texture_cache.cpp
++++ b/src/graphics/vulkan/texture_cache.cpp
+@@ -1739,6 +1739,16 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+         vulkan_texture.image(), ui::vulkan::util::InitializeSubresourceRange(),
+         texture_src_stage_mask, texture_dst_stage_mask, texture_src_access_mask,
+         texture_dst_access_mask, texture_old_layout, texture_new_layout);
++  } else {
++    // Same layout and usage, but another upload may have written this image
++    // earlier in the submission - a TRANSFER_WRITE -> TRANSFER_WRITE barrier
++    // orders the next CmdCopyBufferToImage after any prior copy.
++    // Canary 1fdbe569e.
++    command_processor_.PushImageMemoryBarrier(
++        vulkan_texture.image(), ui::vulkan::util::InitializeSubresourceRange(),
++        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
++        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
++        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+   }
+   command_processor_.SubmitBarriers(true);
+   VkBufferImageCopy* copy_regions = command_buffer.CmdCopyBufferToImageEmplace(
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 5bd3dc5..eb6385f 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -116,12 +116,39 @@ target_link_libraries(rexui PUBLIC
+ )
+ target_link_libraries(rexui PRIVATE utf8cpp)
+ 
++# REX_HAS_FIDELITYFX_SDK gates two quite different things, and conflating them
++# costs Windows users the only upscaler in the runtime:
++#
++#   * the SPATIAL present effects (cas, fsr = FidelityFX CAS and FSR 1.0
++#     EASU/RCAS). Their shaders are PREBUILT AND COMMITTED to this tree, under
++#     src/ui/shaders/bytecode/d3d12_5_1/ and src/ui/shaders/vulkan_spirv/, and
++#     no file under src/ui/ includes a FidelityFX header outside <ffx_api/...>.
++#     So this half needs the fetched SDK for exactly nothing.
++#
++#   * the TEMPORAL path (fsr2, fsr3), which really does call into ffx-api. That
++#     is guarded separately by REX_HAS_FIDELITYFX_RUNTIME, and every call site
++#     already has a pure-arithmetic fallback for when it is absent.
++#
++# Because both were behind the same define, and REXGLUE_ENABLE_FIDELITYFX
++# defaults OFF, the shipped build advertises present_effect="bilinear" and
++# nothing else - even though it is carrying working FSR and CAS shaders.
++#
++# SPATIAL_ONLY turns those on with no fetch, no ffx-api library, no extra DLL
++# and no shader compiler. fsr2/fsr3 stay selectable and degrade to spatial FSR,
++# which is what the runtime already warns they may do.
++option(REXGLUE_FIDELITYFX_SPATIAL_ONLY
++       "Enable the committed spatial FSR/CAS present effects without fetching the FidelityFX SDK"
++       OFF)
++
+ if(REXGLUE_FIDELITYFX_SOURCE_DIR AND EXISTS "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include")
+     target_include_directories(rexui PRIVATE
+         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include"
+         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/ffx-api/include"
+     )
+     target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
++elseif(REXGLUE_FIDELITYFX_SPATIAL_ONLY)
++    target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
++    message(STATUS "FidelityFX: spatial CAS/FSR only (no SDK fetch, no ffx-api)")
+ endif()
+ 
+ set(REXUI_HAS_FIDELITYFX_RUNTIME OFF)

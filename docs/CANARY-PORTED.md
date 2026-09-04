@@ -160,3 +160,10 @@ rather than slipped in under a porting pass.
 | `cb240560d` | BLOCKED | 2x MSAA alpha-to-coverage sample layout. Needs `FSI_AlphaToMask`, a Vulkan FSI feature our tree never had. |
 | `654a8cacf` | BLOCKED | FSI 2x-as-4x sample mask. Needs `block_rt_0_alpha_tests_rt_written_end`; our FSI block structure differs, so the phi it adds has nowhere to go without reworking that region. |
 | `3a44f20c7` | SKIP | Replaces the AC6 ground hack with scalar approximation rounding. We do not have `ac6_ground_fix`, so there is nothing to replace. |
+| `77597d62a` | PORTED | Back-face stencil ref/mask only when drawing ONLY back faces - culling the front alone is not enough, the back must not also be culled. |
+| `1fdbe569e` | PORTED | TRANSFER_WRITE -> TRANSFER_WRITE barrier so consecutive uploads to the same image are ordered. |
+| `53061c63f` | PORTED | Alpha blend slot uses alpha-equivalent factors. Alpha is scalar, so the hardware reads a _COLOR factor there as the matching _ALPHA one; we were using the colour map for both. |
+| `0f2980de4` | PORTED | Per-axis gradient exponent bias during fetch. The code was already in our tree behind three `#if 0` blocks and a FIXME; Canary enabled it, and so have we. No `#if 0` remains in that file. |
+| `2b071d9b0` | SKIP | Invalidate user clip plane constants. Not applicable: Canary moved clip planes into their own constant buffer, ours keeps them in the system constants, which `UpdateSystemConstantValues` rebuilds every draw - there is no stale buffer to invalidate. |
+| `e6bdb0fdf` | SKIP | Skip draws with surface_pitch == 0. **We already do this**, in both backends (`surface_pitch_is_zero`). |
+| `4cc584f47` | BLOCKED | Constant-alpha blending in the RTV path. Needs a new provider capability `IsAlphaBlendFactorSupported()` in ui/d3d12, which we do not have. Portable, but it is a three-file job (provider + command processor + pipeline cache) rather than a patch. |
