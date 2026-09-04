@@ -1,8 +1,8 @@
 diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
-index 96d362b..b6a2b47 100644
+index 96d362b..6ed45fb 100644
 --- a/include/rex/graphics/d3d12/command_processor.h
 +++ b/include/rex/graphics/d3d12/command_processor.h
-@@ -425,6 +425,31 @@ class D3D12CommandProcessor : public CommandProcessor {
+@@ -425,6 +425,39 @@ class D3D12CommandProcessor : public CommandProcessor {
    HANDLE fence_completion_event_ = nullptr;
  
    bool submission_open_ = false;
@@ -29,6 +29,14 @@ index 96d362b..b6a2b47 100644
 +    uint64_t vs_const_zero = 0;
 +    uint64_t vs_const_huge = 0;
 +    uint32_t vs_const_max_count = 0;
++    // Which of the 256 vec4 constants have ever been uploaded containing NaN.
++    // Contiguous means a buffer; scattered means a computation.
++    uint64_t vs_const_nan_bitmap[4] = {0, 0, 0, 0};
++    int32_t vs_const_first_nan_index = -1;
++    bool vs_const_nan_reported = false;
++    // The distinct bit patterns seen in NaN constants, with counts. A handful
++    // of patterns means a fill value; thousands means real arithmetic.
++    std::unordered_map<uint32_t, uint64_t> vs_const_nan_patterns;
 +  } draw_census_;
 +  void ReportDrawCensus();
    // Values of submission_fence_.
@@ -207,19 +215,21 @@ index f7fd14e..d3cb447 100644
  constexpr uint32_t kTexture2DCubeMaxWidthHeight = 1 << kTexture2DCubeMaxWidthHeightLog2;
  constexpr uint32_t kTexture2DMaxStackDepthLog2 = 6;
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..941d710 100644
+index 19874a5..ab20a2c 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
-@@ -9,6 +9,8 @@
+@@ -9,6 +9,10 @@
   * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
   */
  
++#include <string>
++#include <vector>
 +#include <cmath>
 +#include <chrono>
  #include <algorithm>
  #include <cstdarg>
  #include <cstring>
-@@ -2290,6 +2292,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2290,6 +2294,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    auto vertex_shader = static_cast<D3D12Shader*>(active_vertex_shader());
    if (!vertex_shader) {
      // Always need a vertex shader.
@@ -228,7 +238,7 @@ index 19874a5..941d710 100644
      return false;
    }
    pipeline_cache_->AnalyzeShaderUcode(*vertex_shader);
-@@ -2299,6 +2303,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2299,6 +2305,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    bool primitive_polygonal = draw_util::IsPrimitivePolygonal(regs);
    bool is_rasterization_done = draw_util::IsRasterizationPotentiallyDone(regs, primitive_polygonal);
    if (surface_pitch_is_zero && is_rasterization_done) {
@@ -236,7 +246,7 @@ index 19874a5..941d710 100644
      // Doesn't actually draw.
      // Unlikely that zero would even really be legal though.
      return true;
-@@ -2337,6 +2342,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2337,6 +2344,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      return false;
    }
    if (!primitive_processing_result.host_draw_vertex_count) {
@@ -244,7 +254,7 @@ index 19874a5..941d710 100644
      // Nothing to draw.
      return true;
    }
-@@ -2400,6 +2406,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2400,6 +2408,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
    }
    if (REXCVAR_GET(async_shader_compilation) &&
        pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
@@ -253,7 +263,7 @@ index 19874a5..941d710 100644
      return true;
    }
  
-@@ -2727,9 +2735,55 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+@@ -2727,9 +2737,96 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
      }
    }
  
@@ -303,13 +313,54 @@ index 19874a5..941d710 100644
 +        100.0 * double(draw_census_.vs_const_inf) / values, draw_census_.vs_const_zero,
 +        100.0 * double(draw_census_.vs_const_zero) / values, draw_census_.vs_const_huge,
 +        100.0 * double(draw_census_.vs_const_huge) / values);
++    if (draw_census_.vs_const_nan) {
++      // Render the affected constants as a range list, because "c48-c95" and
++      // "c3, c17, c142" mean very different things.
++      std::string ranges;
++      int32_t run_start = -1;
++      for (int32_t ci = 0; ci <= 256; ++ci) {
++        bool set = ci < 256 && (draw_census_.vs_const_nan_bitmap[ci >> 6] >> (ci & 63)) & 1;
++        if (set && run_start < 0) {
++          run_start = ci;
++        } else if (!set && run_start >= 0) {
++          if (!ranges.empty()) {
++            ranges += ", ";
++          }
++          ranges += (ci - 1 == run_start) ? fmt::format("c{}", run_start)
++                                          : fmt::format("c{}-c{}", run_start, ci - 1);
++          run_start = -1;
++        }
++      }
++      uint32_t affected = 0;
++      for (int i = 0; i < 4; ++i) {
++        affected += uint32_t(rex::bit_count(draw_census_.vs_const_nan_bitmap[i]));
++      }
++      REXLOG_INFO("VS CONSTANTS NaN: {} of 256 constants affected, first was c{} | {}",
++                  affected, draw_census_.vs_const_first_nan_index, ranges);
++      // The pattern is the diagnosis: a fill value points at uninitialised
++      // memory, a computed QNaN points at guest arithmetic.
++      std::vector<std::pair<uint32_t, uint64_t>> pats(
++          draw_census_.vs_const_nan_patterns.begin(),
++          draw_census_.vs_const_nan_patterns.end());
++      std::sort(pats.begin(), pats.end(),
++                [](const auto& a, const auto& b) { return a.second > b.second; });
++      std::string top;
++      for (size_t i = 0; i < pats.size() && i < 4; ++i) {
++        if (!top.empty()) {
++          top += ", ";
++        }
++        top += fmt::format("0x{:08X} x{}", pats[i].first, pats[i].second);
++      }
++      REXLOG_INFO("VS CONSTANTS NaN patterns: {} distinct | {}",
++                  draw_census_.vs_const_nan_patterns.size(), top);
++    }
 +  }
 +}
 +
  bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_size) {
    if (!total_size || memexport_ranges_.empty()) {
      return true;
-@@ -3691,6 +3745,11 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+@@ -3691,6 +3788,11 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
    xenos::CompareFunction alpha_test_function = rb_colorcontrol.alpha_test_enable
                                                     ? rb_colorcontrol.alpha_func
                                                     : xenos::CompareFunction::kAlways;
@@ -321,7 +372,7 @@ index 19874a5..941d710 100644
    flags |= uint32_t(alpha_test_function) << DxbcShaderTranslator::kSysFlag_AlphaPassIfLess_Shift;
    // Gamma writing.
    if (!render_target_cache_->gamma_render_target_as_unorm16()) {
-@@ -4113,6 +4172,7 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4113,6 +4215,7 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
      if (float_constants == nullptr) {
        return false;
      }
@@ -329,7 +380,7 @@ index 19874a5..941d710 100644
      for (uint32_t i = 0; i < 4; ++i) {
        uint64_t float_constant_map_entry = float_constant_map_vertex.float_bitmap[i];
        uint32_t float_constant_index;
-@@ -4125,6 +4185,27 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+@@ -4125,6 +4228,52 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
          float_constants += 4 * sizeof(float);
        }
      }
@@ -341,10 +392,35 @@ index 19874a5..941d710 100644
 +      draw_census_.vs_const_values += value_count;
 +      draw_census_.vs_const_max_count =
 +          std::max(draw_census_.vs_const_max_count, float_constant_count_vertex);
++      // Rebuild the constant index for each uploaded vec4, in the same order
++      // the loop above wrote them, so a NaN can be attributed to its constant.
++      uint32_t uploaded_indices[256];
++      uint32_t uploaded_count = 0;
++      for (uint32_t i = 0; i < 4 && uploaded_count < 256; ++i) {
++        uint64_t bits = float_constant_map_vertex.float_bitmap[i];
++        uint32_t bit;
++        while (rex::bit_scan_forward(bits, &bit) && uploaded_count < 256) {
++          bits &= ~(1ull << bit);
++          uploaded_indices[uploaded_count++] = (i << 6) + bit;
++        }
++      }
 +      for (size_t vi = 0; vi < value_count; ++vi) {
 +        float v = values[vi];
 +        if (std::isnan(v)) {
 +          ++draw_census_.vs_const_nan;
++          if (draw_census_.vs_const_nan_patterns.size() < 64) {
++            uint32_t bits;
++            std::memcpy(&bits, &v, sizeof(bits));
++            ++draw_census_.vs_const_nan_patterns[bits];
++          }
++          size_t vec4 = vi >> 2;
++          if (vec4 < uploaded_count) {
++            uint32_t ci = uploaded_indices[vec4];
++            draw_census_.vs_const_nan_bitmap[ci >> 6] |= 1ull << (ci & 63);
++            if (draw_census_.vs_const_first_nan_index < 0) {
++              draw_census_.vs_const_first_nan_index = int32_t(ci);
++            }
++          }
 +        } else if (std::isinf(v)) {
 +          ++draw_census_.vs_const_inf;
 +        } else if (v == 0.0f) {

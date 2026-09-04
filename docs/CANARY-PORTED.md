@@ -137,6 +137,35 @@ generated wrong, not just the new path.
 That is what blocks `cde5d85ec`, and it is worth knowing before anyone tries a
 "quick" shader-translator port.
 
+## Where the bug actually is (2026-09-04)
+
+Not in the GPU code, and not anything Canary can fix for us. Measured with the
+census in `tools/` and the `draw_census` cvar:
+
+1. **~2,000,000 draws issued, essentially none dropped.** Geometry reaches the
+   GPU and renders nothing. Not a skipped draw.
+2. **NaN appears in the vertex shader float constants and then explodes** -
+   0 -> 35,152 -> 1,982,280 values over 35 seconds, while nothing else moves.
+   Skinned characters get their bone matrices through these constants; a NaN
+   matrix collapses every skinned vertex while static geometry is untouched.
+3. **The NaN sits in contiguous, matrix-shaped blocks** - `c0-c7`, `c28-c39`,
+   `c113-c117`, `c255` - growing over time.
+4. **The bit patterns are canonical quiet NaNs**: only THREE distinct values,
+   `0x7FC00000` (1.1M), `0xFFC00000` (870k), `0x7FE00000` (6.7k). Not
+   `0xFFFFFFFF` fill, not random - **this is arithmetic producing NaN**, from an
+   invalid operation (0/0, Inf-Inf, sqrt of a negative, 0*Inf).
+
+These constants are written by the GUEST; our GPU code copies them verbatim from
+the register file. So the defect is in the **recompiled PowerPC floating-point
+code**, which is why 26 Canary GPU ports changed nothing, why both backends fail
+identically, and why nobody upstream reports this bug.
+
+Ruled out along the way, each by measurement rather than reading: draws being
+dropped, memexport, pipeline readiness, backface culling, depth rejection, the
+`DrawExtentEstimator` call site, the DXBC `kMaxA` clamp, the `AllocFixed`
+"already reserved" errors (Canary's code is character-for-character identical),
+and any brightness regression from the ports.
+
 | sha | state | note |
 |---|---|---|
 | `3ff230d23` | PORTED | Extended-range float16 in RT pack/unpack. Found independently from the TODOs before the history was available. DXBC + SPIR-V encoders, ROV pack/unpack, all six memexport cases, then the PSI clamp widened to ±131008. Measured: did NOT fix the flat-blue scene. |
