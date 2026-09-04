@@ -184,6 +184,81 @@ That third one had a real ordering bug: the already-installed check returned
 already-installed package sailed through and installed anyway. Caught by
 putting two copies in a folder and looking, not by reading the code.
 
+## Settings
+
+Two surfaces over one settings file, ported from `ng2recomp` (see
+`docs/NG2_LESSONS.md` for what carried over and what did not).
+
+**A setup screen before the guest boots.** It runs from `OnFinalizePaths` - the
+one hook where the window and the ImGui drawer are live but the runtime has not
+been constructed - so the game path it returns is the one that actually gets
+mounted. It opens on the first run, whenever Shift is held at launch, and
+whenever the configured folder has gone missing (a moved drive should offer the
+picker, not a fatal error). It can also extract an ISO to a folder, because the
+runtime mounts a directory and rejects a file.
+
+**F10 over the running game**, with the same settings. Anything the presenter
+or the plugin re-reads per frame applies immediately; anything latched at
+startup is shown disabled and marked `(restart)` rather than accepted and
+silently ignored. **F4 is the SDK's own cvar browser** and is left alone - the
+menu links to it, because it enumerates the registry and so cannot fall behind
+the build.
+
+### Every row is a cvar this build actually registers
+
+`FABLE2_DUMP_CVARS=<path>` writes all 153 registered cvars with their values,
+defaults, allowed values and ranges. **Design the menu from that file, not from
+the SDK headers** - guessing from headers is exactly how ng2recomp's menu ended
+up offering FSR and CAS sharpening that its presenter does not implement.
+
+Two things the dump settled here:
+
+- `present_effect` declares exactly one allowed value, `bilinear`. There is no
+  output filter to choose, so the menu does not offer one.
+- `swap_post_effect` declares `none / fxaa / fxaa_extreme`. That is the whole
+  of the antialiasing this runtime has.
+
+### Getting a value into the GPU plugin
+
+The plugin's cvars do not exist when the app starts - `rexgpu-xenos.dll`
+registers them as it loads, after `OnPreSetup` and before `OnPostSetup`. So
+setting them directly fails in the first hook and is *too late* in the second,
+because the plugin latched the value at GPU init. On ng2recomp that is what
+made internal resolution scaling look impossible.
+
+`cvar::LoadConfig` is the one path that survives the gap: it defers values for
+unregistered cvars and applies them at registration. `fable2_tuning.h` writes
+`cache/fable2_tuning.toml` and loads it from `OnPreSetup`, and `OnPostSetup`
+**reads the values back** - which is the only honest confirmation they arrived:
+
+```
+GPU: internal scale 2x2, swap_post_effect 'fxaa', vsync true
+```
+
+### A borrowed warning that turned out to be false here
+
+ng2recomp warns that its game paces logic off the reported refresh, so above
+60 Hz it runs faster rather than smoother, and V-Sync off speeds it up. That is
+real for Ninja Gaiden II (it is in Xenia's compatibility entry for that title)
+and it was tempting to copy.
+
+Measured instead: a 30 Hz run and a 60 Hz run reach the same point in the boot
+sequence at the same wall-clock second, with the refresh change confirmed in
+the log rather than assumed. **Fable II does not appear to tie its pacing to
+the reported refresh**, so the menu does not repeat the warning. The frame-rate
+row says what was measured, and says plainly that above 60 is untested.
+
+`Fable2Tuning::Fixed()` is empty for the same reason: ng2recomp ships several
+compatibility flags there, and copying another title's flags because they are
+sitting in a neighbouring project is how a working build gets broken.
+
+### There is no DLC page
+
+Deliberately. Knothole Island and See the Future are already on the GOTY disc,
+so there is nothing to install - see above. For a package that genuinely is not
+on the disc, `--dlc_root <folder>` or `tools/install_dlc.cmd` still work, and
+the About section says so.
+
 ## Prerequisites
 
 - The ReXGlue SDK. `tools/build.cmd` looks for `%REXSDK%`, falling back to

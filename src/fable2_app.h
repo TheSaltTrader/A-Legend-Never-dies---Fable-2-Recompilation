@@ -6,19 +6,36 @@
 #pragma once
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 #include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
+#include <rex/ui/keybinds.h>
+#include <rex/ui/overlay/settings_overlay.h>
+#include <rex/ui/window.h>
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <memory>
+#include <optional>
+#include <thread>
 
+#include "fable2_disc.h"
 #include "fable2_dlc.h"
+#include "fable2_menu.h"
+#include "fable2_platform.h"
+#include "fable2_settings.h"
+#include "fable2_tuning.h"
 
 // Where to look for Xbox 360 content packages. Empty (the default) means do
 // nothing at all: the two Fable II expansions are already on the GOTY disc, so
-// installing them is a gigabyte of wasted work. tools/run.cmd passes the
-// project's DLC folder.
+// installing them is a gigabyte of wasted work. There is deliberately no DLC
+// page in the settings menu for the same reason - see tools/install_dlc.cmd.
 REXCVAR_DEFINE_STRING(dlc_root, "", "Content",
                       "Folder of Xbox 360 content packages to install (DLC)");
 
@@ -26,6 +43,8 @@ class Fable2App : public rex::ReXApp {
  public:
   // Fable II, from the XEX's own execution-info header.
   static constexpr uint32_t kTitleId = 0x4D5307F1;
+
+  Fable2Settings settings_;
 
   using rex::ReXApp::ReXApp;
 
@@ -35,32 +54,186 @@ class Fable2App : public rex::ReXApp {
         PPCImageConfig));
   }
 
-  // Select the Xenos GPU emulation plugin.
+  // Read the settings file and apply everything the WINDOW is built from.
   //
-  // This is a RuntimeConfig FIELD, not a cvar - there is no --gpu_plugin to
-  // set instead. Without it the runtime comes up in "native rendering mode",
-  // silently ignores every Vd* kernel call, and the guest never gets a ring
-  // buffer: no error, just a black window. CMakeLists stages rexgpu-xenos.dll
-  // next to the executable via GPU_PLUGINS.
-  void OnPreSetup(rex::RuntimeConfig& config) override {
-    config.gpu_plugin = "xenos";
+  // This has to be OnConfigurePaths, not OnPreSetup. SetupPresentation creates
+  // the window from window_width/height/fullscreen, and it runs BEFORE
+  // OnPreSetup. Setting them later looks like it works, because the window
+  // ends up the right size anyway once the guest sets its video mode -
+  // fullscreen has no such second chance, and on ng2recomp came back windowed
+  // every launch until this was moved here.
+  void OnConfigurePaths(rex::PathConfig& paths) override {
+    settings_.Load();
+    ApplyEnvironmentOverrides();
+    settings_.Clamp();
+
+    REXCVAR_SET(window_width, settings_.window_width);
+    REXCVAR_SET(window_height, settings_.window_height);
+    REXCVAR_SET(fullscreen, settings_.fullscreen);
+    REXCVAR_SET(monitor, settings_.monitor);
+
+    if (paths.game_data_root.empty())
+      paths.game_data_root = settings_.ResolvedGamePath();
   }
 
-  // Boot progress markers. The runtime does not log a successful file open,
-  // so during bring-up the only cheap signal that the guest is making
-  // progress is where it gets to - and absence of logging is not absence of
-  // behaviour.
+  // The setup screen, on the one hook where the window and the ImGui drawer
+  // are live but the runtime has not been built yet - so the game path it
+  // returns is the one that actually gets mounted.
+  std::optional<rex::PathConfig> OnFinalizePaths(
+      const rex::PathConfig& defaults,
+      std::function<void(rex::PathConfig)> resume) override {
+    const bool path_from_cli = !REXCVAR_GET(game_data_root).empty();
+    const bool game_ok =
+        fable2::InspectFolder(settings_.ResolvedGamePath()).Usable();
+
+    // Three reasons to stop: never configured, the player asked for it with
+    // Shift, or the configured folder has gone (a moved or unplugged drive
+    // should offer the picker, not a fatal error).
+    const bool show = !path_from_cli &&
+                      (!settings_.configured || fable2::ShiftHeld() || !game_ok);
+    if (!show) {
+      rex::PathConfig paths = defaults;
+      if (!path_from_cli)
+        paths.game_data_root = settings_.ResolvedGamePath();
+      return paths;
+    }
+
+    REXLOG_INFO("Setup screen: {}",
+                !settings_.configured ? "first run"
+                : fable2::ShiftHeld() ? "Shift held at launch"
+                                      : "configured game folder is missing");
+    StartUiPump();
+    setup_screen_ = std::make_unique<fable2::SetupScreen>(
+        imgui_drawer(), &settings_,
+        [this, defaults, resume](bool play) {
+          // Invoked from inside the dialog's own OnDraw: destroying it here
+          // would delete the object being drawn, so hand the teardown to the
+          // next UI tick.
+          app_context().CallInUIThreadDeferred([this, defaults, resume, play] {
+            StopUiPump();
+            setup_screen_.reset();
+            if (!play) {
+              app_context().QuitFromUIThread();
+              return;
+            }
+            // The window already exists, so a fullscreen choice made on this
+            // screen cannot go through the cvar the window was built from.
+            // Push it at the live objects instead.
+            fable2::ApplyLiveSettings(settings_, window());
+            rex::PathConfig paths = defaults;
+            paths.game_data_root = settings_.ResolvedGamePath();
+            resume(paths);
+          });
+        },
+        [this] { ToggleAdvancedSettings(); });
+    return std::nullopt;
+  }
+
+  // Select the Xenos GPU emulation plugin, and push the tuning.
+  //
+  // gpu_plugin is a RuntimeConfig FIELD, not a cvar - there is no --gpu_plugin
+  // to set instead. Without it the runtime comes up in "native rendering
+  // mode", silently ignores every Vd* kernel call, and the guest never gets a
+  // ring buffer: no error, just a black window.
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    config.gpu_plugin = "xenos";
+    ApplyDisplaySettings();
+    ApplyTuning();
+  }
+
   void OnPostLoadXexImage() override {
     REXLOG_INFO("fable2: XEX image loaded");
   }
 
-  // Install any content packages once the runtime (and so the content
-  // manager) exists, before the guest launches and enumerates its DLC.
+  // FABLE2_DUMP_CVARS=<path> writes every registered cvar - name, category,
+  // current value, default, and any declared allowed values or range.
+  //
+  // This is the only honest way to know what a build can actually do. The GPU
+  // plugin does not export accessors for its flags, so they cannot be listed
+  // from outside, and guessing from the SDK headers is exactly how ng2recomp's
+  // settings menu ended up offering FSR and CAS that its presenter does not
+  // implement. Design the menu from this file, not from a header.
+  //
+  // It has to run in OnPostSetup: rexgpu-xenos.dll registers its cvars when it
+  // loads, which is after OnPreSetup.
+  static void DumpCvars(const std::filesystem::path& path) {
+    std::ofstream out(path, std::ios::trunc);
+    if (!out) {
+      REXLOG_WARN("Cvar dump: cannot write {}", path.string());
+      return;
+    }
+    auto names = rex::cvar::ListFlags();
+    std::sort(names.begin(), names.end());
+    out << "# " << names.size() << " registered cvars\n";
+    for (const auto& name : names) {
+      const auto* info = rex::cvar::GetFlagInfo(name);
+      if (!info) continue;
+      out << name << "\n  category  " << info->category
+          << "\n  value     " << rex::cvar::GetFlagByName(name)
+          << "\n  default   " << info->default_value << "\n";
+      if (!info->constraints.allowed_values.empty()) {
+        out << "  allowed  ";
+        for (const auto& v : info->constraints.allowed_values) out << " " << v;
+        out << "\n";
+      }
+      if (info->constraints.HasRangeConstraint()) {
+        out << "  range     "
+            << (info->constraints.min ? std::to_string(*info->constraints.min) : "-")
+            << " .. "
+            << (info->constraints.max ? std::to_string(*info->constraints.max) : "-")
+            << "\n";
+      }
+    }
+    REXLOG_INFO("Cvar dump: {} cvars -> {}", names.size(), path.string());
+  }
+
   void OnPostSetup() override {
+    if (const char* dump = std::getenv("FABLE2_DUMP_CVARS"); dump && *dump)
+      DumpCvars(dump);
+
+    // Read back what the plugin actually took, now that its cvars exist. This
+    // is the only honest check that the deferred config reached it - the
+    // config file saying 2 proves nothing.
+    REXLOG_INFO("GPU: internal scale {}x{}, swap_post_effect '{}', vsync {}",
+                rex::cvar::GetFlagByName("draw_resolution_scale_x"),
+                rex::cvar::GetFlagByName("draw_resolution_scale_y"),
+                rex::cvar::GetFlagByName("swap_post_effect"),
+                rex::cvar::GetFlagByName("vsync"));
+
+    // The window exists by now, so the comfort settings go straight on it.
+    fable2::ApplyLiveSettings(settings_, window());
+
     const std::string root = REXCVAR_GET(dlc_root);
-    if (root.empty()) return;
-    fable2::InstallPackages(runtime()->kernel_state()->content_manager(),
-                            std::filesystem::path(root), kTitleId);
+    if (!root.empty()) {
+      fable2::InstallPackages(runtime()->kernel_state()->content_manager(),
+                              std::filesystem::path(root), kTitleId);
+    }
+  }
+
+  // F10 opens the same settings over the running game. F4 - the SDK's own raw
+  // cvar browser - is left alone; this menu links to it rather than replacing
+  // it, because the two answer different questions. F4 enumerates the registry
+  // and so cannot fall behind the build; this one explains what matters.
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    rex::ui::RegisterBind(
+        "bind_fable2_settings", "F10", "Toggle the Fable II settings menu",
+        [this, drawer] {
+          if (overlay_) {
+            overlay_.reset();
+            return;
+          }
+          overlay_ = std::make_unique<fable2::SettingsOverlay>(
+              drawer, &settings_, window(), [this] { ToggleAdvancedSettings(); });
+        });
+  }
+
+  void OnConfigureFonts(ImFontAtlas* atlas) override {
+    fable2::LoadMenuFonts(atlas);
+  }
+
+  void OnConfigureStyle(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) override {
+    fable2::ApplyMenuStyle(imgui_style);
+    (void)ui_style;
   }
 
   void OnPreLaunchModule() override {
@@ -71,4 +244,121 @@ class Fable2App : public rex::ReXApp {
     (void)thread;
     REXLOG_INFO("fable2: main guest thread exited");
   }
+
+  void OnShutdown() override {
+    // The dialogs hold a raw pointer to the drawer, which the SDK tears down
+    // after this hook. Drop them first.
+    StopUiPump();
+    setup_screen_.reset();
+    overlay_.reset();
+    advanced_.reset();
+    rex::ui::UnregisterBind("bind_fable2_settings");
+  }
+
+ private:
+  // The SDK's cvar browser: the honest "everything else" surface, because it
+  // enumerates the registry rather than a hand-written list.
+  void ToggleAdvancedSettings() {
+    if (advanced_) {
+      advanced_.reset();
+      return;
+    }
+    advanced_ = std::make_unique<rex::ui::SettingsDialog>(
+        imgui_drawer(), rex::filesystem::GetExecutableFolder() / "fable2.toml");
+  }
+
+  // What the title is told the display is. This is separate from the host
+  // window: video_mode_* is what actually changes the rendered resolution and
+  // the rate the game targets.
+  void ApplyDisplaySettings() {
+    REXCVAR_SET(video_mode_width, settings_.video_width);
+    REXCVAR_SET(video_mode_height, settings_.video_height);
+    REXCVAR_SET(video_mode_refresh_rate, double(settings_.fps));
+    REXLOG_INFO("Display: window {}x{}, guest {}x{} @ {} Hz, fullscreen={}, "
+                "scale={}x",
+                settings_.window_width, settings_.window_height,
+                settings_.video_width, settings_.video_height, settings_.fps,
+                settings_.fullscreen, settings_.resolution_scale);
+  }
+
+  // Everything the GPU plugin owns, through the cvar config loader so the
+  // values survive until the plugin registers its cvars. See fable2_tuning.h
+  // for why setting them directly cannot work.
+  void ApplyTuning() {
+    auto entries = Fable2Tuning::Fixed();
+    const auto mappings =
+        rex::filesystem::GetExecutableFolder() / "gamecontrollerdb.txt";
+    std::error_code ec;
+    const bool have_mappings = std::filesystem::exists(mappings, ec);
+    for (auto& e : Fable2Tuning::FromSettings(
+             settings_, have_mappings ? mappings.string() : std::string())) {
+      entries.push_back(std::move(e));
+    }
+    Fable2Tuning::Apply(
+        rex::filesystem::GetExecutableFolder() / "cache" / "fable2_tuning.toml",
+        entries);
+  }
+
+  static int EnvInt(const char* name, int fallback) {
+    const char* e = std::getenv(name);
+    if (!e || !*e) return fallback;
+    const int v = std::atoi(e);
+    return v > 0 ? v : fallback;
+  }
+
+  // Environment overrides beat the saved file, for scripted testing. Read once
+  // so every later consumer sees the same values.
+  void ApplyEnvironmentOverrides() {
+    settings_.window_width = EnvInt("FABLE2_WIDTH", settings_.window_width);
+    settings_.window_height = EnvInt("FABLE2_HEIGHT", settings_.window_height);
+    settings_.fps = EnvInt("FABLE2_FPS", settings_.fps);
+    settings_.resolution_scale =
+        EnvInt("FABLE2_SCALE", settings_.resolution_scale);
+    if (std::getenv("FABLE2_FULLSCREEN"))
+      settings_.fullscreen = EnvInt("FABLE2_FULLSCREEN", 0) != 0;
+    if (const char* game = std::getenv("FABLE2_GAME"); game && *game)
+      settings_.game_path = game;
+    // A scripted run must never stop at the setup screen.
+    if (std::getenv("FABLE2_NO_SETUP"))
+      settings_.configured = true;
+  }
+
+  // Nothing paints the UI before the guest runs.
+  //
+  // The setup screen draws once and freezes without this - a perfect
+  // screenshot, completely dead to the mouse, because ImGui only consumes
+  // queued input inside a draw. The pump has to come from a SECOND THREAD: a
+  // UI-thread tick that re-enqueues itself starves SDL's event loop and kills
+  // the window's close button.
+  void StartUiPump() {
+    if (ui_pump_thread_.joinable()) return;
+    ui_pump_stop_.store(false, std::memory_order_release);
+    ui_pump_pending_.store(false, std::memory_order_release);
+    ui_pump_thread_ = std::thread([this] {
+      while (!ui_pump_stop_.load(std::memory_order_acquire)) {
+        // One repaint in flight at a time. A modal file dialog blocks the UI
+        // thread for as long as it is open, and without this the whole time
+        // would come back as a queue full of stale repaint requests.
+        if (!ui_pump_pending_.exchange(true, std::memory_order_acq_rel)) {
+          app_context().CallInUIThreadDeferred([this] {
+            if (auto* w = window()) w->RequestPresenterUIPaintFromUIThread();
+            ui_pump_pending_.store(false, std::memory_order_release);
+          });
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+      }
+    });
+  }
+
+  void StopUiPump() {
+    ui_pump_stop_.store(true, std::memory_order_release);
+    if (ui_pump_thread_.joinable()) ui_pump_thread_.join();
+  }
+
+  std::unique_ptr<fable2::SetupScreen> setup_screen_;
+  std::unique_ptr<fable2::SettingsOverlay> overlay_;
+  std::unique_ptr<rex::ui::SettingsDialog> advanced_;
+  std::thread ui_pump_thread_;
+  std::atomic<bool> ui_pump_stop_{false};
+  std::atomic<bool> ui_pump_pending_{false};
 };

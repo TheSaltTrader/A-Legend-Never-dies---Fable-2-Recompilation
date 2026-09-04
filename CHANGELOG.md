@@ -3,6 +3,49 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.4 — 2026-09-04
+
+### Added
+
+- **A settings menu, in two surfaces**, ported from `ng2recomp`:
+  a **pre-boot setup screen** (game folder, install from an ISO, all display
+  and graphics settings) on `OnFinalizePaths`, and an **F10 overlay** over the
+  running game. F4, the SDK's own cvar browser, is left alone and linked to.
+- `src/fable2_settings.h` (the saved file), `src/fable2_tuning.h` (the
+  deferred-cvar transport), `src/fable2_menu.{h,cpp}`, `src/fable2_disc.{h,cpp}`
+  (ISO inspection and extraction), `src/fable2_platform.{h,cpp}` (Win32 file
+  pickers, Shift detection).
+- **`FABLE2_DUMP_CVARS=<path>`** writes all 153 registered cvars with values,
+  defaults, allowed values and ranges. The menu was designed from that dump
+  rather than from the SDK headers.
+- Audio rows (mute, buffering) and mouse-look rows, which the dump showed the
+  runtime supports and ng2recomp's menu does not expose.
+- `FABLE2_*` environment overrides, including `FABLE2_NO_SETUP=1` so a scripted
+  run never stops at a dialog.
+
+### Verified
+
+- The setup screen appears, is responsive, and correctly refuses to start with
+  a bad game path (Play disabled, reason on screen).
+- A configured launch boots straight to the title screen, and the `OnPostSetup`
+  readback confirms the deferred config reached the plugin:
+  `GPU: internal scale 2x2, swap_post_effect 'fxaa', vsync true`. Supersampling
+  is the setting ng2recomp initially wrote off as impossible.
+- The mouse rows grey out until keyboard control is on.
+
+### Notes
+
+- **A borrowed warning, measured and dropped.** ng2recomp warns that its game
+  paces logic off the reported refresh (above 60 Hz it speeds up; V-Sync off
+  speeds it up). Measured here with the refresh change confirmed in the log: a
+  30 Hz and a 60 Hz run reach the same point in the boot sequence at the same
+  wall-clock second, so Fable II does not appear to do this. The menu says what
+  was measured and marks above-60 untested, instead of repeating NG2's claim.
+- `Fable2Tuning::Fixed()` is deliberately empty. ng2recomp ships several Xenia
+  compatibility flags there; none of them are about this game.
+- No DLC page, since the expansions are on the disc. The About section says so
+  and points at `--dlc_root` for anything that genuinely is not.
+
 ## 0.0.3 — 2026-09-04
 
 ### Verified
