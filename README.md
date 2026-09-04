@@ -19,14 +19,14 @@ gitignored.
 | `rexglue codegen` | ✅ **zero analysis errors** |
 | `setjmp` / `longjmp` located | ✅ `0x83000200` / `0x82CA9260` |
 | Native build | ✅ `fable2.exe`, 78 MB, ~3 min |
-| Runs | ✅ **boots → menus → character select → opening cinematic → gameplay in Old Bowerstone** |
+| Runs | ⚠️ **boots → menus → character select → intro video → Old Bowerstone**, but **no character has ever rendered in-engine** - see below |
 | Intro videos | ✅ Bink decodes correctly, no artifacts |
 | Input | ✅ keyboard-to-controller (`--mnk_mode=true`) drives the menus |
 | Freeze at ~3.5 min | ✅ **fixed** - it was the RTV render-target path; ROV runs 8 min clean |
 
 Reached on 2026-09-03 (first day) and 2026-09-04. The game boots through its
 Bink logo videos, shows the title screen, accepts input, opens the main menu,
-gets through New Game character select, plays the **opening cinematic in-engine**
+gets through New Game character select, plays the **opening cinematic** (which is a PRE-RENDERED video, not the engine)
 (the sparrow on the pillar, with depth of field and real-time lighting) and
 arrives in **Old Bowerstone with the tutorial hint up** — snow, brazier fire,
 particles, the lot. A full 300-second run logs **zero fatals**.
@@ -239,6 +239,28 @@ startup is shown disabled and marked `(restart)` rather than accepted and
 silently ignored. **F4 is the SDK's own cvar browser** and is left alone - the
 menu links to it, because it enumerates the registry and so cannot fall behind
 the build.
+
+### What actually renders, and what never has
+
+Stated plainly because this project got it wrong for a long time, in the README
+and the changelog both:
+
+- **Static world geometry renders.** Old Bowerstone's architecture, snow, fire,
+  particles, water - all of it, and it looks right.
+- **No character has ever rendered in-engine.** Not NPCs, not the hero, not the
+  dog. Never, in any build.
+- **The opening "cinematic" is a pre-rendered video**, not the engine. Frames
+  from it show a street full of people, a cart, a bird - and reading those as
+  engine output is exactly the mistake that kept this hidden. A frame full of
+  characters proves the Bink decoder works; it says nothing about the renderer.
+
+So the signature is narrow and specific: **skinned/animated geometry never
+draws, while static geometry does.** That is a much sharper thing to chase than
+"characters are sometimes missing", and it is probably related to the flat-blue
+scene rather than separate from it.
+
+When judging a screenshot from this title, establish whether it is video or
+engine BEFORE drawing any conclusion from it.
 
 ### Every row is a cvar this build actually registers
 

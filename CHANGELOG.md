@@ -455,7 +455,8 @@ Much sharper than "rendering stops":
 ### Verified
 
 - **The game reaches gameplay.** Boots → title → main menu → New Game character
-  select → the opening cinematic in-engine → **Old Bowerstone**, with snow,
+  select → the opening cinematic (a PRE-RENDERED video, not the engine - this
+  entry originally claimed otherwise) → **Old Bowerstone**, with snow,
   brazier fire, particles and the tutorial hint up. A 300-second run logs
   **zero fatals** and 9,314 lines.
 - 168 → 166 function-boundary overrides (15 hand-found, 151 generated,
@@ -577,7 +578,8 @@ over the toolchain and the hard-won lessons from `ng2recomp` (Ninja Gaiden II).
 ### Verified
 
 - **The game reaches gameplay.** Boots → title → main menu → New Game character
-  select → the opening cinematic in-engine → **Old Bowerstone**, with snow,
+  select → the opening cinematic (a PRE-RENDERED video, not the engine - this
+  entry originally claimed otherwise) → **Old Bowerstone**, with snow,
   brazier fire, particles and the tutorial hint up. A 300-second run logs
   **zero fatals** and 9,314 lines.
 - 168 → 166 function-boundary overrides (15 hand-found, 151 generated,

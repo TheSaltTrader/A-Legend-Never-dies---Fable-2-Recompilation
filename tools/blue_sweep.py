@@ -163,6 +163,11 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seconds", type=float, default=330)
     ap.add_argument("--only", help="run just this case")
+    ap.add_argument("--extra", action="append", default=[], metavar="ARG",
+                    help="an ad-hoc case: pass a cvar to the game and score it "
+                         "with the same input schedule as the built-in cases. "
+                         "Repeatable. Note argparse eats a bare --value, so "
+                         "write --extra=--the_cvar=false, with the equals sign.")
     args = ap.parse_args()
 
     # Flat blue with a working UI layer says the SCENE pass is producing a
@@ -206,6 +211,10 @@ def main():
         ("nosnorm",  ["--snorm16_render_target_full_range=false"]),
     ]
     results = {}
+    if args.extra:
+        # An ad-hoc case beats editing the list for a one-off hypothesis, and it
+        # is scored exactly like the built-ins so the numbers are comparable.
+        cases = [("adhoc", list(args.extra))]
     for name, extra in cases:
         if args.only and name != args.only:
             continue
