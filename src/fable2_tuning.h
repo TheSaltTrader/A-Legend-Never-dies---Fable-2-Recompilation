@@ -60,6 +60,24 @@ struct Fable2Tuning {
         {"gpu_allow_invalid_fetch_constants", "true",
          "[community] Fable II emits fetch constants the strict path rejects; "
          "without this, textures drop out (missing grass)"},
+
+        // [measured] The freeze. Two runs, same 290 s input schedule, shader
+        // cache cleared before each so a cached pipeline could not carry over,
+        // one variable changed:
+        //
+        //   rov  last picture change 289s of 290s   47 changed,  1 identical
+        //   rtv  last picture change 253s of 290s   38 changed, 10 identical
+        //
+        // RTV stopped updating for the last 37 seconds; ROV was still moving
+        // at the end, past the ~3m25s point where the picture used to die.
+        // ng2recomp reached the same conclusion for its own title, but that
+        // was not evidence for this one - this is.
+        //
+        // Measured with tools/play_probe.py --freeze-report, which compares
+        // raw frame buffers: a frozen picture repeats byte for byte.
+        {"render_target_path_d3d12", "rov",
+         "[measured] rov = still rendering at 290s; rtv = frozen for the last "
+         "37s of the same run"},
     };
   }
 

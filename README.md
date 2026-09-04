@@ -22,7 +22,7 @@ gitignored.
 | Runs | ✅ **boots → menus → character select → opening cinematic → gameplay in Old Bowerstone** |
 | Intro videos | ✅ Bink decodes correctly, no artifacts |
 | Input | ✅ keyboard-to-controller (`--mnk_mode=true`) drives the menus |
-| Current blocker | rendering freezes on a static blue frame ~3.5 min in, while the guest keeps running |
+| Freeze at ~3.5 min | ✅ **fixed** - it was the RTV render-target path; ROV runs 8 min clean |
 
 Reached on 2026-09-03 (first day) and 2026-09-04. The game boots through its
 Bink logo videos, shows the title screen, accepts input, opens the main menu,
@@ -36,14 +36,50 @@ is still wrong.
 
 Screenshots in `out/shots/`.
 
-### What is broken
+### The freeze, and what fixed it
 
-About 3.5 minutes in, the presented image freezes on a static blue frame and
-never changes again, while the guest carries on and the GPU keeps compiling new
-pipelines. No ring-buffer failure is logged (NG2's equivalent symptom came with
-hundreds of `PRIMARY RINGBUFFER: Failed to execute packet`), and there is
-exactly one `WriteRegister index out of bounds: 28685` in the whole run. This is
-the next thing to chase.
+The picture used to stop updating about 3m25s in while the game carried on
+running. It was **not** a hang: the presence heartbeat (`XGIUserSetContextEx`)
+kept ticking once a second and ~510 APCs/second kept completing, steadily,
+forever. Nothing crashed, nothing was unregistered, and the only failed file
+opens were language packs we do not ship. What stopped was **GPU submission** -
+zero `[gpu]` activity, permanently.
+
+The cause was the **render-target path**. The runtime was defaulting to RTV -
+the shader cache file is literally named `4D5307F1.rtv.d3d12.xpso`. Measured,
+two runs, identical 290 s input schedule, shader cache cleared before each so
+no pipeline could carry over, one variable changed:
+
+| `render_target_path_d3d12` | last picture change | changed | identical |
+|---|---|---|---|
+| **`rov`** | 289s of 290s | 47 | **1** |
+| `rtv` | 253s of 290s | 38 | **10** |
+
+Confirmed over a longer run with `rov` as the default: **473s of 480s, 59
+frames changed, 0 identical** - eight minutes with no freeze at all, against a
+failure that used to arrive at three and a half.
+
+`ng2recomp` reached the same conclusion for its own title (3128 EDRAM resolves
+on ROV against 22 on RTV) but that was never evidence for this one. This is.
+
+Measured with `tools/play_probe.py --freeze-report`, which compares **raw frame
+buffers**: a frozen picture repeats byte for byte. Two earlier attempts at this
+measurement were wrong and are worth recording:
+
+1. Counting `[gpu]` log lines. Those only exist at `debug`, and at debug the
+   ~510 APC lines a second rotate the transition out of the log entirely.
+2. Running the A/B **without driving any input**, so neither arm ever left the
+   title screen and reached the state that freezes. Both "passed" 240s, which
+   proved nothing at all.
+
+### Still open
+
+- The hero's and the dog's textures can still go black once the hero grows up.
+  That is Fable II's own well-known emulation bug; set **Black texture fix** to
+  `some` in Graphics (`readback_resolve`).
+- Clear the shader cache after a build change - `tools/clear_cache.py --yes`,
+  or the button on the setup screen. A cache built by an older build is a known
+  cause of that texture bug lingering, and it never touches saves or DLC.
 
 ## The game
 

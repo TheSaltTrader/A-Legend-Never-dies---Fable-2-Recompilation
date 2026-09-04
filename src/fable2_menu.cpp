@@ -140,6 +140,50 @@ std::vector<std::string> AllowedValues(const char* name,
   return {current};
 }
 
+
+// The runtime's shader cache, and how many files are in it.
+//
+// Worth a button rather than a documentation note: the maintainers of the
+// unofficial Xenia fork for Fable II are explicit that stale cached shaders
+// make its black-texture bug linger, and a cache built by an earlier, buggier
+// build of this project is exactly that hazard.
+//
+// Deliberately narrow. The same root holds save games
+// (B13EBABEBABEBABE/...), installed DLC and the player profile; only
+// cache/shaders is ever touched, and the path is rebuilt from the user profile
+// rather than taken from anything the UI could get wrong.
+std::filesystem::path ShaderCachePath() {
+  const char* home = std::getenv("USERPROFILE");
+  if (!home || !*home) return {};
+  return std::filesystem::path(home) / "Documents" / "fable2" / "cache" /
+         "shaders";
+}
+
+int ShaderCacheFileCount() {
+  const auto path = ShaderCachePath();
+  std::error_code ec;
+  if (path.empty() || !std::filesystem::is_directory(path, ec)) return 0;
+  int n = 0;
+  for (auto& e : std::filesystem::directory_iterator(path, ec))
+    if (e.is_regular_file(ec)) ++n;
+  return n;
+}
+
+// Returns a line to show the player, so a failure is visible rather than a
+// button that appears to do nothing.
+std::string ClearShaderCache() {
+  const auto path = ShaderCachePath();
+  if (path.empty()) return "Could not locate the cache folder.";
+  std::error_code ec;
+  if (!std::filesystem::is_directory(path, ec))
+    return "No shader cache to clear.";
+  const int before = ShaderCacheFileCount();
+  std::filesystem::remove_all(path, ec);
+  if (ec) return "Could not clear the cache: " + ec.message();
+  return "Cleared " + std::to_string(before) +
+         " cached shader file(s). They rebuild on the next launch.";
+}
+
 // --- shared pages --------------------------------------------------------
 
 struct PageOptions {
@@ -916,6 +960,23 @@ void SetupScreen::DrawAbout() {
         "fable2_tuning.toml is rewritten from them on every launch and is not "
         "meant to be edited. fable2.toml is the runtime's own config, written by "
         "the F4 screen.");
+
+  SectionHeader("Shader cache");
+  {
+    static std::string cache_status;
+    const int n = ShaderCacheFileCount();
+    Muted("The runtime caches translated shaders and pipelines between runs. "
+          "Clear them if the picture starts misbehaving after a build change - "
+          "a cache built by an older build is a known cause of Fable II's "
+          "black-texture bug lingering. Saves and DLC are not touched.");
+    if (ImGui::Button(n > 0 ? "Clear shader cache" : "Shader cache is empty")) {
+      if (n > 0) cache_status = ClearShaderCache();
+    }
+    if (!cache_status.empty()) {
+      ImGui::SameLine();
+      ImGui::TextColored(kGood, "%s", cache_status.c_str());
+    }
+  }
 
   SectionHeader("This screen");
   Muted("It opens on the first run, and any time Shift is held at launch. "

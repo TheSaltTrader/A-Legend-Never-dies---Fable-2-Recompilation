@@ -3,6 +3,50 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.6 — 2026-09-04
+
+### Fixed
+
+- **The ~3m25s freeze.** It was the **render-target path**: the runtime
+  defaulted to RTV (the shader cache file is named `4D5307F1.rtv.d3d12.xpso`),
+  and `render_target_path_d3d12 = "rov"` is now a measured entry in
+  `Fable2Tuning::Fixed()`.
+
+  Two runs, identical 290 s input schedule, shader cache cleared before each,
+  one variable changed:
+
+  | path | last picture change | changed | identical |
+  |---|---|---|---|
+  | `rov` | 289s of 290s | 47 | 1 |
+  | `rtv` | 253s of 290s | 38 | 10 |
+
+  Confirmed with ROV as the default over a longer run: **473s of 480s, 59
+  changed, 0 identical** — eight minutes clean, against a failure that used to
+  arrive at three and a half.
+
+### Added
+
+- **`tools/clear_cache.py`** and a **Clear shader cache** button on the setup
+  screen. Stale cached shaders are a known cause of Fable II's black-texture
+  bug lingering, and a cache built by an older build of this project is exactly
+  that hazard. Both are deliberately narrow: they enumerate what they will
+  remove, refuse anything outside `cache/`, and never touch the save games,
+  installed DLC or profile that share the same root.
+- The `OnPostSetup` readback now covers the render-target path, readback mode
+  and the fetch-constant flag, so all three are confirmed rather than assumed:
+  `render target path 'rov', readback 'some', allow_invalid_fetch_constants true`.
+
+### Notes
+
+- Two earlier attempts at the freeze measurement were wrong and are recorded as
+  such: counting `[gpu]` log lines (they only exist at `debug`, where ~510 APC
+  lines a second rotate the transition out of the log), and running the A/B
+  without driving input (so neither arm ever reached the state that freezes —
+  both "passed" and proved nothing).
+- Scripted input schedules are stateful: once save games exist the main menu
+  grows a "Continue" row, and a schedule tuned before that no longer lands on
+  the same entries.
+
 ## 0.0.5 — 2026-09-04
 
 ### Added

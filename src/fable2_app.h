@@ -194,11 +194,16 @@ class Fable2App : public rex::ReXApp {
     // Read back what the plugin actually took, now that its cvars exist. This
     // is the only honest check that the deferred config reached it - the
     // config file saying 2 proves nothing.
-    REXLOG_INFO("GPU: internal scale {}x{}, swap_post_effect '{}', vsync {}",
+    REXLOG_INFO("GPU: internal scale {}x{}, swap_post_effect '{}', vsync {}, "
+                "render target path '{}', readback '{}', "
+                "allow_invalid_fetch_constants {}",
                 rex::cvar::GetFlagByName("draw_resolution_scale_x"),
                 rex::cvar::GetFlagByName("draw_resolution_scale_y"),
                 rex::cvar::GetFlagByName("swap_post_effect"),
-                rex::cvar::GetFlagByName("vsync"));
+                rex::cvar::GetFlagByName("vsync"),
+                rex::cvar::GetFlagByName("render_target_path_d3d12"),
+                rex::cvar::GetFlagByName("readback_resolve"),
+                rex::cvar::GetFlagByName("gpu_allow_invalid_fetch_constants"));
 
     // The window exists by now, so the comfort settings go straight on it.
     fable2::ApplyLiveSettings(settings_, window());
