@@ -323,6 +323,32 @@ const char* AaLabel(const std::string& value) {
   return value.c_str();
 }
 
+// The upscaling filters, named for a player rather than for the API.
+const char* UpscaleLabel(const std::string& value) {
+  if (value == "bilinear") return "Bilinear (soft)";
+  if (value == "fsr") return "FSR 1.0 (sharp)";
+  if (value == "cas") return "CAS (sharpen only)";
+  return value.c_str();
+}
+
+// present_effect's allowed values, minus the ones that would be a lie.
+//
+// A runtime built with the full FidelityFX SDK also declares fsr2 and fsr3.
+// Those are a TEMPORAL upscaler needing real depth and motion vectors, which
+// this runtime does not have - it synthesizes them, says so in a warning, and
+// falls back to spatial FSR when the ffx-api library is absent. Offering them
+// would put three names for one filter in the list, so they are dropped.
+// Anything else the runtime declares is passed through untouched.
+std::vector<std::string> UpscaleValues(const std::string& current) {
+  std::vector<std::string> out;
+  for (const auto& v : AllowedValues("present_effect", current, nullptr)) {
+    if (v == "fsr2" || v == "fsr3") continue;
+    out.push_back(v);
+  }
+  if (out.empty()) out.push_back(current);
+  return out;
+}
+
 // The whole settings list, in one page.
 //
 // It used to be four tabs. One page reads better here: there are barely twenty
@@ -481,6 +507,59 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       changed = true;
     }
     if (!live) RestartTag();
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(!live);
+    RowStart("Upscaling",
+             "How the game's picture is scaled up to fill the window. Fable II "
+             "renders at 1120x720 (1280x720 with the resolution patch), so on "
+             "a modern display it is ALWAYS being upscaled - this only chooses "
+             "by what. FSR 1.0 reconstructs edges and then sharpens, and is "
+             "the one to want at 1080p or 4K. CAS sharpens without the "
+             "upscaling stage, which suits a window near the game's own size. "
+             "Bilinear is the stock filter and the softest.");
+    {
+      const auto up_values = UpscaleValues(s.present_effect);
+      int up_index = 0;
+      for (size_t i = 0; i < up_values.size(); ++i)
+        if (up_values[i] == s.present_effect) up_index = static_cast<int>(i);
+      std::vector<const char*> up_names;
+      for (const auto& v : up_values) up_names.push_back(UpscaleLabel(v));
+      if (ImGui::Combo("##upscale", &up_index, up_names.data(),
+                       static_cast<int>(up_names.size()))) {
+        s.present_effect = up_values[up_index];
+        changed = true;
+      }
+      if (!live) RestartTag();
+
+      // Only one filter has a knob at a time, and neither knob means anything
+      // for bilinear, so the row appears and disappears with the choice rather
+      // than sitting there greyed out.
+      if (s.present_effect == "fsr") {
+        RowStart("FSR sharpness",
+                 "How hard FSR's RCAS pass sharpens after upscaling. The "
+                 "runtime's own cvar is a sharpness REDUCTION in stops, where "
+                 "lower means sharper; this slider is inverted so that right "
+                 "is sharper, which is the way round a person expects.");
+        // Stored as the reduction the cvar wants; shown as sharpness.
+        float sharpness = 2.0f - static_cast<float>(s.fsr_sharpness);
+        if (ImGui::SliderFloat("##fsrsharp", &sharpness, 0.0f, 2.0f, "%.2f")) {
+          s.fsr_sharpness = 2.0 - static_cast<double>(sharpness);
+          changed = true;
+        }
+        if (!live) RestartTag();
+      } else if (s.present_effect == "cas") {
+        RowStart("CAS sharpness",
+                 "Extra contrast-adaptive sharpening on top of the default. "
+                 "0 is the runtime's own default; higher is sharper.");
+        float sharpness = static_cast<float>(s.cas_sharpness);
+        if (ImGui::SliderFloat("##cassharp", &sharpness, 0.0f, 1.0f, "%.2f")) {
+          s.cas_sharpness = static_cast<double>(sharpness);
+          changed = true;
+        }
+        if (!live) RestartTag();
+      }
+    }
     ImGui::EndDisabled();
 
     // Not restart-bound: the plugin applies this post-process per swap, so it

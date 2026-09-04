@@ -126,6 +126,60 @@ application cannot select Vulkan through `RuntimeConfig::gpu_plugin` — it has 
 call `LoadGpuPlugin(name, "vulkan")` itself. A `gpu_backend` cvar honoured by
 ReXApp would be friendlier.
 
+## Also worth fixing: FSR and CAS are compiled out, and need not be
+
+(A second packaging issue, in the same spirit as the Vulkan one above, and
+independent of the blue scene.)
+
+`present_effect` advertises exactly one value, `bilinear`, in the shipped
+build. That reads as "this runtime has no upscaling filter", and it is what
+sent this project's settings menu down a long detour. It is not true.
+
+The FSR 1.0 (EASU/RCAS) and CAS pixel shaders are **already built and committed
+to the tree**, for both backends:
+
+    src/ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_fsr_easu_ps.h
+    src/ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_fsr_rcas_ps.h
+    src/ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_cas_*.h
+    src/ui/shaders/vulkan_spirv/guest_output_ffx_*.h
+
+They are gated on `REX_HAS_FIDELITYFX_SDK`, which `src/ui/CMakeLists.txt` sets
+only when `REXGLUE_FIDELITYFX_SOURCE_DIR/sdk/include` exists — i.e. only after
+`REXGLUE_ENABLE_FIDELITYFX=ON` has done a full (`GIT_SHALLOW OFF`) FetchContent
+clone of the FidelityFX SDK and built `ffx-api`.
+
+**But the spatial path needs nothing from that SDK.** No file under `src/ui/`
+includes a FidelityFX header outside `<ffx_api/...>`, and every `<ffx_api/...>`
+include and call site is guarded by the *separate* `REX_HAS_FIDELITYFX_RUNTIME`
+define, each with a pure-arithmetic fallback (see
+`QueryTemporalFsrRenderResolutionFromQualityMode`). Only the temporal `fsr2` /
+`fsr3` modes actually need the library.
+
+So one define gates two unrelated things, and the expensive half decides for
+both. Splitting them makes the spatial upscalers available with no fetch, no
+`ffx-api` target, no extra DLL and no shader compiler:
+
+```cmake
+elseif(REXGLUE_FIDELITYFX_SPATIAL_ONLY)
+    target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
+```
+
+Verified here: with that one branch added, `present_effect` goes from
+`bilinear` to `bilinear cas fsr fsr2 fsr3`, `present_cas_additional_sharpness`
+/ `present_fsr_sharpness_reduction` / `present_fsr_quality_mode` register, and
+the build is otherwise unchanged (`FidelityFX: OFF` still reported, nothing
+fetched). `fsr2`/`fsr3` remain selectable and degrade to spatial FSR, which is
+what the runtime already warns they may do.
+
+Worth considering shipping the spatial effects on by default: for a 720p-era
+guest on a modern display the output is always being upscaled, so `bilinear`
+is the one choice a user would never deliberately make.
+
+Note this also changes `GuestOutputPaintConfig`'s layout and
+`Presenter::Effect`'s values, so it is an ABI break for anything compiled
+against the headers without the define — an argument for deciding it once, in
+the shipped package, rather than leaving it to each consumer.
+
 ## Attachments worth requesting
 
 - Screenshots of the same scene immediately before and after onset.

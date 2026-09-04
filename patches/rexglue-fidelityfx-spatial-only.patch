@@ -1,0 +1,44 @@
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 5bd3dc5..eb6385f 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -116,12 +116,39 @@ target_link_libraries(rexui PUBLIC
+ )
+ target_link_libraries(rexui PRIVATE utf8cpp)
+ 
++# REX_HAS_FIDELITYFX_SDK gates two quite different things, and conflating them
++# costs Windows users the only upscaler in the runtime:
++#
++#   * the SPATIAL present effects (cas, fsr = FidelityFX CAS and FSR 1.0
++#     EASU/RCAS). Their shaders are PREBUILT AND COMMITTED to this tree, under
++#     src/ui/shaders/bytecode/d3d12_5_1/ and src/ui/shaders/vulkan_spirv/, and
++#     no file under src/ui/ includes a FidelityFX header outside <ffx_api/...>.
++#     So this half needs the fetched SDK for exactly nothing.
++#
++#   * the TEMPORAL path (fsr2, fsr3), which really does call into ffx-api. That
++#     is guarded separately by REX_HAS_FIDELITYFX_RUNTIME, and every call site
++#     already has a pure-arithmetic fallback for when it is absent.
++#
++# Because both were behind the same define, and REXGLUE_ENABLE_FIDELITYFX
++# defaults OFF, the shipped build advertises present_effect="bilinear" and
++# nothing else - even though it is carrying working FSR and CAS shaders.
++#
++# SPATIAL_ONLY turns those on with no fetch, no ffx-api library, no extra DLL
++# and no shader compiler. fsr2/fsr3 stay selectable and degrade to spatial FSR,
++# which is what the runtime already warns they may do.
++option(REXGLUE_FIDELITYFX_SPATIAL_ONLY
++       "Enable the committed spatial FSR/CAS present effects without fetching the FidelityFX SDK"
++       OFF)
++
+ if(REXGLUE_FIDELITYFX_SOURCE_DIR AND EXISTS "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include")
+     target_include_directories(rexui PRIVATE
+         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include"
+         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/ffx-api/include"
+     )
+     target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
++elseif(REXGLUE_FIDELITYFX_SPATIAL_ONLY)
++    target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
++    message(STATUS "FidelityFX: spatial CAS/FSR only (no SDK fetch, no ffx-api)")
+ endif()
+ 
+ set(REXUI_HAS_FIDELITYFX_RUNTIME OFF)

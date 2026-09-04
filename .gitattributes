@@ -1,0 +1,5 @@
+# A patch must keep the exact bytes it was generated with - CRLF conversion
+# on checkout makes `git apply` fail on context lines.
+*.patch -text
+# Batch files are run by cmd.exe, which wants CRLF.
+*.cmd text eol=crlf

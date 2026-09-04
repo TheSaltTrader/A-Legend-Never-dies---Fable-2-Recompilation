@@ -242,17 +242,44 @@ the build.
 
 ### Every row is a cvar this build actually registers
 
-`FABLE2_DUMP_CVARS=<path>` writes all 153 registered cvars with their values,
+`FABLE2_DUMP_CVARS=<path>` writes all 192 registered cvars with their values,
 defaults, allowed values and ranges. **Design the menu from that file, not from
 the SDK headers** - guessing from headers is exactly how ng2recomp's menu ended
 up offering FSR and CAS sharpening that its presenter does not implement.
 
-Two things the dump settled here:
+What the dump settled here:
 
-- `present_effect` declares exactly one allowed value, `bilinear`. There is no
-  output filter to choose, so the menu does not offer one.
 - `swap_post_effect` declares `none / fxaa / fxaa_extreme`. That is the whole
   of the antialiasing this runtime has.
+- `present_effect` declares `bilinear / cas / fsr / fsr2 / fsr3`, so there is a
+  real upscaling filter to choose. The menu offers the first three; see below
+  for why not the last two.
+
+### But a dump describes a BUILD, not a runtime
+
+That `present_effect` line used to read `bilinear`, and nothing else, and this
+README used to conclude from it that the runtime had no upscaling filter at
+all. That conclusion was wrong, and the dump was not lying - it was faithfully
+reporting a build in which FSR and CAS had been **compiled out**. The shaders
+were sitting in the SDK tree the whole time, already built, behind a define
+that is only set when an unrelated and much more expensive dependency is
+fetched.
+
+So the rule survives, with a second half:
+
+> Design from the dump, never from the headers. But when the dump says a
+> capability is *absent*, that is a fact about this build - go and find out
+> whether it is switched off before recording it as a limitation.
+
+The tell was cheap and was there to be found: a `REXGLUE_ENABLE_FIDELITYFX`
+option in the SDK's `CMakeLists.txt`, defaulting `OFF`. The fix is
+`patches/rexglue-fidelityfx-spatial-only.patch`; the reasoning is in
+`bugreport/REXGLUE-BUG-fable2-blue-scene.md`.
+
+`fsr2` and `fsr3` are declared but deliberately not offered: they are a
+temporal upscaler needing real depth and motion vectors, which this runtime
+synthesizes, warns about, and falls back to spatial FSR from anyway. Three
+names for one filter is not a choice.
 
 ### Getting a value into the GPU plugin
 

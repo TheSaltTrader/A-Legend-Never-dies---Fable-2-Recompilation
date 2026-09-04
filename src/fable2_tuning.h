@@ -91,10 +91,30 @@ struct Fable2Tuning {
     out.push_back({"vsync", s.vsync ? "true" : "false", "present pacing"});
 
     // swap_post_effect declares exactly none / fxaa / fxaa_extreme, which is
-    // the whole of the antialiasing this runtime has. There is deliberately no
-    // output-filter setting: present_effect declares one value, "bilinear".
+    // the whole of the antialiasing this runtime has.
     out.push_back({"swap_post_effect", s.antialias,
                    "post-process antialiasing: none, fxaa, fxaa_extreme"});
+
+    // The upscaling filter for guest output -> window. A stock SDK build
+    // advertises only "bilinear" here, because the FSR/CAS shaders - which are
+    // committed to the SDK tree and need nothing external - are gated behind a
+    // define that is only set when the whole FidelityFX SDK is fetched. Our SDK
+    // build sets it directly (REXGLUE_FIDELITYFX_SPATIAL_ONLY), so cas and fsr
+    // are live. Against a stock runtime this value is simply parsed back to
+    // bilinear rather than failing, so it is always safe to send.
+    out.push_back({"present_effect", s.present_effect,
+                   "upscaling filter: bilinear, fsr (FSR 1.0), cas"});
+
+    // Only the knob belonging to the selected effect is sent. Sending both
+    // would put two settings in the generated file that cannot both apply, and
+    // on a stock runtime it would log a deferred-cvar line for each.
+    if (s.present_effect == "fsr") {
+      out.push_back({"present_fsr_sharpness_reduction", ToString(s.fsr_sharpness),
+                     "FSR RCAS sharpness reduction in stops, 0-2 (LOWER is sharper)"});
+    } else if (s.present_effect == "cas") {
+      out.push_back({"present_cas_additional_sharpness", ToString(s.cas_sharpness),
+                     "additional CAS sharpness, 0-1"});
+    }
 
     out.push_back({"present_dither", s.present_dither ? "true" : "false",
                    "dither the 10bpc output down to 8bpc"});

@@ -76,10 +76,46 @@ struct Fable2Settings {
 
   // Post-process antialiasing applied to the swap image. The only real AA knob
   // the runtime has - swap_post_effect declares exactly these three values.
-  // present_effect, by contrast, declares "bilinear" and nothing else, so
-  // there is no upscaling filter to choose and the menu does not pretend
-  // otherwise.
   std::string antialias = "none";  // none | fxaa | fxaa_extreme
+
+  // --- Upscaling ------------------------------------------------------------
+  // The filter used to scale the guest's output up to the window. This matters
+  // for this title specifically: the guest renders 1120x720 (1280x720 with the
+  // community patch), so on any modern display the image is ALWAYS being
+  // upscaled - the only question is by what.
+  //
+  // For a long time this menu said no such choice existed, because the shipped
+  // runtime advertises present_effect="bilinear" and nothing else. That turned
+  // out to be a build-configuration artefact, not a limit of the runtime: the
+  // FSR and CAS shaders are compiled and committed in the SDK tree, but the
+  // cvar that selects them sits behind REX_HAS_FIDELITYFX_SDK, which is off
+  // unless the whole FidelityFX SDK is fetched - even though the spatial
+  // shaders need nothing from it. Our SDK build turns that define on by
+  // itself (REXGLUE_FIDELITYFX_SPATIAL_ONLY), so these values are real here.
+  //
+  //   bilinear - the stock filter; soft, and what every build before this had
+  //   fsr      - FidelityFX FSR 1.0 (EASU + RCAS). Edge-aware upscale, then a
+  //              sharpening pass. The right default for a 720p guest on a
+  //              1080p or 4K window.
+  //   cas      - Contrast-Adaptive Sharpening. Sharpens without the upscale
+  //              stage; better when the window is near the guest resolution.
+  //
+  // fsr2/fsr3 are deliberately NOT offered. They are a temporal upscaler that
+  // needs real depth and motion vectors; the runtime synthesizes those, warns
+  // that it does, and falls back to spatial FSR anyway when the ffx-api library
+  // is absent - which it is in this build. Listing them would be three names
+  // for one filter.
+  //
+  // Requires a restart: present_effect is declared kRequiresRestart because the
+  // presenter builds its pipelines for the chosen effect once.
+  std::string present_effect = "fsr";  // bilinear | fsr | cas
+
+  // Extra CAS sharpening, 0..1. Only read when present_effect is "cas".
+  double cas_sharpness = 0.0;
+
+  // FSR's RCAS sharpness reduction in stops, 0..2. LOWER IS SHARPER - it is a
+  // reduction, not an amount. Only read when present_effect is "fsr".
+  double fsr_sharpness = 0.2;
 
   bool present_dither = false;
   bool letterbox = true;
@@ -154,6 +190,13 @@ struct Fable2Settings {
       REXLOG_WARN("Settings: cannot write {}", Path().string());
       return;
     }
+    // EVERY key Apply() understands must be written here. They drifted apart
+    // once already: Save() wrote 23 keys while Apply() read 30, so the
+    // graphics engine, the black-texture readback fix and all five community
+    // patches could be loaded but never written back. The effect was silent
+    // and destructive - changing any setting in the menu rewrote the file
+    // without them, wiping the player's patches. If you add a field, add it in
+    // both places.
     out << "# Fable II recompilation settings\n"
         << "window_width=" << window_width << "\n"
         << "window_height=" << window_height << "\n"
@@ -163,11 +206,23 @@ struct Fable2Settings {
         << "video_height=" << video_height << "\n"
         << "fps=" << fps << "\n"
         << "vsync=" << (vsync ? 1 : 0) << "\n"
+        << "gpu_backend=" << gpu_backend << "\n"
         << "resolution_scale=" << resolution_scale << "\n"
         << "anisotropic=" << anisotropic << "\n"
         << "antialias=" << antialias << "\n"
+        << "present_effect=" << present_effect << "\n"
+        << "cas_sharpness=" << cas_sharpness << "\n"
+        << "fsr_sharpness=" << fsr_sharpness << "\n"
         << "present_dither=" << (present_dither ? 1 : 0) << "\n"
         << "letterbox=" << (letterbox ? 1 : 0) << "\n"
+        << "readback=" << readback << "\n"
+        << "patch_60fps=" << (patch_60fps ? 1 : 0) << "\n"
+        << "patch_720p=" << (patch_720p ? 1 : 0) << "\n"
+        << "patch_disable_msaa=" << (patch_disable_msaa ? 1 : 0) << "\n"
+        << "patch_disable_texture_morph="
+        << (patch_disable_texture_morph ? 1 : 0) << "\n"
+        << "patch_high_tick_rate=" << (patch_high_tick_rate ? 1 : 0) << "\n"
+        << "cursor_hide_seconds=" << cursor_hide_seconds << "\n"
         << "mute=" << (mute ? 1 : 0) << "\n"
         << "audio_queue_frames=" << audio_queue_frames << "\n"
         << "keyboard_control=" << (keyboard_control ? 1 : 0) << "\n"
@@ -191,6 +246,14 @@ struct Fable2Settings {
     anisotropic = std::clamp(anisotropic, -1, 5);
     if (antialias != "none" && antialias != "fxaa" && antialias != "fxaa_extreme")
       antialias = "none";
+    // A build against a stock SDK only accepts "bilinear"; sending it "fsr"
+    // there is harmless (the runtime's parser falls through to bilinear), so
+    // the value is kept rather than silently rewritten.
+    if (present_effect != "bilinear" && present_effect != "fsr" &&
+        present_effect != "cas")
+      present_effect = "bilinear";
+    cas_sharpness = std::clamp(cas_sharpness, 0.0, 1.0);
+    fsr_sharpness = std::clamp(fsr_sharpness, 0.0, 2.0);
     audio_queue_frames = std::clamp(audio_queue_frames, 4, 64);
     mouse_sensitivity = std::clamp(mouse_sensitivity, 0.01, 10.0);
     cursor_hide_seconds = std::clamp(cursor_hide_seconds, 0, 60);
@@ -219,6 +282,9 @@ struct Fable2Settings {
     else if (k == "resolution_scale") resolution_scale = std::atoi(v.c_str());
     else if (k == "anisotropic") anisotropic = std::atoi(v.c_str());
     else if (k == "antialias") antialias = v;
+    else if (k == "present_effect") present_effect = v;
+    else if (k == "cas_sharpness") cas_sharpness = std::atof(v.c_str());
+    else if (k == "fsr_sharpness") fsr_sharpness = std::atof(v.c_str());
     else if (k == "present_dither") present_dither = Truthy(v);
     else if (k == "letterbox") letterbox = Truthy(v);
     else if (k == "readback") readback = v;

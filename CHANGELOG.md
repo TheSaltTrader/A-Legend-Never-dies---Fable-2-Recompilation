@@ -3,6 +3,97 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.8 — 2026-09-04
+
+### Upscaling: FSR and CAS, which this runtime had all along
+
+Fable II renders at 1120x720 (1280x720 with the community resolution patch), so
+on any modern display the picture is **always** being upscaled. Until now the
+only filter available was bilinear, and this menu said so in as many words.
+
+That turned out to be wrong, and wrong in an instructive way. The FidelityFX
+FSR 1.0 (EASU/RCAS) and CAS shaders are **already compiled and committed** to
+the ReXGlue SDK tree, for both backends. They are gated behind
+`REX_HAS_FIDELITYFX_SDK`, which the SDK only defines after
+`REXGLUE_ENABLE_FIDELITYFX=ON` performs a full clone of the FidelityFX SDK and
+builds `ffx-api` — even though the spatial shaders need
+nothing whatsoever from it. One define was gating two unrelated features, and
+the expensive one decided for both. Only the *temporal* `fsr2`/`fsr3` path
+genuinely needs the library, and it is guarded separately by
+`REX_HAS_FIDELITYFX_RUNTIME` with an arithmetic fallback at every call site.
+
+Our SDK build now sets the define directly, via a new
+`REXGLUE_FIDELITYFX_SPATIAL_ONLY` option: no fetch, no `ffx-api` target, no
+extra DLL, no shader compiler. Measured on a live cvar dump, `present_effect`
+went from `bilinear` to `bilinear cas fsr fsr2 fsr3`, and the registered cvar
+count from 153 to 192.
+
+- **New setting: Upscaling** — Bilinear (soft) / FSR 1.0
+  (sharp) / CAS (sharpen only). Defaults to **FSR**, which is the right answer
+  for a 720p guest on a 1080p or 4K window.
+- **New setting: sharpness**, appearing only for the filter it belongs to. FSR's
+  slider is inverted against the underlying cvar, which is a sharpness
+  *reduction* in stops — so right is sharper, the way
+  round a person expects.
+- `fsr2`/`fsr3` are deliberately **not** offered. They are a temporal upscaler
+  needing real depth and motion vectors; this runtime synthesizes them, warns
+  that it does, and falls back to spatial FSR anyway. Listing them would be
+  three names for one filter.
+
+The menu reads the allowed values from the live runtime, so against a stock SDK
+build the row correctly collapses to Bilinear alone rather than offering
+something that would not work.
+
+### Fixed: saving settings wiped the community patches
+
+Found by watching a test run rewrite the settings file, not by reading the code.
+
+`Save()` wrote 23 keys. `Apply()`, which loads them, understood 30. The seven in
+the gap could be read from the file but were never written back to it:
+
+    gpu_backend           the graphics engine selector
+    readback              the black-texture fix
+    patch_60fps           |
+    patch_720p            |
+    patch_disable_msaa    | every community patch
+    patch_disable_texture_morph
+    patch_high_tick_rate  |
+    cursor_hide_seconds
+
+So changing any setting in the menu rewrote the file *without* them, silently
+resetting the player's patches, their black-texture fix and their graphics
+engine to defaults. Nothing failed and nothing was logged — the
+file was simply shorter afterwards.
+
+Both lists are now checked against each other and agree at 31 keys each, with a
+comment at `Save()` saying why that matters. A field added to one and not the
+other is the whole bug.
+
+### Keeping the SDK changes recoverable
+
+Two features now depend on DLLs built from the SDK **source** clone, which is a
+separate repository this project's history does not carry. Re-clone it and both
+vanish silently — a stock DLL is a perfectly valid DLL
+that simply lacks the thing.
+
+- **`patches/`** — the SDK diff, the build script, and how
+  to reapply both. The patch is verified to apply cleanly to a pristine tree.
+- **`tools/stage_sdk.py`** — copies our DLLs over the
+  stock ones. `rexglue_setup_target` re-stages the installed SDK's DLLs on
+  *every* app build, so this is the step **after** building, never before —
+  a trap that has cost this project twice. `--check` reports whether what sits
+  beside `fable2.exe` is ours or stock by reading marker strings out of the
+  binaries, rather than trusting that a copy ran.
+
+### Also
+
+- The upstream bug report gains a section on the FidelityFX packaging defect,
+  alongside the existing one on Vulkan not being built on Windows. Both are the
+  same class of problem: a working feature switched off in the shipped package.
+- `build_vulkan.cmd` now anchors itself to its own directory. It relied on the
+  caller's working directory, and PowerShell's `Set-Location` does not change
+  what a child process inherits.
+
 ## 0.0.7 — 2026-09-04
 
 ### The blue-scene bug: diagnosed, not fixed
