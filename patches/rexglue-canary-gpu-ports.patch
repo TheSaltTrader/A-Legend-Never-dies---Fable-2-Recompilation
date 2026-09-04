@@ -51,13 +51,15 @@ index 4d845c7..7a9612e 100644
    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kLoadShaderCount> load_pipelines_;
    // Load pipelines for resolution-scaled resolve targets.
 diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
-index 2cf24c4..4e4ac69 100644
+index 2cf24c4..a7c4965 100644
 --- a/include/rex/graphics/flags.h
 +++ b/include/rex/graphics/flags.h
-@@ -40,6 +40,9 @@ REXCVAR_DECLARE(bool, native_stencil_value_output);
+@@ -40,6 +40,11 @@ REXCVAR_DECLARE(bool, native_stencil_value_output);
  REXCVAR_DECLARE(bool, native_stencil_value_output_d3d12_intel);
  REXCVAR_DECLARE(bool, gamma_render_target_as_unorm16);
  REXCVAR_DECLARE(bool, native_2x_msaa);
++REXCVAR_DECLARE(bool, diag_cull_none);
++REXCVAR_DECLARE(bool, diag_depth_always);
 +REXCVAR_DECLARE(int32_t, draw_census);
 +REXCVAR_DECLARE(bool, force_depth_clamp);
 +REXCVAR_DECLARE(bool, spirv_disable_rounding_mode_rte);
@@ -284,10 +286,22 @@ index 19874a5..927dad0 100644
    if (!total_size || memexport_ranges_.empty()) {
      return true;
 diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
-index 8e6b854..470a192 100644
+index 8e6b854..3d67e94 100644
 --- a/src/graphics/d3d12/pipeline_cache.cpp
 +++ b/src/graphics/d3d12/pipeline_cache.cpp
-@@ -1428,7 +1428,12 @@ bool PipelineCache::GetCurrentStateDescription(
+@@ -1383,7 +1383,10 @@ bool PipelineCache::GetCurrentStateDescription(
+     description_out.front_counter_clockwise = pa_su_sc_mode_cntl.face == 0;
+     cull_front = pa_su_sc_mode_cntl.cull_front != 0;
+     cull_back = pa_su_sc_mode_cntl.cull_back != 0;
+-    if (cull_front) {
++    if (REXCVAR_GET(diag_cull_none)) {
++      // DIAGNOSTIC override - see the cvar description.
++      description_out.cull_mode = PipelineCullMode::kNone;
++    } else if (cull_front) {
+       // The case when both faces are culled should be handled by disabling
+       // rasterization.
+       assert_false(cull_back);
+@@ -1428,14 +1431,21 @@ bool PipelineCache::GetCurrentStateDescription(
    if (tessellated && REXCVAR_GET(d3d12_tessellation_wireframe)) {
      description_out.fill_mode_wireframe = 1;
    }
@@ -301,6 +315,16 @@ index 8e6b854..470a192 100644
    bool depth_stencil_bound_and_used = false;
    if (!edram_rov_used) {
      // Depth/stencil. No stencil, always passing depth test and no depth writing
+     // means depth disabled.
+     if (bound_depth_and_color_render_target_bits & 1) {
+       if (normalized_depth_control.z_enable) {
+-        description_out.depth_func = normalized_depth_control.zfunc;
++        description_out.depth_func = REXCVAR_GET(diag_depth_always)
++                                         ? xenos::CompareFunction::kAlways
++                                         : normalized_depth_control.zfunc;
+         description_out.depth_write = normalized_depth_control.z_write_enable;
+       } else {
+         description_out.depth_func = xenos::CompareFunction::kAlways;
 diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
 index 2be0e8e..fd5aba5 100644
 --- a/src/graphics/d3d12/texture_cache.cpp
@@ -448,13 +472,21 @@ index 2be0e8e..fd5aba5 100644
      for (uint32_t slice = 0; slice < array_size; ++slice) {
        command_list.D3DCopyTextureRegion(&location_dest, 0, 0, 0, &location_source, source_box_ptr);
 diff --git a/src/graphics/flags.cpp b/src/graphics/flags.cpp
-index e2983a4..abffe57 100644
+index e2983a4..1b29398 100644
 --- a/src/graphics/flags.cpp
 +++ b/src/graphics/flags.cpp
-@@ -16,6 +16,19 @@
+@@ -16,6 +16,27 @@
  REXCVAR_DEFINE_BOOL(gpu_allow_invalid_fetch_constants, false, "GPU",
                      "Allow invalid fetch constants");
  REXCVAR_DEFINE_BOOL(native_2x_msaa, true, "GPU", "Enable native 2x MSAA");
++REXCVAR_DEFINE_BOOL(diag_cull_none, false, "GPU",
++                    "DIAGNOSTIC: force the rasterizer cull mode to NONE, ignoring the "
++                    "guest's face culling. Renders back faces that should be hidden - the "
++                    "point is to find out whether geometry is being culled away.");
++REXCVAR_DEFINE_BOOL(diag_depth_always, false, "GPU",
++                    "DIAGNOSTIC: force the depth comparison to ALWAYS, so nothing is "
++                    "rejected by the depth test. Breaks occlusion - the point is to find "
++                    "out whether geometry is being depth-rejected.");
 +REXCVAR_DEFINE_INT32(draw_census, 0, "GPU",
 +                     "Log a summary of draws issued and draws dropped (and why) every N "
 +                     "seconds. 0 disables. Diagnostic: four of the five ways a draw can be "
