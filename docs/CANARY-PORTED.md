@@ -26,6 +26,18 @@ returns nothing, there is no shader build step, and what ships is prebuilt
 bytecode headers plus two hand-written GLSL/HLSL files. So any Canary commit
 that changes those shaders cannot be ported here without the shader toolchain.
 
+**Update - the compiler is not the obstacle; the shaders are.** Canary's
+sources are public, our header names map onto them one-to-one, and FXC (Windows
+10 SDK) is the same compiler our headers were built with. `tools/build_shaders.py`
+drives it, and ten shaders reproduce the shipped bytecode byte for byte apart
+from the DXBC checksum.
+
+But 83 of 93 differ in length, often hugely - `resolve_full_16bpp_cs` is 41,472
+bytes here against Canary's 99,848. **The SDK's resolve and EDRAM shaders are
+its own code**, not an older copy of Canary's. So a working shader compiler does
+not unblock `437a7280c`: porting it means re-implementing its addressing scheme
+on top of the SDK's own shader variants by hand, not dropping Canary's in.
+
 Three of the 54 are affected, and one of them matters a great deal:
 
 - **`437a7280c` — "Use EDRAM layout with a single sample addressing scheme"**,
