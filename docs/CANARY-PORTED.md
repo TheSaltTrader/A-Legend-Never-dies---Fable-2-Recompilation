@@ -38,6 +38,47 @@ its own code**, not an older copy of Canary's. So a working shader compiler does
 not unblock `437a7280c`: porting it means re-implementing its addressing scheme
 on top of the SDK's own shader variants by hand, not dropping Canary's in.
 
+### Why the shaders diverge: flat vs group-packed scaled addressing
+
+Diffing the one shader ReXGlue *does* ship source for
+(`resolve_downscale.cs.hlsl`) against Canary's `resolve_downscale.cs.xesl`
+explains all 83 divergent shaders at once. Canary's own comment states it:
+
+> The source is group-packed (`XeniaTextureGetResolutionScaledAddressing` in
+> `texture_address.xesli`), **not a flat scale_x*scale_y expansion**, so this
+> shader reverses that layout per output block.
+
+The two projects lay scaled resolve memory out differently:
+
+| | scaled address layout |
+|---|---|
+| **ReXGlue** | **flat** - `SharedMemory::kBufferSize * (scale_x * scale_y)`, address multiplied by the scale area (`d3d12/texture_cache.cpp:1151`, `pipeline/texture/cache.cpp:264`). Nothing in our tree mentions `ResolutionScaledAddressing`. |
+| **Canary**  | **group-packed** - `XeniaTextureGetResolutionScaledAddressing`, used by `resolve.xesli`, `texture_load.xesli` and `texture_address.xesli`. |
+
+That is why Canary's resolve shaders are so much larger: they carry the address
+math to reverse the packed layout. It also means **every Canary resolve/EDRAM
+shader change assumes an addressing scheme we do not implement**. Porting
+`437a7280c` is therefore not "recompile some shaders" - it needs the addressing
+architecture underneath it, or its scheme reworked onto flat addressing by hand.
+
+What ReXGlue actually changed in `resolve_downscale`, for the record:
+
+- rewrote it from `.xesl` to hand-written HLSL/GLSL (no xesl toolchain here);
+- flat source addressing instead of group-packed;
+- a 32x32 thread group, one thread per output pixel, with groupshared memory to
+  coalesce 8/16bpp writes (Canary uses 128 threads striding over output dwords
+  and no shared memory, because xesl byte buffers are dword-granular);
+- kept `xe_downscale_half_pixel_offset`, which **Canary also has** - so on
+  features Canary's version is a superset;
+- dropped `xe_downscale_source_offset_bytes`, which Canary has and we lack.
+
+So "implement ReXGlue's changes in the new Canary shader" is the wrong way
+round for this file: Canary's is ahead on everything except the addressing. The
+contained version of the job is to take Canary's shader and substitute flat
+addressing for `XeDownscaleScaledBlockByte`. That is worth doing only alongside
+the rest of the resolve family - a lone downscale shader in a different layout
+from its neighbours is worse than either choice.
+
 Three of the 54 are affected, and one of them matters a great deal:
 
 - **`437a7280c` — "Use EDRAM layout with a single sample addressing scheme"**,
