@@ -24,6 +24,19 @@ index 4d845c7..7a9612e 100644
    Microsoft::WRL::ComPtr<ID3D12RootSignature> load_root_signature_;
    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kLoadShaderCount> load_pipelines_;
    // Load pipelines for resolution-scaled resolve targets.
+diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
+index 2cf24c4..5cb07ac 100644
+--- a/include/rex/graphics/flags.h
++++ b/include/rex/graphics/flags.h
+@@ -40,6 +40,8 @@ REXCVAR_DECLARE(bool, native_stencil_value_output);
+ REXCVAR_DECLARE(bool, native_stencil_value_output_d3d12_intel);
+ REXCVAR_DECLARE(bool, gamma_render_target_as_unorm16);
+ REXCVAR_DECLARE(bool, native_2x_msaa);
++REXCVAR_DECLARE(bool, force_depth_clamp);
++REXCVAR_DECLARE(bool, spirv_disable_rounding_mode_rte);
+ REXCVAR_DECLARE(bool, snorm16_render_target_full_range);
+ REXCVAR_DECLARE(bool, mrt_edram_used_range_clamp_to_min);
+ REXCVAR_DECLARE(bool, direct_host_resolve);
 diff --git a/include/rex/graphics/pipeline/shader/dxbc_translator.h b/include/rex/graphics/pipeline/shader/dxbc_translator.h
 index 3b0fd61..a399f6b 100644
 --- a/include/rex/graphics/pipeline/shader/dxbc_translator.h
@@ -100,6 +113,24 @@ index d26cd4f..74518d2 100644
      texture_util::TextureGuestLayout GetGuestLayout() const {
        return texture_util::GetGuestTextureLayout(dimension, pitch, GetWidth(), GetHeight(),
                                                   GetDepthOrArraySize(), tiled, format, packed_mips,
+diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
+index 8e6b854..470a192 100644
+--- a/src/graphics/d3d12/pipeline_cache.cpp
++++ b/src/graphics/d3d12/pipeline_cache.cpp
+@@ -1428,7 +1428,12 @@ bool PipelineCache::GetCurrentStateDescription(
+   if (tessellated && REXCVAR_GET(d3d12_tessellation_wireframe)) {
+     description_out.fill_mode_wireframe = 1;
+   }
+-  description_out.depth_clip = !regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable;
++  // With force_depth_clamp, use the host viewport clamp instead of near and far
++  // Z plane clipping. X/Y/W clipping is unchanged. Both 494707EE and 41560881
++  // have passes that rely on alpha inputs currently dropped by near-plane
++  // clipping. Canary 25597a546.
++  description_out.depth_clip =
++      !regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable && !REXCVAR_GET(force_depth_clamp);
+   bool depth_stencil_bound_and_used = false;
+   if (!edram_rov_used) {
+     // Depth/stencil. No stencil, always passing depth test and no depth writing
 diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
 index 2be0e8e..f3c91f7 100644
 --- a/src/graphics/d3d12/texture_cache.cpp
@@ -210,6 +241,25 @@ index 2be0e8e..f3c91f7 100644
    desc.MinLOD = float(parameters.mip_min_level);
    if (parameters.mip_base_map) {
      // "It is undefined whether LOD clamping based on MinLOD and MaxLOD Sampler
+diff --git a/src/graphics/flags.cpp b/src/graphics/flags.cpp
+index e2983a4..37343df 100644
+--- a/src/graphics/flags.cpp
++++ b/src/graphics/flags.cpp
+@@ -16,6 +16,14 @@
+ REXCVAR_DEFINE_BOOL(gpu_allow_invalid_fetch_constants, false, "GPU",
+                     "Allow invalid fetch constants");
+ REXCVAR_DEFINE_BOOL(native_2x_msaa, true, "GPU", "Enable native 2x MSAA");
++REXCVAR_DEFINE_BOOL(spirv_disable_rounding_mode_rte, false, "GPU",
++                    "Disable RoundingModeRTE capability in SPIR-V shaders. Enable this to "
++                    "allow shader debugging in RenderDoc, which doesn't support this "
++                    "capability.");
++REXCVAR_DEFINE_BOOL(force_depth_clamp, false, "GPU",
++                    "Use host depth clamping instead of near and far plane clipping when "
++                    "guest clipping is enabled. X/Y/W clipping is unaffected. On Vulkan, "
++                    "this requires depthClamp support.");
+ REXCVAR_DEFINE_BOOL(depth_float24_round, false, "GPU", "Round float24 depth values");
+ REXCVAR_DEFINE_BOOL(depth_float24_convert_in_pixel_shader, false, "GPU",
+                     "Convert float24 depth in pixel shader");
 diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
 index 953c5fd..a8555f6 100644
 --- a/src/graphics/pipeline/render_target/cache.cpp
@@ -647,6 +697,74 @@ index cc726b7..2947ce9 100644
        }
      } break;
      case 2: {
+diff --git a/src/graphics/pipeline/shader/spirv_translator.cpp b/src/graphics/pipeline/shader/spirv_translator.cpp
+index 1774f97..3374988 100644
+--- a/src/graphics/pipeline/shader/spirv_translator.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator.cpp
+@@ -20,6 +20,7 @@
+ #include <SPIRV/GLSL.std.450.h>
+ #include <fmt/format.h>
+ 
++#include <rex/graphics/flags.h>
+ #include <rex/assert.h>
+ #include <rex/graphics/pipeline/shader/spirv.h>
+ #include <rex/graphics/pipeline/shader/spirv_translator.h>
+@@ -1226,7 +1227,9 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
+     builder_->addCapability(spv::CapabilitySignedZeroInfNanPreserve);
+     builder_->addExecutionMode(function_main_, spv::ExecutionModeSignedZeroInfNanPreserve, 32);
+   }
+-  if (features_.rounding_mode_rte_float32) {
++  // RenderDoc cannot debug shaders declaring RoundingModeRTE, so allow turning
++  // it off. Canary 61a8aa360.
++  if (features_.rounding_mode_rte_float32 && !REXCVAR_GET(spirv_disable_rounding_mode_rte)) {
+     builder_->addCapability(spv::CapabilityRoundingModeRTE);
+     builder_->addExecutionMode(function_main_, spv::ExecutionModeRoundingModeRTE, 32);
+   }
+diff --git a/src/graphics/pipeline/shader/spirv_translator_alu.cpp b/src/graphics/pipeline/shader/spirv_translator_alu.cpp
+index 706ac7e..8717005 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_alu.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_alu.cpp
+@@ -985,7 +985,10 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
+                     type_float_, ext_inst_glsl_std_450_, GLSLstd450NClamp,
+                     builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+                                                      GLSLstd450Floor, maxa_address),
+-                    builder_->makeFloatConstant(-256.0f), builder_->makeFloatConstant(255.0f))),
++                    // Scalar maxas/maxasf clamp a0 to [0, 255], unlike the
++                    // vector maxa which allows [-256, 255]. Matches the DXBC
++                    // translator. Canary 4aeb518c9.
++                    builder_->makeFloatConstant(0.0f), builder_->makeFloatConstant(255.0f))),
+             var_main_address_register_);
+       }
+       if (a == b) {
+diff --git a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
+index 9ce3bb4..bab1ade 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
+@@ -1153,6 +1153,12 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+             z_stacked =
+                 builder_->createNoContractionBinOp(spv::OpFAdd, type_float_, z_stacked, z_offset);
+           }
++          // Clamp the layer index to a valid range so an Inf or NaN coordinate
++          // does not select an undefined array layer. Canary 2d5b41080.
++          z_stacked = builder_->createTriBuiltinCall(
++              type_float_, ext_inst_glsl_std_450_, GLSLstd450NClamp, z_stacked, const_float_0_,
++              builder_->createNoContractionBinOp(spv::OpFSub, type_float_, z_size,
++                                                 builder_->makeFloatConstant(1.0f)));
+           builder_->createBranch(&block_dimension_merge);
+           // Select one of the two.
+           builder_->setBuildPoint(&block_dimension_merge);
+@@ -2205,7 +2211,10 @@ void SpirvShaderTranslator::SampleTexture(spv::Builder::TextureParameters& textu
+               builder_->createNoContractionBinOp(spv::OpFSub, type_float4_, sign_result,
+                                                  lerp_first),
+               lerp_factor);
+-          sign_result = builder_->createNoContractionBinOp(spv::OpFAdd, type_float4_, sign_result,
++          // first + (second - first) * factor. This added the difference to
++          // sign_result - the SECOND layer - so the blend was wrong.
++          // Canary e519d59e4.
++          sign_result = builder_->createNoContractionBinOp(spv::OpFAdd, type_float4_, lerp_first,
+                                                            lerp_difference);
+         }
+       }
 diff --git a/src/graphics/pipeline/shader/spirv_translator_memexport.cpp b/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
 index 14c0ea9..9f8ae42 100644
 --- a/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
@@ -1001,3 +1119,17 @@ index 26d554c..07f7024 100644
    }
    uint32_t depth = dimension == xenos::DataDimension::k3D ? depth_or_array_size : 1;
    switch (dimension) {
+diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
+index ec0df7c..543feda 100644
+--- a/src/graphics/shared_memory.cpp
++++ b/src/graphics/shared_memory.cpp
+@@ -309,6 +309,9 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+   }
+ 
+   if (memory_invalidation_callback_handle_) {
++    // A page that isn't writable here gets no watch. A later guest
++    // protect-to-writable invalidates it so its writes are still caught.
++    // Canary aed81ca93.
+     memory().EnablePhysicalMemoryAccessCallbacks(
+         valid_page_first << page_size_log2_,
+         (valid_page_last - valid_page_first + 1) << page_size_log2_, true, false);

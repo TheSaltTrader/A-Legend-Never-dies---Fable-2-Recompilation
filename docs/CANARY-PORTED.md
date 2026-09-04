@@ -104,6 +104,26 @@ author date hands you a dependent commit whose context will not match.
 Checked while fixing this: `2ddc5ef73` (commit date 2026-07-30, just under the
 cutoff) is already in our tree, so the ~2026-07-31 fork point holds.
 
+## The remaining commits increasingly do not map, and the reason is the same
+
+Probing the rest for the symbols they touch, a pattern shows up that is worth
+stating before anyone reads a low "ported" count as slow progress. The SDK did
+not just fall behind Canary - it **refactored the same areas**, so a growing
+share of what is left has no counterpart to patch:
+
+| Canary symbol the commit needs | in our tree? |
+|---|---|
+| `GetIntegerScaleBits` (0c843efb3, and 052cb95f2 / 6a4545208 behind it) | absent - the SDK does unsigned-biased scaling its own way |
+| `FSI_AlphaToMask` (cb240560d) | absent - the Vulkan FSI alpha-to-mask feature was never here |
+| `block_rt_0_alpha_tests_rt_written_end` (654a8cacf) | absent - our FSI block structure differs |
+| `ac6_ground_fix` (3a44f20c7 replaces it) | absent - we never had the hack being replaced |
+
+This is the same finding as the shaders, in the C++: **ReXGlue is a fork that
+diverged, not a snapshot that is behind.** Where it diverged, "port the commit"
+becomes "implement the feature Canary's commit assumes, then port the commit" -
+a different and much larger job, and one that should be decided deliberately
+rather than slipped in under a porting pass.
+
 | sha | state | note |
 |---|---|---|
 | `3ff230d23` | PORTED | Extended-range float16 in RT pack/unpack. Found independently from the TODOs before the history was available. DXBC + SPIR-V encoders, ROV pack/unpack, all six memexport cases, then the PSI clamp widened to ±131008. Measured: did NOT fix the flat-blue scene. |
@@ -130,3 +150,13 @@ cutoff) is already in our tree, so the ~2026-07-31 fork point holds.
 | `8486e97a0` | PORTED | Locked-mip unnormalized fetches sample in that mip's grid. The denominator was always the base level size, so reductions after the first read garbage. DXBC done; SPIR-V open. |
 | `fbdb1f281` | PORTED | Two-component tfetch1D coordinates: a 1D fetch with a multi-component coordinate addresses a 2D grid, so all seven dimension switches now use coordinate_dimension. Foundation for 947075f88. DXBC done; SPIR-V open. |
 | `947075f88` | PARTIAL | Wide 1D textures (>8192) mapped onto a 2D grid. CPU side done - the texture cache no longer rejects them, IsWide1D/Get1DWidth added, guest layout keeps the row count. The DXBC coordinate remapping (~110 lines) and the SPIR-V side are still open. |
+| `e519d59e4` | PORTED | Stacked-texture inter-layer lerp base. A lerp is first + (second - first) * factor; ours added the difference to the SECOND layer, so every inter-layer blend was wrong. |
+| `2d5b41080` | PORTED | Clamp the stacked-texture layer index so an Inf/NaN coordinate cannot select an undefined array layer. |
+| `4aeb518c9` | PORTED | Scalar maxas/maxasf clamp a0 to [0,255], not [-256,255]. Only the scalar site - the vector maxa nearby legitimately allows negatives and was left alone. |
+| `25597a546` | PORTED | force_depth_clamp cvar plus its use in the D3D12 pipeline cache. Defaults off, so inert unless asked for. |
+| `61a8aa360` | PORTED | spirv_disable_rounding_mode_rte, so RenderDoc can debug our SPIR-V (it cannot handle the RoundingModeRTE capability). Useful for the character-drawing investigation later. |
+| `aed81ca93` | PORTED | Guest access resolution note in shared_memory. Comment only in the GPU half; the substantive part of that commit is in the memory subsystem, outside the plugin. |
+| `0c843efb3` | BLOCKED | Round normalized unsigned fixed fetches. Needs `GetIntegerScaleBits`, which we do not have - the SDK implements unsigned-biased scaling differently. Blocks 052cb95f2 and 6a4545208 behind it. |
+| `cb240560d` | BLOCKED | 2x MSAA alpha-to-coverage sample layout. Needs `FSI_AlphaToMask`, a Vulkan FSI feature our tree never had. |
+| `654a8cacf` | BLOCKED | FSI 2x-as-4x sample mask. Needs `block_rt_0_alpha_tests_rt_written_end`; our FSI block structure differs, so the phi it adds has nowhere to go without reworking that region. |
+| `3a44f20c7` | SKIP | Replaces the AC6 ground hack with scalar approximation rounding. We do not have `ac6_ground_fix`, so there is nothing to replace. |
