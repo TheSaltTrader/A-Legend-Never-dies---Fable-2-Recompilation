@@ -515,6 +515,23 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(!live);
+    RowStart("Graphics engine",
+             "Which graphics API the game renders through. DirectX 12 is the "
+             "default because it is measurably better here: on Vulkan the "
+             "scene still turns blue AND character meshes stop drawing "
+             "altogether. Vulkan needs a plugin built from source with it "
+             "enabled - the SDK's stock Windows plugin is DirectX 12 only, "
+             "and the app logs the miss and falls back rather than failing.");
+    {
+      const char* backends[] = {"Vulkan", "DirectX 12"};
+      int idx = s.gpu_backend == "d3d12" ? 1 : 0;
+      if (ImGui::Combo("##gpubackend", &idx, backends, 2)) {
+        s.gpu_backend = idx == 1 ? "d3d12" : "vulkan";
+        changed = true;
+      }
+    }
+    if (!live) RestartTag();
+
     RowStart("Black texture fix",
              "Fable II's best-known emulation bug: the hero's and the dog's "
              "textures turn black once the hero grows up. The fix is to read "

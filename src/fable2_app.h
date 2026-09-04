@@ -10,6 +10,7 @@
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 #include <rex/runtime.h>
+#include <rex/system/gpu_plugin.h>
 #include <rex/system/kernel_state.h>
 #include <rex/ui/keybinds.h>
 #include <rex/ui/overlay/settings_overlay.h>
@@ -38,6 +39,21 @@
 // page in the settings menu for the same reason - see tools/install_dlc.cmd.
 REXCVAR_DEFINE_STRING(dlc_root, "", "Content",
                       "Folder of Xbox 360 content packages to install (DLC)");
+
+// Which graphics backend the Xenos plugin should construct.
+//
+// The plugin the SDK ships for Windows is D3D12 ONLY - rexgpu-xenos.dll has
+// zero references to Vulkan - because REXGLUE_USE_VULKAN defaults OFF on
+// Windows. A plugin rebuilt from source with -DREXGLUE_USE_VULKAN=ON has both,
+// and the plugin's own selector tries D3D12 first for "any", so Vulkan has to
+// be asked for by name.
+//
+// This exists because Fable II's scene renders flat blue through the D3D12
+// render-target path while Xenia Canary - which our plugin is an older fork of
+// - plays the same disc fine. Vulkan is the cheap test of whether that path is
+// the fault.
+REXCVAR_DEFINE_STRING(gpu_backend, "any", "GPU",
+                      "Graphics backend for the Xenos plugin: any, d3d12, vulkan");
 
 class Fable2App : public rex::ReXApp {
  public:
@@ -136,7 +152,26 @@ class Fable2App : public rex::ReXApp {
   // mode", silently ignores every Vd* kernel call, and the guest never gets a
   // ring buffer: no error, just a black window.
   void OnPreSetup(rex::RuntimeConfig& config) override {
-    config.gpu_plugin = "xenos";
+    // The settings file is the player's choice; the cvar is the override, so
+    // a command line still wins for scripted runs.
+    std::string backend = REXCVAR_GET(gpu_backend);
+    if (backend == "any" && !settings_.gpu_backend.empty())
+      backend = settings_.gpu_backend;
+    if (backend != "any") {
+      // Load the plugin ourselves so the backend can be named. Setting
+      // config.graphics directly bypasses ReXApp's own load, which always
+      // passes "any".
+      config.graphics = rex::system::LoadGpuPlugin("xenos", backend);
+      if (config.graphics) {
+        REXLOG_INFO("GPU: requested backend '{}'", backend);
+      } else {
+        REXLOG_ERROR("GPU: backend '{}' unavailable - is this plugin built "
+                     "with it? Falling back to the default.", backend);
+        config.gpu_plugin = "xenos";
+      }
+    } else {
+      config.gpu_plugin = "xenos";
+    }
     ApplyDisplaySettings();
     ApplyTuning();
   }

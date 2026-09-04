@@ -141,6 +141,10 @@ def main():
     ap.add_argument("--press", action="append", default=[],
                     metavar="SECONDS:KEY", help="repeatable, e.g. 20:return")
     ap.add_argument("--config", default="Release")
+    ap.add_argument("--exe", help="run this executable instead of our build "
+                                  "(for comparing against Xenia Canary)")
+    ap.add_argument("--exe-args", action="append", default=[],
+                    help="arguments for --exe, repeatable; ours are not added")
     ap.add_argument("--no-mnk", action="store_true")
     ap.add_argument("--hold", type=float, default=0.20,
                     help="seconds to hold each key down")
@@ -150,29 +154,43 @@ def main():
                     help="report the last second at which the picture changed")
     args = ap.parse_args()
 
+    # SECONDS:KEY or SECONDS:KEY:HOLD. The per-press hold is what makes it
+    # possible to WALK: a 0.25 s tap moves the stick for a quarter second,
+    # which is a twitch, not a journey.
     schedule = []
     for spec in args.press:
-        when, _, name = spec.partition(":")
-        if name.lower() not in KEYS:
+        parts = spec.split(":")
+        when, name = parts[0], parts[1].lower()
+        hold = float(parts[2]) if len(parts) > 2 else None
+        if name not in KEYS:
             sys.exit(f"unknown key {name!r}; known: {', '.join(sorted(KEYS))}")
-        schedule.append([float(when), name.lower(), False])
+        schedule.append([float(when), name, False, hold])
     schedule.sort()
 
     outdir = os.path.join(ROOT, args.outdir)
     os.makedirs(outdir, exist_ok=True)
 
-    exe = os.path.join(ROOT, "out", "build", f"win-amd64-{args.config}",
-                       "fable2.exe")
-    if not os.path.exists(exe):
-        sys.exit(f"{exe} not found - build first")
+    if args.exe:
+        # Comparison mode: drive some other emulator with the same schedule and
+        # the same measurement, so "does it do this too?" is answered the same
+        # way for both.
+        exe = args.exe
+        if not os.path.exists(exe):
+            sys.exit(f"{exe} not found")
+        cmd = [exe] + args.exe_args
+    else:
+        exe = os.path.join(ROOT, "out", "build", f"win-amd64-{args.config}",
+                           "fable2.exe")
+        if not os.path.exists(exe):
+            sys.exit(f"{exe} not found - build first")
 
-    cmd = [exe, "--game_data_root", os.path.join(ROOT, "game"),
-           "--log_file", os.path.join(ROOT, "out", "fable2.log"),
-           "--log_level", "debug"]
-    if not args.no_mnk:
-        cmd += ["--mnk_mode=true"]           # a bare --mnk_mode is ignored
-        cmd += EXPLICIT_BINDS
-    cmd += args.extra
+        cmd = [exe, "--game_data_root", os.path.join(ROOT, "game"),
+               "--log_file", os.path.join(ROOT, "out", "fable2.log"),
+               "--log_level", "debug"]
+        if not args.no_mnk:
+            cmd += ["--mnk_mode=true"]       # a bare --mnk_mode is ignored
+            cmd += EXPLICIT_BINDS
+        cmd += args.extra
 
     proc = subprocess.Popen(cmd, cwd=os.path.dirname(exe))
     print(f"launched pid {proc.pid}")
@@ -213,12 +231,13 @@ def main():
             return
 
         for item in schedule:
-            when, name, done = item
+            when, name, done, hold = item
             if not done and elapsed >= when:
                 item[2] = True
                 ok = focus(hwnd)
-                send_key(KEYS[name], args.hold)
+                send_key(KEYS[name], hold if hold is not None else args.hold)
                 print(f"  {elapsed:5.1f}s  pressed {name}"
+                      f"{'' if hold is None else f' for {hold}s'}"
                       f"{'' if ok else '  (WINDOW WAS NOT FOREGROUND)'}")
 
         if now < state["next"]:

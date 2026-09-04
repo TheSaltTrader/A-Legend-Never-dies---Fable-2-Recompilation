@@ -18,3 +18,5 @@ __pycache__/
 /cache/
 fable2_settings.cfg
 fable2.toml
+/rexglue-src/
+/canary/

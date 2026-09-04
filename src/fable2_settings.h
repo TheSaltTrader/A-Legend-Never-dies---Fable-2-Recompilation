@@ -48,6 +48,23 @@ struct Fable2Settings {
   bool vsync = true;
 
   // --- Graphics -----------------------------------------------------------
+  // Which graphics API the Xenos plugin renders through.
+  //
+  // MEASURED: d3d12 is the better default here. Vulkan was built and tried
+  // specifically to see whether the flat-blue scene was a D3D12
+  // render-target-path fault; it is not. On Vulkan the blue is still there AND
+  // character meshes stop drawing entirely, so it is strictly worse.
+  //
+  // That result is worth more than it cost: the same bug on BOTH backends
+  // means the defect is in the SHARED GPU code, not the D3D12 path.
+  //
+  // The choice is kept because it is how that was established, and because the
+  // Vulkan path may improve. It needs a plugin built from source with
+  // -DREXGLUE_USE_VULKAN=ON (the SDK's stock Windows plugin is D3D12-only);
+  // with a stock plugin the app logs the miss and falls back rather than
+  // failing to start.
+  std::string gpu_backend = "d3d12";   // vulkan | d3d12
+
   // True internal supersampling: the guest's framebuffer is rendered at this
   // multiple and downsampled. The cvar's own range is 1..8.
   int resolution_scale = 1;
@@ -180,6 +197,8 @@ struct Fable2Settings {
     if (readback != "none" && readback != "fast" && readback != "some" &&
         readback != "full")
       readback = "none";
+    if (gpu_backend != "vulkan" && gpu_backend != "d3d12")
+      gpu_backend = "d3d12";
   }
 
  private:
@@ -196,6 +215,7 @@ struct Fable2Settings {
     else if (k == "video_height") video_height = std::atoi(v.c_str());
     else if (k == "fps") fps = std::atoi(v.c_str());
     else if (k == "vsync") vsync = Truthy(v);
+    else if (k == "gpu_backend") gpu_backend = v;
     else if (k == "resolution_scale") resolution_scale = std::atoi(v.c_str());
     else if (k == "anisotropic") anisotropic = std::atoi(v.c_str());
     else if (k == "antialias") antialias = v;

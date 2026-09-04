@@ -3,6 +3,65 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.7 — 2026-09-04
+
+### The blue-scene bug: diagnosed, not fixed
+
+The 3D scene turns flat blue a few minutes into play and never recovers, while
+the UI keeps drawing correctly on top of it. This release does not fix it, but
+it establishes what it is — and, importantly, what it is not.
+
+- **Not a hang.** The presence heartbeat keeps ticking, ~510 APCs/second keep
+  completing, the GPU keeps compiling pipelines, and there are no fatals, no
+  unregistered functions and no failed asset loads. What stops is GPU *output*.
+- **Not configuration.** Every GPU/kernel cvar where Xenia Canary differs from
+  our defaults was aligned to Canary's values and tested. Still blue.
+- **Not the community patches.** It predates them; they change its extent only.
+- **Not backend-specific.** The plugin was rebuilt from source with Vulkan
+  enabled and the same reproduction run on it: **the blue is identical, and
+  character meshes stop drawing entirely as well**. Both backends failing the
+  same way puts the defect in the **shared** GPU code.
+- **Not the game.** Xenia Canary plays the same disc, same patches, straight
+  through the point where ours fails (confirmed by playing it).
+
+Our shared render-target cache is 1,388 lines against Canary's 1,757, and the
+plugin is an older Canary fork — 19 Canary-only cvars present, plus 5 master-only
+names Canary has since renamed — missing 37 Canary GPU flags.
+
+### Added
+
+- **Graphics engine picker** (Graphics → Graphics engine; `gpu_backend`,
+  `vulkan`/`d3d12`). Defaults to **DirectX 12**, because Vulkan measured worse.
+  Selecting Vulkan with the SDK's stock plugin logs the miss and falls back
+  rather than failing to start, since that plugin is D3D12-only.
+- `rexglue-src/build_vulkan.cmd` — builds the SDK from source with
+  `-DREXGLUE_USE_VULKAN=ON`. No Vulkan SDK needed; Vulkan-Headers and glslang
+  are vendored. Must use the project's own `win-amd64` preset: rolling the
+  cmake line by hand drops `-march=x86-64-v2` and the SSSE3 intrinsics in
+  `core/memory.cpp` fail to compile.
+- `tools/config_diff.py` — diffs Canary's settings against our live cvar dump,
+  for names both actually have.
+- `tools/plugin_lineage.py` — fingerprints which Xenia branch the plugin came
+  from, and lists what it lacks.
+- `tools/blue_sweep.py` — reproduces the bug and sweeps settings against it.
+  Reports **INCONCLUSIVE** rather than "clean" when a run never reaches the
+  failing state.
+- `tools/health.py`, `tools/clear_cache.py`, `tools/freeze_stacks.py`,
+  `tools/ab_run.py`; `--exe`/`--exe-args` on `play_probe.py` so the same
+  schedule and measurement can drive Xenia Canary for comparison.
+- `bugreport/REXGLUE-BUG-fable2-blue-scene.md`.
+
+### Notes
+
+- **A reliable reproduction was the hard part.** Scripted input kept sticking on
+  character select — those cards need a stick deflection that a stream of A
+  presses never supplies — and three sweeps reported "clean" while sitting
+  there. Loading a save via **Continue** skips it and lands directly in the
+  world where the bug lives.
+- **The v0.0.6 ROV claim was wrong and is retracted.** Canary plays this fine on
+  RTV, and that measurement came from a run that never reached the failing
+  state. Corrected in `Fable2Tuning::Fixed()`.
+
 ## 0.0.6 — 2026-09-04
 
 ### Fixed
