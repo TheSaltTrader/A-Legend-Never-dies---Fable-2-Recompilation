@@ -37,6 +37,29 @@ index 2cf24c4..5cb07ac 100644
  REXCVAR_DECLARE(bool, snorm16_render_target_full_range);
  REXCVAR_DECLARE(bool, mrt_edram_used_range_clamp_to_min);
  REXCVAR_DECLARE(bool, direct_host_resolve);
+diff --git a/include/rex/graphics/format/dxbc.h b/include/rex/graphics/format/dxbc.h
+index a5eaa8f..572d7de 100644
+--- a/include/rex/graphics/format/dxbc.h
++++ b/include/rex/graphics/format/dxbc.h
+@@ -1379,6 +1379,7 @@ enum class Opcode : uint32_t {
+   kRetC = 63,
+   kRoundNE = 64,
+   kRoundNI = 65,
++  kRoundPI = 66,
+   kRoundZ = 67,
+   kRSq = 68,
+   kSampleL = 72,
+@@ -1786,6 +1787,10 @@ class Assembler {
+     EmitAluOp(Opcode::kRoundNI, 0b0, dest, src, saturate);
+     ++stat_.float_instruction_count;
+   }
++  void OpRoundPI(const Dest& dest, const Src& src, bool saturate = false) {
++    EmitAluOp(Opcode::kRoundPI, 0b0, dest, src, saturate);
++    ++stat_.float_instruction_count;
++  }
+   void OpRoundZ(const Dest& dest, const Src& src, bool saturate = false) {
+     EmitAluOp(Opcode::kRoundZ, 0b0, dest, src, saturate);
+     ++stat_.float_instruction_count;
 diff --git a/include/rex/graphics/pipeline/shader/dxbc_translator.h b/include/rex/graphics/pipeline/shader/dxbc_translator.h
 index 3b0fd61..a399f6b 100644
 --- a/include/rex/graphics/pipeline/shader/dxbc_translator.h
@@ -113,6 +136,20 @@ index d26cd4f..74518d2 100644
      texture_util::TextureGuestLayout GetGuestLayout() const {
        return texture_util::GetGuestTextureLayout(dimension, pitch, GetWidth(), GetHeight(),
                                                   GetDepthOrArraySize(), tiled, format, packed_mips,
+diff --git a/include/rex/graphics/xenos.h b/include/rex/graphics/xenos.h
+index f7fd14e..d3cb447 100644
+--- a/include/rex/graphics/xenos.h
++++ b/include/rex/graphics/xenos.h
+@@ -1126,6 +1126,9 @@ constexpr uint32_t kTextureSubresourceAlignmentBytes = 1 << kTextureSubresourceA
+ // Texture fetch constant size field widths.
+ constexpr uint32_t kTexture1DMaxWidthLog2 = 24;
+ constexpr uint32_t kTexture1DMaxWidth = 1 << kTexture1DMaxWidthLog2;
++// Limit the number of rows materialized when wide 1D textures are mapped to
++// 2D. Some games use very large widths with much less data behind them.
++constexpr uint32_t kTexture1DWideMaxRows = 32;
+ constexpr uint32_t kTexture2DCubeMaxWidthHeightLog2 = 13;
+ constexpr uint32_t kTexture2DCubeMaxWidthHeight = 1 << kTexture2DCubeMaxWidthHeightLog2;
+ constexpr uint32_t kTexture2DMaxStackDepthLog2 = 6;
 diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
 index 8e6b854..470a192 100644
 --- a/src/graphics/d3d12/pipeline_cache.cpp
@@ -132,7 +169,7 @@ index 8e6b854..470a192 100644
    if (!edram_rov_used) {
      // Depth/stencil. No stencil, always passing depth test and no depth writing
 diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
-index 2be0e8e..f3c91f7 100644
+index 2be0e8e..fd5aba5 100644
 --- a/src/graphics/d3d12/texture_cache.cpp
 +++ b/src/graphics/d3d12/texture_cache.cpp
 @@ -405,6 +405,30 @@ bool D3D12TextureCache::Initialize() {
@@ -241,6 +278,42 @@ index 2be0e8e..f3c91f7 100644
    desc.MinLOD = float(parameters.mip_min_level);
    if (parameters.mip_base_map) {
      // "It is undefined whether LOD clamping based on MinLOD and MaxLOD Sampler
+@@ -1921,7 +1975,35 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+       source_box.back = source_box.front + std::max(depth >> level, uint32_t(1));
+       source_box_ptr = &source_box;
+     } else {
++      // Non-packed level: copy the whole footprint. The footprint is sized as
++      // the guest mip reduced then scaled, while the host mip subresource is
++      // the base scaled then reduced, so for the deepest mips of scaled
++      // textures the footprint can be a row or column larger. Compressed dests
++      // round up to the block and absorb it. For uncompressed dests clamp the
++      // copy to the exact subresource with an explicit source box to avoid
++      // overrunning. Clamp per axis to min(footprint, subresource) since a
++      // non-power-of-two axis can be smaller than the subresource while another
++      // axis is larger, and the box must not exceed the source footprint
++      // either. Canary f25003c0e.
+       source_box_ptr = nullptr;
++      if (!host_block_compressed) {
++        const D3D12_SUBRESOURCE_FOOTPRINT& footprint = location_source.PlacedFootprint.Footprint;
++        uint32_t dst_width =
++            std::max((width * texture_resolution_scale_x) >> level, uint32_t(1));
++        uint32_t dst_height =
++            std::max((height * texture_resolution_scale_y) >> level, uint32_t(1));
++        uint32_t dst_depth = std::max(depth >> level, uint32_t(1));
++        if (footprint.Width > dst_width || footprint.Height > dst_height ||
++            footprint.Depth > dst_depth) {
++          source_box.left = 0;
++          source_box.top = 0;
++          source_box.front = 0;
++          source_box.right = std::min(footprint.Width, dst_width);
++          source_box.bottom = std::min(footprint.Height, dst_height);
++          source_box.back = std::min(footprint.Depth, dst_depth);
++          source_box_ptr = &source_box;
++        }
++      }
+     }
+     for (uint32_t slice = 0; slice < array_size; ++slice) {
+       command_list.D3DCopyTextureRegion(&location_dest, 0, 0, 0, &location_source, source_box_ptr);
 diff --git a/src/graphics/flags.cpp b/src/graphics/flags.cpp
 index e2983a4..37343df 100644
 --- a/src/graphics/flags.cpp
@@ -285,7 +358,7 @@ index 953c5fd..a8555f6 100644
          keep_mask_low |= 0xFFFFu;
        }
 diff --git a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
-index 31de175..0afd7b7 100644
+index 31de175..4d3d852 100644
 --- a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
 +++ b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
 @@ -143,10 +143,34 @@ void DxbcShaderTranslator::ProcessVertexFetchInstruction(
@@ -372,25 +445,77 @@ index 31de175..0afd7b7 100644
          case xenos::FetchOpDimension::k1D:
            // Always need size for 1D textures to support wide 1D textures.
            size_needed_components |= 0b0001;
-@@ -797,7 +834,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+@@ -797,14 +834,18 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
      // Size needed for normalization (or, for stacked texture layers,
      // denormalization) and for offsets.
      size_needed_components |= offsets_not_zero;
 -    switch (instr.dimension) {
 +    switch (coordinate_dimension) {
        case xenos::FetchOpDimension::k1D:
-         if (instr.attributes.unnormalized_coordinates) {
-           size_needed_components |= 0b0001;
-@@ -836,7 +873,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+-        if (instr.attributes.unnormalized_coordinates) {
+-          size_needed_components |= 0b0001;
+-        }
++        // Always need the size for 1D textures to handle wide ones (> 8192
++        // wide), which are mapped onto 2D grids. Canary 947075f88.
++        size_needed_components |= 0b0001;
+         break;
+       case xenos::FetchOpDimension::k2D:
+-        if (instr.attributes.unnormalized_coordinates) {
++        // A tfetch1D promoted by its source swizzle may still use a 1D fetch
++        // constant. Its size interpretation is selected below at runtime.
++        // Canary 7cd47947b.
++        if (instr.dimension == xenos::FetchOpDimension::k1D ||
++            instr.attributes.unnormalized_coordinates) {
+           size_needed_components |= 0b0011;
+         }
+         break;
+@@ -835,17 +876,44 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     size_needed_components |= 0b1000;
    }
    uint32_t size_and_is_3d_temp = size_needed_components ? PushSystemTemp() : UINT32_MAX;
++  // For 1D textures, keep the uint width_minus_1 before it becomes a float -
++  // the wide 1D check below needs it. Canary 947075f88.
++  uint32_t size_1d_width_minus_1_temp = UINT32_MAX;
    if (size_needed_components) {
 -    switch (instr.dimension) {
 +    switch (coordinate_dimension) {
        case xenos::FetchOpDimension::k1D:
          a_.OpUBFE(dxbc::Dest::R(size_and_is_3d_temp, 0b0001), dxbc::Src::LU(24), dxbc::Src::LU(0),
                    RequestTextureFetchConstantWord(tfetch_index, 2));
-@@ -876,6 +913,35 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
++        // Save the uint width_minus_1 for wide 1D detection later.
++        size_1d_width_minus_1_temp = PushSystemTemp();
++        a_.OpMov(dxbc::Dest::R(size_1d_width_minus_1_temp, 0b0001),
++                 dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kXXXX));
+         break;
+       case xenos::FetchOpDimension::k2D:
+       case xenos::FetchOpDimension::kCube:
+         a_.OpUBFE(dxbc::Dest::R(size_and_is_3d_temp, size_needed_components),
+                   dxbc::Src::LU(13, 13, 0, 0), dxbc::Src::LU(0, 13, 0, 0),
+                   RequestTextureFetchConstantWord(tfetch_index, 2));
++        if (instr.dimension == xenos::FetchOpDimension::k1D) {
++          // Promoted tfetch1D: the constant may still describe a 1D texture,
++          // whose width is one 24-bit field rather than two 13-bit ones.
++          // Choose between the two layouts at runtime. Canary 7cd47947b.
++          assert_true((size_needed_components & 0b0011) == 0b0011);
++          size_1d_width_minus_1_temp = PushSystemTemp();
++          a_.OpUBFE(dxbc::Dest::R(size_1d_width_minus_1_temp, 0b0001),
++                    dxbc::Src::LU(xenos::kTexture1DMaxWidthLog2), dxbc::Src::LU(0),
++                    RequestTextureFetchConstantWord(tfetch_index, 2));
++          a_.OpMov(dxbc::Dest::R(size_1d_width_minus_1_temp, 0b0010), dxbc::Src::LU(0));
++          a_.OpUBFE(dxbc::Dest::R(size_and_is_3d_temp, 0b1000), dxbc::Src::LU(2),
++                    dxbc::Src::LU(9), RequestTextureFetchConstantWord(tfetch_index, 5));
++          a_.OpIEq(dxbc::Dest::R(size_and_is_3d_temp, 0b1000),
++                   dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kWWWW),
++                   dxbc::Src::LU(uint32_t(xenos::DataDimension::k1D)));
++          a_.OpMovC(dxbc::Dest::R(size_and_is_3d_temp, 0b0011),
++                    dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kWWWW),
++                    dxbc::Src::R(size_1d_width_minus_1_temp),
++                    dxbc::Src::R(size_and_is_3d_temp));
++        }
+         break;
+       case xenos::FetchOpDimension::k3DOrStacked:
+         // tfetch3D is used for both stacked and 3D - first, check if 3D.
+@@ -876,6 +944,35 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
        // Fetch constants store size minus 1 - add 1.
        a_.OpIAdd(dxbc::Dest::R(size_and_is_3d_temp, size_needed_components & 0b0111),
                  dxbc::Src::R(size_and_is_3d_temp), dxbc::Src::LU(1));
@@ -426,7 +551,7 @@ index 31de175..0afd7b7 100644
        // Convert the size to float for multiplication/division.
        a_.OpUToF(dxbc::Dest::R(size_and_is_3d_temp, size_needed_components & 0b0111),
                  dxbc::Src::R(size_and_is_3d_temp));
-@@ -1002,10 +1068,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+@@ -1002,10 +1099,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
      // coordinates need to be transformed back into the cube space.
      bool coord_operand_temp_pushed = false;
      dxbc::Src coord_operand = LoadOperand(
@@ -439,16 +564,100 @@ index 31de175..0afd7b7 100644
        case xenos::FetchOpDimension::k1D:
          normalized_components = 0b0001;
          break;
-@@ -1145,7 +1211,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+@@ -1145,11 +1242,88 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
          }
        }
      }
--    switch (instr.dimension) {
-+    switch (coordinate_dimension) {
-       case xenos::FetchOpDimension::k1D:
++    // Keyed off the FETCH's dimension, not the coordinate's: a tfetch1D promoted
++    // to 2D coordinates still needs the 1D remapping. Canary 7cd47947b.
+     switch (instr.dimension) {
+-      case xenos::FetchOpDimension::k1D:
+-        // Pad to 2D array coordinates.
+-        a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110), dxbc::Src::LF(0.0f));
+-        break;
++      case xenos::FetchOpDimension::k1D: {
++        // Check whether the fetch constant's actual dimension is k1D (word 5,
++        // bits 9-10). If not, skip the wide 1D handling - the size bits mean
++        // different things per dimension. Canary 947075f88.
++        a_.OpUBFE(dxbc::Dest::R(coord_and_sampler_temp, 0b1000), dxbc::Src::LU(2),
++                  dxbc::Src::LU(9), RequestTextureFetchConstantWord(tfetch_index, 5));
++        a_.OpIEq(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                 dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW),
++                 dxbc::Src::LU(uint32_t(xenos::DataDimension::k1D)));
++        a_.OpIf(true, dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++        // 1D texture - is it wide (> 8192)?
++        a_.OpUGE(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                 dxbc::Src::R(size_1d_width_minus_1_temp, dxbc::Src::kXXXX),
++                 dxbc::Src::LU(xenos::kTexture2DCubeMaxWidthHeight));
++        a_.OpIf(true, dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++        {
++          // Wide 1D - remap to 2D. original_width = width_minus_1 + 1.
++          a_.OpIAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                    dxbc::Src::R(size_1d_width_minus_1_temp, dxbc::Src::kXXXX),
++                    dxbc::Src::LI(1));
++          a_.OpUToF(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++          // linear_x = coord.x * original_width, parked in coord.y.
++          a_.OpMul(dxbc::Dest::R(coord_and_sampler_temp, 0b0010),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kXXXX),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++          // scaled = linear_x / 8192, parked in coord.z.
++          a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kYYYY),
++                   dxbc::Src::LF(float(xenos::kTexture2DCubeMaxWidthHeight)));
++          // row_index = floor(scaled), parked in coord.w.
++          a_.OpRoundNI(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                       dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          // coord.x = fract(scaled).
++          a_.OpFrc(dxbc::Dest::R(coord_and_sampler_temp, 0b0001),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          // num_rows = ceil(original_width / 8192).
++          a_.OpIAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                    dxbc::Src::R(size_1d_width_minus_1_temp, dxbc::Src::kXXXX),
++                    dxbc::Src::LI(1));
++          a_.OpUToF(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ),
++                   dxbc::Src::LF(float(xenos::kTexture2DCubeMaxWidthHeight)));
++          a_.OpRoundPI(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                       dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          a_.OpMin(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ),
++                   dxbc::Src::LF(float(xenos::kTexture1DWideMaxRows)));
++          // coord.y = (row_index + 0.5) / num_rows - the CENTRE of the row, not
++          // its edge. At the edge linear filtering would blend 50/50 with the
++          // previous row (texels 8192 apart), and even point sampling could
++          // land on it.
++          a_.OpAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW), dxbc::Src::LF(0.5f));
++          a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0010),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          // coord.z = 0 (array layer).
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0100), dxbc::Src::LF(0.0f));
++        }
++        a_.OpElse();
++        {
++          // Normal 1D texture - pad to 2D array coordinates. A promoted fetch
++          // already supplies Y, so only Z needs clearing.
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp,
++                                 coordinate_dimension == xenos::FetchOpDimension::k1D ? 0b0110
++                                                                                      : 0b0100),
++                   dxbc::Src::LF(0.0f));
++        }
++        a_.OpEndIf();
++        a_.OpElse();
++        {
++          // Non-1D texture bound to a 1D fetch - just pad the coordinates.
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110), dxbc::Src::LF(0.0f));
++        }
++        a_.OpEndIf();
++      } break;
+       case xenos::FetchOpDimension::k2D:
          // Pad to 2D array coordinates.
-         a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110), dxbc::Src::LF(0.0f));
-@@ -1428,7 +1494,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+         a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0100), dxbc::Src::LF(0.0f));
+@@ -1428,7 +1602,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
          }
          if (use_computed_lod) {
            grad_v_temp = PushSystemTemp();
@@ -457,7 +666,7 @@ index 31de175..0afd7b7 100644
              case xenos::FetchOpDimension::k1D:
                grad_component_count = 1;
                break;
-@@ -1444,11 +1510,11 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+@@ -1444,11 +1618,11 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
            uint32_t grad_mask = (1 << grad_component_count) - 1;
            // Convert the bias to a gradient scale.
            a_.OpExp(lod_dest, lod_src);
@@ -474,7 +683,7 @@ index 31de175..0afd7b7 100644
            a_.OpIBFE(dxbc::Dest::R(grad_h_lod_temp, 0b0011), dxbc::Src::LU(5),
                      dxbc::Src::LU(22, 27, 0, 0),
                      RequestTextureFetchConstantWord(tfetch_index, 4));
-@@ -1459,22 +1525,14 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+@@ -1459,22 +1633,14 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
                     dxbc::Src::R(grad_h_lod_temp, dxbc::Src::kYYYY));
            a_.OpMul(lod_dest, lod_src,
                     dxbc::Src::R(grad_h_lod_temp, dxbc::Src::kXXXX));
@@ -497,7 +706,7 @@ index 31de175..0afd7b7 100644
              // TODO(Triang3l): Are cube map register gradients unnormalized if
              // the coordinates themselves are unnormalized?
              if (instr.attributes.unnormalized_coordinates &&
-@@ -1507,17 +1565,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+@@ -1507,17 +1673,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
                       lod_src);
              a_.OpDerivRTYCoarse(dxbc::Dest::R(grad_v_temp, grad_mask),
                                  dxbc::Src::R(coord_and_sampler_temp));
@@ -517,6 +726,17 @@ index 31de175..0afd7b7 100644
              // Pad the gradients to 2D because 1D textures are fetched as 2D
              // arrays.
              a_.OpMov(dxbc::Dest::R(grad_h_lod_temp, 0b0010), dxbc::Src::LF(0.0f));
+@@ -1947,6 +2106,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     }
+   }
+ 
++  if (size_1d_width_minus_1_temp != UINT32_MAX) {
++    PopSystemTemp();
++  }
++
+   if (size_and_is_3d_temp != UINT32_MAX) {
+     PopSystemTemp();
+   }
 diff --git a/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp b/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
 index e90a622..6eead08 100644
 --- a/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
@@ -1096,10 +1316,10 @@ index e472251..3dc1f93 100644
        // Constant and temporary register.
  
 diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
-index 76f5600..1f6703b 100644
+index 76f5600..7d2a5f2 100644
 --- a/src/graphics/pipeline/texture/cache.cpp
 +++ b/src/graphics/pipeline/texture/cache.cpp
-@@ -934,19 +934,36 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+@@ -934,19 +934,37 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
    texture_util::GetSubresourcesFromFetchConstant(fetch, &width_minus_1, &height_minus_1,
                                                   &depth_or_array_size_minus_1, &base_page,
                                                   &mip_page, nullptr, &mip_max_level);
@@ -1130,6 +1350,7 @@ index 76f5600..1f6703b 100644
 +      uint32_t total_width = width_minus_1 + 1;
 +      uint32_t row_width = xenos::kTexture2DCubeMaxWidthHeight;
 +      uint32_t num_rows = (total_width + row_width - 1) / row_width;
++      num_rows = std::min(num_rows, xenos::kTexture1DWideMaxRows);
 +      width_minus_1 = row_width - 1;
 +      height_minus_1 = num_rows - 1;
 +      // Disable mipmaps for wide 1D textures. The shader's coordinate remapping
@@ -1144,7 +1365,7 @@ index 76f5600..1f6703b 100644
      }
      assert_false(fetch.tiled);
      if (fetch.tiled) {
-@@ -977,7 +994,7 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+@@ -977,7 +995,7 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
    key_out.width_minus_1 = width_minus_1;
    key_out.height_minus_1 = height_minus_1;
    key_out.depth_or_array_size_minus_1 = depth_or_array_size_minus_1;
