@@ -370,8 +370,14 @@ def main():
             failed += 1
             continue
         data = open(raw, "rb").read()
-        # Before anything else: the bytes are in the guest's order.
-        data = swap_endian(data, endian)
+        # Undo the guest byte order - but ONLY for block-compressed formats.
+        # decode_plain already reads multi-byte texels big-endian itself
+        # (struct ">H", and 8_8_8_8 as ARGB), so swapping here as well
+        # double-swaps them. Worse, k_8 is single-byte: an 8in16 swap on it
+        # exchanges ADJACENT PIXELS and turns a clean mask into noise, which
+        # is exactly what a global swap did to 8 of 15 k_8 textures.
+        if fmt in (FMT_DXT1, FMT_DXT2_3, FMT_DXT4_5):
+            data = swap_endian(data, endian)
 
         bpb, block = FMT_INFO[fmt]
         if tiled:
