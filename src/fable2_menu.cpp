@@ -526,6 +526,60 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(!live);
+    RowStart("Texture cache",
+             "How much host memory the GPU plugin may hold textures in. "
+             "Leave at Default to use the plugin's own limits - raising it "
+             "helps a large texture pack stay resident instead of being "
+             "evicted and re-uploaded.");
+    {
+      static const int kMb[] = {0, 512, 1024, 2048, 4096};
+      const char* kNames[] = {"Default", "512 MB", "1 GB", "2 GB", "4 GB"};
+      int idx = 0;
+      for (int i = 0; i < 5; ++i)
+        if (kMb[i] == s.texture_cache_mb) idx = i;
+      if (ImGui::Combo("##texcache", &idx, kNames, 5)) {
+        s.texture_cache_mb = kMb[idx];
+        changed = true;
+      }
+      if (!live) RestartTag();
+    }
+
+    RowStart("Texture folder",
+             "Where dumped and upscaled textures live. The dump goes to a "
+             "\"dump\" subfolder and the pack is read from \"pack\". Both "
+             "switches below do nothing until this is set.");
+    {
+      char buf[512];
+      std::snprintf(buf, sizeof(buf), "%s", s.texture_path.c_str());
+      if (ImGui::InputText("##texpath", buf, sizeof(buf))) {
+        s.texture_path = buf;
+        changed = true;
+      }
+      if (!live) RestartTag();
+    }
+
+    RowStart("Dump textures",
+             "Writes every unique guest texture out for upscaling. The plugin "
+             "converts textures ON THE GPU, so finished pixels never exist on "
+             "the CPU side - what gets written is the raw guest bytes plus the "
+             "texture key, and tools/upscale_textures.py untiles and decodes "
+             "them offline. Menus mostly yield video planes, so play actual "
+             "gameplay to collect real art. Costs one memcpy per texture the "
+             "first time it is seen.");
+    {
+      if (ImGui::Checkbox("##texdump", &s.texture_dump)) changed = true;
+      if (!live) RestartTag();
+    }
+
+    RowStart("Use texture pack",
+             "Loads upscaled textures from the \"pack\" subfolder instead of "
+             "the game's own. Fonts, HUD atlases and gradient ramps look WORSE "
+             "upscaled, so the tooling excludes them by default.");
+    {
+      if (ImGui::Checkbox("##texpack", &s.texture_pack)) changed = true;
+      if (!live) RestartTag();
+    }
+
     RowStart("NaN constant repair",
              "A DIAGNOSTIC, and it should stay Off. It substitutes for NaN in "
              "the vertex shader constants before they reach the GPU. That used "

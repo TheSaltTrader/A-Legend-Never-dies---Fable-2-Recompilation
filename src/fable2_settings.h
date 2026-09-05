@@ -132,6 +132,19 @@ struct Fable2Settings {
   // 2 an identity matrix row - and because it is the measurement that proved
   // the NaN was causal in the first place.
   int nan_constant_repair = 0;
+  // Texture pack and texture cache, ported from the NG2 port.
+  //
+  // texture_dump writes every unique guest texture out as raw guest bytes plus
+  // its key; tools/upscale_textures.py untiles and decodes them offline. The
+  // plugin converts textures ON THE GPU, so finished pixels never exist
+  // CPU-side and dumping the raw bytes is the cheap way to get at them.
+  //
+  // texture_cache_mb of 0 means "leave the plugin's own limits alone", so the
+  // setting is only sent when it has actually been chosen.
+  bool texture_dump = false;
+  bool texture_pack = false;
+  std::string texture_path;
+  int texture_cache_mb = 0;
   bool present_dither = false;
   bool letterbox = true;
 
@@ -229,6 +242,10 @@ struct Fable2Settings {
         << "cas_sharpness=" << cas_sharpness << "\n"
         << "fsr_sharpness=" << fsr_sharpness << "\n"
         << "nan_constant_repair=" << nan_constant_repair << "\n"
+        << "texture_dump=" << (texture_dump ? 1 : 0) << "\n"
+        << "texture_pack=" << (texture_pack ? 1 : 0) << "\n"
+        << "texture_path=" << texture_path << "\n"
+        << "texture_cache_mb=" << texture_cache_mb << "\n"
         << "present_dither=" << (present_dither ? 1 : 0) << "\n"
         << "letterbox=" << (letterbox ? 1 : 0) << "\n"
         << "readback=" << readback << "\n"
@@ -260,6 +277,7 @@ struct Fable2Settings {
     fps = std::clamp(fps, 24, 240);
     resolution_scale = std::clamp(resolution_scale, 1, 8);
     nan_constant_repair = std::clamp(nan_constant_repair, 0, 2);
+    texture_cache_mb = std::clamp(texture_cache_mb, 0, 8192);
     anisotropic = std::clamp(anisotropic, -1, 5);
     if (antialias != "none" && antialias != "fxaa" && antialias != "fxaa_extreme")
       antialias = "none";
@@ -303,6 +321,10 @@ struct Fable2Settings {
     else if (k == "cas_sharpness") cas_sharpness = std::atof(v.c_str());
     else if (k == "fsr_sharpness") fsr_sharpness = std::atof(v.c_str());
     else if (k == "nan_constant_repair") nan_constant_repair = std::atoi(v.c_str());
+    else if (k == "texture_dump") texture_dump = Truthy(v);
+    else if (k == "texture_pack") texture_pack = Truthy(v);
+    else if (k == "texture_path") texture_path = v;
+    else if (k == "texture_cache_mb") texture_cache_mb = std::atoi(v.c_str());
     else if (k == "present_dither") present_dither = Truthy(v);
     else if (k == "letterbox") letterbox = Truthy(v);
     else if (k == "readback") readback = v;
