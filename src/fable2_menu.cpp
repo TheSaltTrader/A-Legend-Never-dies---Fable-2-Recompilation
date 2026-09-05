@@ -501,23 +501,46 @@ void DrawTexturesSection(Fable2Settings& s, bool& changed) {
   // The upscaler ships with the port, so there is no download and no disabled
   // control waiting on one. If it is missing the build simply falls back to a
   // plain resize, which the tool reports.
-  changed |= ImGui::Checkbox("Enhance with AI (Real-ESRGAN)", &s.texture_ai);
-  ImGui::SetNextItemWidth(240.0f);
-  changed |= ImGui::SliderFloat("Detail strength", &s.texture_ai_strength,
-                                0.0f, 1.0f, "%.2f");
-  if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip(
-        "How much of the model's fine detail is laid over the original.\n"
-        "Tone and colour always stay the game's - only the detail is\n"
-        "borrowed, so a higher value sharpens rather than repaints.");
+  // The method, chosen rather than implied. Both ship with the port, so this
+  // is a real choice and not a gate on a download - and naming Lanczos makes
+  // it visible, where "AI off" reads as though there were no method at all.
+  //
+  // Measured on four 512x512 textures: the AI output differs from the plain
+  // resize and carries 13-32%% more high-frequency detail, at roughly ten
+  // times the cost. That is why Lanczos stays first-class rather than a
+  // fallback.
+  static const char* const kMethodNames[] = {
+      "Lanczos  (fast, plain resize)",
+      "Real-ESRGAN AI  (slower, adds detail)"};
+  int method = s.texture_ai ? 1 : 0;
+  ImGui::TextUnformatted("Method");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(330.0f);
+  if (ImGui::Combo("##texmethod", &method, kMethodNames, 2)) {
+    s.texture_ai = (method == 1);
+    changed = true;
   }
-  if (!fable2::UpscalerInstalled()) {
-    Muted("The upscaler is missing from tools/upscaler - the build will fall "
-          "back to a plain resize.");
+  if (s.texture_ai) {
+    ImGui::SetNextItemWidth(240.0f);
+    changed |= ImGui::SliderFloat("Detail strength", &s.texture_ai_strength,
+                                  0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip(
+          "How much of the model's fine detail is laid over the original.\n"
+          "Tone and colour always stay the game's - only the detail is\n"
+          "borrowed, so a higher value sharpens rather than repaints.\n"
+          "A straight swap would not do that: the model is photo-trained\n"
+          "and denoises hard, which on a smoke texture cost 40%% of its\n"
+          "brightness.");
+    }
+    if (!fable2::UpscalerInstalled()) {
+      Muted("The upscaler is missing from tools/upscaler - the build will fall "
+            "back to Lanczos.");
+    }
   }
 
   ImGui::BeginDisabled(!have_path || dumped == 0);
-  if (ImGui::Button(s.texture_ai ? "Build pack with AI" : "Build pack")) {
+  if (ImGui::Button(s.texture_ai ? "Build pack (AI)" : "Build pack (Lanczos)")) {
     tex_started_at_ = ImGui::GetTime();
     tex_thread_ = fable2::BuildPackAsync(dir, s.texture_scale, s.texture_ai,
                                          s.texture_ai_strength, tex_progress_);
