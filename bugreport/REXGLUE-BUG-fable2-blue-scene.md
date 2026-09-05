@@ -185,3 +185,98 @@ the shipped package, rather than leaving it to each consumer.
 - Screenshots of the same scene immediately before and after onset.
 - 429 shaders dumped at the transition (`dump_shaders`).
 - The four pipeline hashes compiled at the moment of onset.
+
+---
+
+# UPDATE 2026-09-04: root cause located, and the GPU premise above is WRONG
+
+Everything above still describes the symptom accurately, but its conclusion —
+"a divergence in the SHARED GPU code" — is now disproven. The GPU is drawing
+exactly what it is told to draw. It is being told to draw NaN.
+
+## What was measured
+
+Instrumenting the vertex float-constant upload
+(`D3D12CommandProcessor::UpdateBindings`) and counting the values actually
+handed to the GPU:
+
+    VS CONSTANTS: 2275685 uploads, 261223088 values | NaN 18967897 (7.26%), Inf 0
+    VS CONSTANTS NaN: 36 of 256 constants affected, first was c9
+        | c0-c7, c9, c28-c39, c72-c74, c76, c93, c104-c107, c113-c117, c255
+    VS CONSTANTS NaN patterns: 0x7FC00000 x8995088, 0xFFC00000 x8732176,
+                               0x7FE00000 x1200846
+
+Three things matter here:
+
+  * The affected constants are **contiguous four-register blocks** (`c0-c7`,
+    `c28-c39`, `c104-c107`, `c113-c117`) — the shape of transform matrices,
+    not of scattered scalar parameters.
+  * The NaN count is **zero until gameplay is actually reached**. A run that
+    sits on the title screen reports `NaN 0 (0.00%)` for its whole length, and
+    reports `memexport 0`. The NaN arrives with the world.
+  * The bit patterns are dominated by **canonical quiet NaNs**, which is what
+    an invalid operation produces — not a fill pattern.
+
+## Proof that the NaN is the CAUSE, not a side effect
+
+A census can only show that NaN arrives, never that it matters. So the
+constants were repaired at the upload site (`diag_vs_const_nan_fix=2`,
+substituting the matching row of an identity matrix for any NaN) and the same
+330-second schedule was replayed.
+
+  * `diag_vs_const_nan_fix=0` — flat saturated blue, tutorial banner on top.
+    (`out/shots/nan2_14.png`)
+  * `diag_vs_const_nan_fix=2` — **Old Bowerstone renders**: buildings, snow,
+    cobblestones, the brazier fire, falling-snow particles.
+    (`out/shots/fix2_14.png`)
+
+Same build, same schedule, same shader cache; the only difference is whether
+NaN reaches the GPU. That settles causality.
+
+The identity-row substitution is a *probe, not a fix* — it assumes matrices are
+4-register aligned, so later frames distort badly as the guess goes wrong
+(`out/shots/fix2_16.png`). It is not proposed as a workaround.
+
+## Where the NaN is NOT coming from
+
+Ruled out by reading the code rather than by guessing:
+
+  * **Extended-range float16.** `build_vupkd3d128` FLOAT16_4 maps half
+    exponent 31 to float32 exponent 143 — a finite value up to 131008, which
+    is the Xbox 360 behaviour. It does not produce Inf/NaN. Correct already.
+  * **Saturating float→int conversion.** `rex::ppc::simde_mm_vctsxs` handles
+    NaN→0 and saturates to `INT_MAX` rather than returning x86's
+    `0x80000000` indefinite. Correct already.
+  * **The GPU port backlog.** 26 Canary GPU commits were ported with no effect
+    on this symptom, which is consistent with the fault being CPU-side.
+
+## What the FP trap says
+
+Running the recompiled code with MXCSR's IM bit clear
+(`REX_TRAP_FP_INVALID=1`) and recording the faulting opcode at each distinct
+site gives 53 sites. Decoded, the busiest are:
+
+    1955302 x  F3 0F 5B DB   cvttps2dq   sub_8220D058+0x24B
+     182064 x  0F C2 8F ..01 cmpps LT    sub_82E1A9C0+0x621
+     162062 x  0F 5F 96 ..   maxps       sub_8220D058+0x4D6
+      64976 x  0F C2 C5 01   cmpps LT    sub_82DE9120+0xAE43
+      41690 x  0F C2 D5 02   cmpps LE    sub_821DC3A8+0x4D5
+
+This is mostly **noise, and it is important to say so**:
+
+  * `cvttps2dq` is simde emulating a per-lane vector shift (`vslw`) through
+    floats. For a shift of 31 the intermediate is 2^31, which is out of signed
+    range, so it raises a spurious #I — and still computes the correct answer.
+  * `cmpps` with the LT/LE predicates, and `minps`/`maxps`, raise #I on a
+    **quiet** NaN. They are NaN *consumers*, faulting because a NaN is already
+    in the data.
+
+Almost no `divps`, `sqrtps` or `subps` fires. So the NaN is not being created
+in bulk by arithmetic at the point it is consumed; it is propagated from
+somewhere upstream. That is the open question.
+
+## Open question
+
+Which guest write first puts a canonical QNaN into the constant registers.
+The trap cannot answer it as built, because it cannot distinguish an
+instruction that *created* a NaN from one that merely *touched* one.

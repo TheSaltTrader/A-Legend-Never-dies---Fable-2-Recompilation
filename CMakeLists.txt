@@ -29,3 +29,10 @@ endif()
 # GPU_PLUGINS stages the SDK's Xenos emulation plugin (rexgpu-xenos.dll) next
 # to the executable. It is runtime-loaded, never linked.
 rexglue_setup_target(fable2 GPU_PLUGINS xenos)
+
+# DbgHelp resolves recompiled sub_<guest address> names for the
+# FP trap diagnostic (src/fable2_fptrap.h).
+if (WIN32)
+    target_link_libraries(fable2 PRIVATE dbghelp)
+endif()
+

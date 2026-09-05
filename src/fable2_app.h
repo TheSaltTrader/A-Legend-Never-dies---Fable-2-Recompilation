@@ -27,6 +27,7 @@
 #include <thread>
 
 #include "fable2_disc.h"
+#include "fable2_fptrap.h"
 #include "fable2_dlc.h"
 #include "fable2_menu.h"
 #include "fable2_platform.h"
@@ -152,6 +153,11 @@ class Fable2App : public rex::ReXApp {
   // mode", silently ignores every Vd* kernel call, and the guest never gets a
   // ring buffer: no error, just a black window.
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    // Before the runtime is built, so before any guest thread seeds MXCSR.
+    // FABLE2_TRAP_FP=1 makes invalid floating-point operations in recompiled
+    // code fault and be reported, instead of quietly producing the NaN that
+    // ends up in the vertex constants.
+    fable2::FPTrap::InstallIfRequested();
     // The settings file is the player's choice; the cvar is the override, so
     // a command line still wins for scripted runs.
     std::string backend = REXCVAR_GET(gpu_backend);
@@ -286,6 +292,7 @@ class Fable2App : public rex::ReXApp {
   }
 
   void OnShutdown() override {
+    fable2::FPTrap::Report();
     // The dialogs hold a raw pointer to the drawer, which the SDK tears down
     // after this hook. Drop them first.
     StopUiPump();

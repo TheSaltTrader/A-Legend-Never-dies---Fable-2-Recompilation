@@ -1,0 +1,2520 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index da8e432..321379c 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -75,6 +75,11 @@ enum class GammaRampType {
+ 
+ class CommandProcessor {
+  public:
++  // [ng2] memory_ is protected and the texture cache is not a subclass,
++  // so there is no way to read a texture's guest bytes for diagnosis.
++  // Read-only accessor, used only by instrumentation.
++  memory::Memory* debug_memory() const { return memory_; }
++
+   enum class SwapPostEffect {
+     kNone,
+     kFxaa,
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+index 96d362b..6ed45fb 100644
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -425,6 +425,39 @@ class D3D12CommandProcessor : public CommandProcessor {
+   HANDLE fence_completion_event_ = nullptr;
+ 
+   bool submission_open_ = false;
++
++  // Draw census (diagnostic, off unless the draw_census cvar is set). Counts
++  // where draws GO, because most of the ways one is dropped return silently.
++  struct DrawCensus {
++    uint64_t issued = 0;
++    uint64_t no_vertex_shader = 0;
++    uint64_t surface_pitch_zero = 0;
++    uint64_t not_rasterizing_no_memexport = 0;
++    uint64_t no_host_vertices = 0;
++    uint64_t pipeline_not_ready = 0;
++    uint64_t other_failure = 0;
++    uint64_t memexport = 0;
++    uint64_t last_report_ms = 0;
++    // Vertex float constants as uploaded - bone matrices for skinned meshes
++    // live here, so garbage in these collapses characters and leaves static
++    // geometry untouched.
++    uint64_t vs_const_uploads = 0;
++    uint64_t vs_const_values = 0;
++    uint64_t vs_const_nan = 0;
++    uint64_t vs_const_inf = 0;
++    uint64_t vs_const_zero = 0;
++    uint64_t vs_const_huge = 0;
++    uint32_t vs_const_max_count = 0;
++    // Which of the 256 vec4 constants have ever been uploaded containing NaN.
++    // Contiguous means a buffer; scattered means a computation.
++    uint64_t vs_const_nan_bitmap[4] = {0, 0, 0, 0};
++    int32_t vs_const_first_nan_index = -1;
++    bool vs_const_nan_reported = false;
++    // The distinct bit patterns seen in NaN constants, with counts. A handful
++    // of patterns means a fill value; thousands means real arithmetic.
++    std::unordered_map<uint32_t, uint64_t> vs_const_nan_patterns;
++  } draw_census_;
++  void ReportDrawCensus();
+   // Values of submission_fence_.
+   uint64_t submission_current_ = 1;
+   uint64_t submission_completed_ = 0;
+diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
+index 4d845c7..7a9612e 100644
+--- a/include/rex/graphics/d3d12/texture_cache.h
++++ b/include/rex/graphics/d3d12/texture_cache.h
+@@ -58,6 +58,9 @@ class D3D12TextureCache final : public TextureCache {
+       xenos::AnisoFilter aniso_filter : 3;  // 17
+       uint32_t mip_min_level : 4;           // 21
+       uint32_t mip_base_map : 1;            // 22
++      // Force the border color alpha to 1.0 (only meaningful with a border
++      // clamp mode). Canary d0dd98923.
++      uint32_t force_bc_w_to_max : 1;       // 23
+       // Maximum mip level is in the texture resource itself, but mip_base_map
+       // can be used to limit fetching to mip_min_level.
+     };
+@@ -457,6 +460,11 @@ class D3D12TextureCache final : public TextureCache {
+   D3D12CommandProcessor& command_processor_;
+   bool bindless_resources_used_;
+ 
++  // Bits per format, for checking if the host format should be
++  // point-filtered. Canary 197929d96.
++  uint64_t host_filterable_unsigned_ = 0;
++  uint64_t host_filterable_signed_ = 0;
++
+   Microsoft::WRL::ComPtr<ID3D12RootSignature> load_root_signature_;
+   std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kLoadShaderCount> load_pipelines_;
+   // Load pipelines for resolution-scaled resolve targets.
+diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
+index 2cf24c4..ba6f6be 100644
+--- a/include/rex/graphics/flags.h
++++ b/include/rex/graphics/flags.h
+@@ -40,6 +40,13 @@ REXCVAR_DECLARE(bool, native_stencil_value_output);
+ REXCVAR_DECLARE(bool, native_stencil_value_output_d3d12_intel);
+ REXCVAR_DECLARE(bool, gamma_render_target_as_unorm16);
+ REXCVAR_DECLARE(bool, native_2x_msaa);
++REXCVAR_DECLARE(bool, diag_alpha_test_off);
++REXCVAR_DECLARE(bool, diag_cull_none);
++REXCVAR_DECLARE(bool, diag_depth_always);
++REXCVAR_DECLARE(int32_t, draw_census);
++REXCVAR_DECLARE(int32_t, diag_vs_const_nan_fix);
++REXCVAR_DECLARE(bool, force_depth_clamp);
++REXCVAR_DECLARE(bool, spirv_disable_rounding_mode_rte);
+ REXCVAR_DECLARE(bool, snorm16_render_target_full_range);
+ REXCVAR_DECLARE(bool, mrt_edram_used_range_clamp_to_min);
+ REXCVAR_DECLARE(bool, direct_host_resolve);
+diff --git a/include/rex/graphics/format/dxbc.h b/include/rex/graphics/format/dxbc.h
+index a5eaa8f..572d7de 100644
+--- a/include/rex/graphics/format/dxbc.h
++++ b/include/rex/graphics/format/dxbc.h
+@@ -1379,6 +1379,7 @@ enum class Opcode : uint32_t {
+   kRetC = 63,
+   kRoundNE = 64,
+   kRoundNI = 65,
++  kRoundPI = 66,
+   kRoundZ = 67,
+   kRSq = 68,
+   kSampleL = 72,
+@@ -1786,6 +1787,10 @@ class Assembler {
+     EmitAluOp(Opcode::kRoundNI, 0b0, dest, src, saturate);
+     ++stat_.float_instruction_count;
+   }
++  void OpRoundPI(const Dest& dest, const Src& src, bool saturate = false) {
++    EmitAluOp(Opcode::kRoundPI, 0b0, dest, src, saturate);
++    ++stat_.float_instruction_count;
++  }
+   void OpRoundZ(const Dest& dest, const Src& src, bool saturate = false) {
+     EmitAluOp(Opcode::kRoundZ, 0b0, dest, src, saturate);
+     ++stat_.float_instruction_count;
+diff --git a/include/rex/graphics/pipeline/shader/dxbc_translator.h b/include/rex/graphics/pipeline/shader/dxbc_translator.h
+index 3b0fd61..a399f6b 100644
+--- a/include/rex/graphics/pipeline/shader/dxbc_translator.h
++++ b/include/rex/graphics/pipeline/shader/dxbc_translator.h
+@@ -547,7 +547,7 @@ class DxbcShaderTranslator : public ShaderTranslator {
+                                     uint32_t f32_temp_component, uint32_t temp_temp,
+                                     uint32_t temp_temp_component, bool round_to_nearest_even,
+                                     bool remap_from_0_to_0_5);
+-  // Converts the 20e4 number in bits [f24_shift, f24_shift + 10) to a 32-bit
++  // Converts the 20e4 number in bits [f24_shift, f24_shift + 24) to a 32-bit
+   // float. Two temporaries must be different, but one can be the same as the
+   // source. The destination may be anything writable. If remap_to_0_to_0_5 is
+   // true, 0...1 in float24 will be remaped to 0...0.5 in float32.
+@@ -778,6 +778,13 @@ class DxbcShaderTranslator : public ShaderTranslator {
+   // manually even for RTV to maintain the guest dithering pattern and because
+   // alpha can be exponent-biased.
+   void CompletePixelShader_AlphaToMask();
++
++  // Xbox 360 float16 <-> float32. NOT the IEEE binary16 the hardware
++  // instructions implement: the guest's format has no Inf and no NaN, and
++  // exponent 31 holds finite values up to 131008. Ported from Xenia Canary,
++  // whose fix the SDK's fork predates.
++  void Float32ToF16ExtendedRange(uint32_t reg, uint32_t components);
++  void Float16ExtendedRangeTo32(uint32_t reg, uint32_t components);
+   void CompletePixelShader_WriteToRTVs();
+   void CompletePixelShader_DSV_DepthTo24Bit();
+   void CompletePixelShader_WriteToROV();
+diff --git a/include/rex/graphics/pipeline/shader/spirv_translator.h b/include/rex/graphics/pipeline/shader/spirv_translator.h
+index dce3dbf..be81d71 100644
+--- a/include/rex/graphics/pipeline/shader/spirv_translator.h
++++ b/include/rex/graphics/pipeline/shader/spirv_translator.h
+@@ -459,7 +459,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
+   static spv::Id PreClampedDepthTo20e4(SpirvBuilder& builder, spv::Id f32_scalar,
+                                        bool round_to_nearest_even, bool remap_from_0_to_0_5,
+                                        spv::Id ext_inst_glsl_std_450);
+-  // Converts the 20e4 number in bits [f24_shift, f24_shift + 10) to a 32-bit
++  // Converts the 20e4 number in bits [f24_shift, f24_shift + 24) to a 32-bit
+   // float.
+   static spv::Id Depth20e4To32(SpirvBuilder& builder, spv::Id f24_uint_scalar, uint32_t f24_shift,
+                                bool remap_to_0_to_0_5, bool result_as_uint,
+@@ -722,6 +722,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
+   // flow because of taking derivatives of the fragment depth.
+   void FSI_DepthStencilTest(spv::Id msaa_samples, bool sample_mask_potentially_narrowed_previouly);
+   // Returns the first and the second 32 bits as two uints.
++  // Xbox 360 float16 <-> float32, two components at a time. NOT the IEEE
++  // binary16 that GLSLstd450PackHalf2x16 implements: the guest's format has no
++  // Inf and no NaN, and exponent 31 holds finite values up to 131008. Ported
++  // from Xenia Canary, whose fix the SDK's fork predates.
++  spv::Id PackFloat16x2ExtendedRange(spv::Id float2_value);
++  spv::Id UnpackFloat16x2ExtendedRange(spv::Id packed_uint);
++
+   std::array<spv::Id, 2> FSI_ClampAndPackColor(spv::Id color_float4, spv::Id format_with_flags);
+   std::array<spv::Id, 4> FSI_UnpackColor(std::array<spv::Id, 2> color_packed,
+                                          spv::Id format_with_flags);
+diff --git a/include/rex/graphics/pipeline/texture/cache.h b/include/rex/graphics/pipeline/texture/cache.h
+index d26cd4f..74518d2 100644
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -182,6 +182,17 @@ class TextureCache {
+     uint32_t GetHeight() const { return height_minus_1 + 1; }
+     uint32_t GetDepthOrArraySize() const { return depth_or_array_size_minus_1 + 1; }
+ 
++    // True if this is a wide 1D texture (> 8192 wide) mapped onto 2D.
++    bool IsWide1D() const {
++      return dimension == xenos::DataDimension::k1D && height_minus_1 > 0;
++    }
++    uint32_t Get1DWidth() const {
++      if (IsWide1D()) {
++        return GetWidth() * GetHeight();
++      }
++      return GetWidth();
++    }
++
+     texture_util::TextureGuestLayout GetGuestLayout() const {
+       return texture_util::GetGuestTextureLayout(dimension, pitch, GetWidth(), GetHeight(),
+                                                  GetDepthOrArraySize(), tiled, format, packed_mips,
+diff --git a/include/rex/graphics/primitive_processor.h b/include/rex/graphics/primitive_processor.h
+index 2945731..8b0a717 100644
+--- a/include/rex/graphics/primitive_processor.h
++++ b/include/rex/graphics/primitive_processor.h
+@@ -493,6 +493,11 @@ class PrimitiveProcessor {
+   static constexpr uint32_t GetTriangleFanListIndexCount(uint32_t fan_index_count) {
+     return fan_index_count > 2 ? (fan_index_count - 2) * 3 : 0;
+   }
++  // Triangle strip to triangle list conversion.
++  // A strip with N vertices produces (N-2) triangles, each needing 3 indices.
++  static constexpr uint32_t GetTriangleStripListIndexCount(uint32_t strip_index_count) {
++    return strip_index_count > 2 ? (strip_index_count - 2) * 3 : 0;
++  }
+   template <typename Index, typename IndexTransform>
+   static void TriangleFanToList(Index* dest, const Index* source, uint32_t source_index_count,
+                                 const IndexTransform& index_transform) {
+diff --git a/include/rex/graphics/xenos.h b/include/rex/graphics/xenos.h
+index f7fd14e..d3cb447 100644
+--- a/include/rex/graphics/xenos.h
++++ b/include/rex/graphics/xenos.h
+@@ -1126,6 +1126,9 @@ constexpr uint32_t kTextureSubresourceAlignmentBytes = 1 << kTextureSubresourceA
+ // Texture fetch constant size field widths.
+ constexpr uint32_t kTexture1DMaxWidthLog2 = 24;
+ constexpr uint32_t kTexture1DMaxWidth = 1 << kTexture1DMaxWidthLog2;
++// Limit the number of rows materialized when wide 1D textures are mapped to
++// 2D. Some games use very large widths with much less data behind them.
++constexpr uint32_t kTexture1DWideMaxRows = 32;
+ constexpr uint32_t kTexture2DCubeMaxWidthHeightLog2 = 13;
+ constexpr uint32_t kTexture2DCubeMaxWidthHeight = 1 << kTexture2DCubeMaxWidthHeightLog2;
+ constexpr uint32_t kTexture2DMaxStackDepthLog2 = 6;
+diff --git a/include/rex/platform/fpscr.h b/include/rex/platform/fpscr.h
+index c2c4fd4..73c148b 100644
+--- a/include/rex/platform/fpscr.h
++++ b/include/rex/platform/fpscr.h
+@@ -11,6 +11,7 @@
+ 
+ #pragma once
+ 
++#include <cstdlib>
+ #include <cmath>
+ 
+ #include <rex/types.h>
+@@ -27,6 +28,22 @@ namespace rex::platform {
+ // simde does not handle denormal flags, so we need to implement per-arch.
+ #if defined(__x86_64__) || defined(_M_X64)
+ 
++// DIAGNOSTIC: when set before guest threads start, invalid floating-point
++// operations in recompiled code raise #I instead of quietly producing a NaN.
++// A plain inline global, not a cvar: it is read as every guest thread seeds
++// MXCSR, and must be settable before any of them exist.
++// Read from the environment, not set through a global: InitHost() runs inside
++// rexruntime.dll while the app that wants the diagnostic is a separate binary,
++// and an `inline` variable is a DIFFERENT object in each of them. The
++// environment is the one channel both copies can agree on.
++inline bool TrapFPInvalid() noexcept {
++  static const bool enabled = [] {
++    const char* v = std::getenv("REX_TRAP_FP_INVALID");
++    return v && *v && *v != '0';
++  }();
++  return enabled;
++}
++
+ struct FPSCRPlatform {
+   static constexpr size_t RoundShift = 13;
+   static constexpr size_t RoundMaskVal = SIMDE_MM_ROUND_MASK;
+@@ -47,6 +64,12 @@ struct FPSCRPlatform {
+ 
+   static inline void InitHostExceptions(u32& csr) noexcept {
+     csr |= ExceptionMask;  // Set mask bits to disable exceptions
++    if (TrapFPInvalid()) {
++      // DIAGNOSTIC: leave INVALID unmasked so the first 0/0, Inf-Inf,
++      // sqrt(-x) or 0*Inf in guest code faults where it happens, rather than
++      // becoming a NaN that surfaces somewhere else entirely.
++      csr &= ~u32(1 << 7);
++    }
+   }
+ };
+ 
+diff --git a/include/rex/ppc/context.h b/include/rex/ppc/context.h
+index 0ede542..0796930 100644
+--- a/include/rex/ppc/context.h
++++ b/include/rex/ppc/context.h
+@@ -13,6 +13,8 @@
+ 
+ #pragma once
+ 
++#include <cstdio>
++#include <atomic>
+ #include <bit>
+ #include <cstdint>
+ #include <cstring>
+@@ -204,6 +206,20 @@ struct FPSCRRegister {
+   inline void InitHost() noexcept {
+     csr = getcsr();
+     Platform::InitHostExceptions(csr);
++    // One-shot, AFTER the mask is applied: prove what a guest thread actually
++    // gets rather than assuming the diagnostic armed. Bit 7 (IM) clear means
++    // invalid operations will fault. Printed from inside the runtime DLL, so
++    // it also proves which copy of the DLL is loaded.
++    if (platform::TrapFPInvalid()) {
++      static std::atomic<bool> logged{false};
++      bool expected = false;
++      if (logged.compare_exchange_strong(expected, true)) {
++        std::fprintf(stderr,
++                     "[FP TRAP] guest MXCSR = 0x%04X, IM bit7 = %u (0 means armed)%c",
++                     csr, (csr >> 7) & 1u, 10);
++        std::fflush(stderr);
++      }
++    }
+     setcsr(csr);
+   }
+ };
+diff --git a/include/rex/system/function_dispatcher.h b/include/rex/system/function_dispatcher.h
+index 916f3d6..7b51c87 100644
+--- a/include/rex/system/function_dispatcher.h
++++ b/include/rex/system/function_dispatcher.h
+@@ -156,4 +156,10 @@ class FunctionDispatcher : public IModuleRegistrar {
+   mutable std::recursive_mutex dispatch_mutex_;
+ };
+ 
++// [ng2] Reverse lookup for fault diagnosis: given a host instruction pointer,
++// return the guest address of the recompiled function containing it (0 if
++// unknown). Instrumentation only.
++void Ng2RecordFunction(uint32_t guest_address, const void* host);
++uint32_t Ng2LookupGuestByHost(const void* rip, const void** entry_out);
++
+ }  // namespace rex::runtime
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 19874a5..d67bef7 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -9,6 +9,10 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <string>
++#include <vector>
++#include <cmath>
++#include <chrono>
+ #include <algorithm>
+ #include <cstdarg>
+ #include <cstring>
+@@ -2290,6 +2294,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   auto vertex_shader = static_cast<D3D12Shader*>(active_vertex_shader());
+   if (!vertex_shader) {
+     // Always need a vertex shader.
++    ++draw_census_.no_vertex_shader;
++    ReportDrawCensus();
+     return false;
+   }
+   pipeline_cache_->AnalyzeShaderUcode(*vertex_shader);
+@@ -2299,6 +2305,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   bool primitive_polygonal = draw_util::IsPrimitivePolygonal(regs);
+   bool is_rasterization_done = draw_util::IsRasterizationPotentiallyDone(regs, primitive_polygonal);
+   if (surface_pitch_is_zero && is_rasterization_done) {
++    ++draw_census_.surface_pitch_zero;
+     // Doesn't actually draw.
+     // Unlikely that zero would even really be legal though.
+     return true;
+@@ -2337,6 +2344,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+     return false;
+   }
+   if (!primitive_processing_result.host_draw_vertex_count) {
++    ++draw_census_.no_host_vertices;
+     // Nothing to draw.
+     return true;
+   }
+@@ -2400,6 +2408,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   }
+   if (REXCVAR_GET(async_shader_compilation) &&
+       pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
++    ++draw_census_.pipeline_not_ready;
++    ReportDrawCensus();
+     return true;
+   }
+ 
+@@ -2727,9 +2737,96 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+     }
+   }
+ 
++  ++draw_census_.issued;
++  if (memexport_used) {
++    ++draw_census_.memexport;
++  }
++  ReportDrawCensus();
+   return true;
+ }
+ 
++void D3D12CommandProcessor::ReportDrawCensus() {
++  int32_t interval = REXCVAR_GET(draw_census);
++  if (interval <= 0) {
++    return;
++  }
++  uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
++                             std::chrono::steady_clock::now().time_since_epoch())
++                             .count());
++  if (!draw_census_.last_report_ms) {
++    draw_census_.last_report_ms = now;
++    return;
++  }
++  if (now - draw_census_.last_report_ms < uint64_t(interval) * 1000u) {
++    return;
++  }
++  draw_census_.last_report_ms = now;
++  // REXLOG_INFO, not REXGPU_INFO: the [gpu] category is filtered out below
++  // debug level, and this project has already lost time to counting [gpu]
++  // lines that were never being written.
++  REXLOG_INFO(
++      "DRAW CENSUS: issued {} (memexport {}) | dropped: no VS {}, surface pitch 0 {}, "
++      "not rasterizing + no memexport {}, no host vertices {}, PIPELINE NOT READY {}, "
++      "other {}",
++      draw_census_.issued, draw_census_.memexport, draw_census_.no_vertex_shader,
++      draw_census_.surface_pitch_zero, draw_census_.not_rasterizing_no_memexport,
++      draw_census_.no_host_vertices, draw_census_.pipeline_not_ready,
++      draw_census_.other_failure);
++  if (draw_census_.vs_const_uploads) {
++    double values = double(draw_census_.vs_const_values);
++    REXLOG_INFO(
++        "VS CONSTANTS: {} uploads, {} values (max {} vec4/shader) | NaN {} ({:.2f}%), "
++        "Inf {} ({:.2f}%), zero {} ({:.2f}%), |v|>1e9 {} ({:.2f}%)",
++        draw_census_.vs_const_uploads, draw_census_.vs_const_values,
++        draw_census_.vs_const_max_count, draw_census_.vs_const_nan,
++        100.0 * double(draw_census_.vs_const_nan) / values, draw_census_.vs_const_inf,
++        100.0 * double(draw_census_.vs_const_inf) / values, draw_census_.vs_const_zero,
++        100.0 * double(draw_census_.vs_const_zero) / values, draw_census_.vs_const_huge,
++        100.0 * double(draw_census_.vs_const_huge) / values);
++    if (draw_census_.vs_const_nan) {
++      // Render the affected constants as a range list, because "c48-c95" and
++      // "c3, c17, c142" mean very different things.
++      std::string ranges;
++      int32_t run_start = -1;
++      for (int32_t ci = 0; ci <= 256; ++ci) {
++        bool set = ci < 256 && (draw_census_.vs_const_nan_bitmap[ci >> 6] >> (ci & 63)) & 1;
++        if (set && run_start < 0) {
++          run_start = ci;
++        } else if (!set && run_start >= 0) {
++          if (!ranges.empty()) {
++            ranges += ", ";
++          }
++          ranges += (ci - 1 == run_start) ? fmt::format("c{}", run_start)
++                                          : fmt::format("c{}-c{}", run_start, ci - 1);
++          run_start = -1;
++        }
++      }
++      uint32_t affected = 0;
++      for (int i = 0; i < 4; ++i) {
++        affected += uint32_t(rex::bit_count(draw_census_.vs_const_nan_bitmap[i]));
++      }
++      REXLOG_INFO("VS CONSTANTS NaN: {} of 256 constants affected, first was c{} | {}",
++                  affected, draw_census_.vs_const_first_nan_index, ranges);
++      // The pattern is the diagnosis: a fill value points at uninitialised
++      // memory, a computed QNaN points at guest arithmetic.
++      std::vector<std::pair<uint32_t, uint64_t>> pats(
++          draw_census_.vs_const_nan_patterns.begin(),
++          draw_census_.vs_const_nan_patterns.end());
++      std::sort(pats.begin(), pats.end(),
++                [](const auto& a, const auto& b) { return a.second > b.second; });
++      std::string top;
++      for (size_t i = 0; i < pats.size() && i < 4; ++i) {
++        if (!top.empty()) {
++          top += ", ";
++        }
++        top += fmt::format("0x{:08X} x{}", pats[i].first, pats[i].second);
++      }
++      REXLOG_INFO("VS CONSTANTS NaN patterns: {} distinct | {}",
++                  draw_census_.vs_const_nan_patterns.size(), top);
++    }
++  }
++}
++
+ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_size) {
+   if (!total_size || memexport_ranges_.empty()) {
+     return true;
+@@ -3691,6 +3788,11 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+   xenos::CompareFunction alpha_test_function = rb_colorcontrol.alpha_test_enable
+                                                    ? rb_colorcontrol.alpha_func
+                                                    : xenos::CompareFunction::kAlways;
++  if (REXCVAR_GET(diag_alpha_test_off)) {
++    // DIAGNOSTIC: never reject a pixel on alpha, to find out whether the
++    // alpha test is what removes geometry that is otherwise submitted.
++    alpha_test_function = xenos::CompareFunction::kAlways;
++  }
+   flags |= uint32_t(alpha_test_function) << DxbcShaderTranslator::kSysFlag_AlphaPassIfLess_Shift;
+   // Gamma writing.
+   if (!render_target_cache_->gamma_render_target_as_unorm16()) {
+@@ -4113,6 +4215,7 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+     if (float_constants == nullptr) {
+       return false;
+     }
++    const uint8_t* float_constants_begin = float_constants;
+     for (uint32_t i = 0; i < 4; ++i) {
+       uint64_t float_constant_map_entry = float_constant_map_vertex.float_bitmap[i];
+       uint32_t float_constant_index;
+@@ -4125,6 +4228,85 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+         float_constants += 4 * sizeof(float);
+       }
+     }
++    if (REXCVAR_GET(draw_census) > 0) {
++      // Read back what was just written, so this reports what the GPU will see.
++      size_t value_count = size_t(float_constants - float_constants_begin) / sizeof(float);
++      const float* values = reinterpret_cast<const float*>(float_constants_begin);
++      ++draw_census_.vs_const_uploads;
++      draw_census_.vs_const_values += value_count;
++      draw_census_.vs_const_max_count =
++          std::max(draw_census_.vs_const_max_count, float_constant_count_vertex);
++      // Rebuild the constant index for each uploaded vec4, in the same order
++      // the loop above wrote them, so a NaN can be attributed to its constant.
++      uint32_t uploaded_indices[256];
++      uint32_t uploaded_count = 0;
++      for (uint32_t i = 0; i < 4 && uploaded_count < 256; ++i) {
++        uint64_t bits = float_constant_map_vertex.float_bitmap[i];
++        uint32_t bit;
++        while (rex::bit_scan_forward(bits, &bit) && uploaded_count < 256) {
++          bits &= ~(1ull << bit);
++          uploaded_indices[uploaded_count++] = (i << 6) + bit;
++        }
++      }
++      for (size_t vi = 0; vi < value_count; ++vi) {
++        float v = values[vi];
++        if (std::isnan(v)) {
++          ++draw_census_.vs_const_nan;
++          if (draw_census_.vs_const_nan_patterns.size() < 64) {
++            uint32_t bits;
++            std::memcpy(&bits, &v, sizeof(bits));
++            ++draw_census_.vs_const_nan_patterns[bits];
++          }
++          size_t vec4 = vi >> 2;
++          if (vec4 < uploaded_count) {
++            uint32_t ci = uploaded_indices[vec4];
++            draw_census_.vs_const_nan_bitmap[ci >> 6] |= 1ull << (ci & 63);
++            if (draw_census_.vs_const_first_nan_index < 0) {
++              draw_census_.vs_const_first_nan_index = int32_t(ci);
++            }
++          }
++        } else if (std::isinf(v)) {
++          ++draw_census_.vs_const_inf;
++        } else if (v == 0.0f) {
++          ++draw_census_.vs_const_zero;
++        } else if (std::fabs(v) > 1.0e9f) {
++          ++draw_census_.vs_const_huge;
++        }
++      }
++    }
++    // CAUSALITY TEST for the NaN the census found in these constants. The
++    // census proves NaN ARRIVES; it cannot prove the NaN is why nothing draws.
++    // Substituting a finite value settles that: if the scene or the characters
++    // change under either mode, the NaN is the cause rather than a symptom.
++    // Applied after the census so the reported counts stay honest.
++    const int32_t nan_fix = REXCVAR_GET(diag_vs_const_nan_fix);
++    if (nan_fix > 0) {
++      float* mutable_values = reinterpret_cast<float*>(const_cast<uint8_t*>(float_constants_begin));
++      const size_t total = size_t(float_constants - float_constants_begin) / sizeof(float);
++      uint32_t indices[256];
++      uint32_t index_count = 0;
++      for (uint32_t i = 0; i < 4 && index_count < 256; ++i) {
++        uint64_t bits = float_constant_map_vertex.float_bitmap[i];
++        uint32_t bit;
++        while (rex::bit_scan_forward(bits, &bit) && index_count < 256) {
++          bits &= ~(1ull << bit);
++          indices[index_count++] = (i << 6) + bit;
++        }
++      }
++      for (size_t vi = 0; vi < total; ++vi) {
++        if (!std::isnan(mutable_values[vi])) {
++          continue;
++        }
++        float replacement = 0.0f;
++        if (nan_fix >= 2) {
++          const size_t vec4 = vi >> 2;
++          const uint32_t ci = vec4 < index_count ? indices[vec4] : uint32_t(vec4);
++          // Row (ci % 4) of an identity matrix carries 1.0 in component ci % 4.
++          replacement = ((ci & 3u) == (vi & 3u)) ? 1.0f : 0.0f;
++        }
++        mutable_values[vi] = replacement;
++      }
++    }
+     cbuffer_binding_float_vertex_.up_to_date = true;
+     current_graphics_root_up_to_date_ &= ~(1u << root_parameter_float_constants_vertex);
+   }
+diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
+index 8e6b854..3d67e94 100644
+--- a/src/graphics/d3d12/pipeline_cache.cpp
++++ b/src/graphics/d3d12/pipeline_cache.cpp
+@@ -1383,7 +1383,10 @@ bool PipelineCache::GetCurrentStateDescription(
+     description_out.front_counter_clockwise = pa_su_sc_mode_cntl.face == 0;
+     cull_front = pa_su_sc_mode_cntl.cull_front != 0;
+     cull_back = pa_su_sc_mode_cntl.cull_back != 0;
+-    if (cull_front) {
++    if (REXCVAR_GET(diag_cull_none)) {
++      // DIAGNOSTIC override - see the cvar description.
++      description_out.cull_mode = PipelineCullMode::kNone;
++    } else if (cull_front) {
+       // The case when both faces are culled should be handled by disabling
+       // rasterization.
+       assert_false(cull_back);
+@@ -1428,14 +1431,21 @@ bool PipelineCache::GetCurrentStateDescription(
+   if (tessellated && REXCVAR_GET(d3d12_tessellation_wireframe)) {
+     description_out.fill_mode_wireframe = 1;
+   }
+-  description_out.depth_clip = !regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable;
++  // With force_depth_clamp, use the host viewport clamp instead of near and far
++  // Z plane clipping. X/Y/W clipping is unchanged. Both 494707EE and 41560881
++  // have passes that rely on alpha inputs currently dropped by near-plane
++  // clipping. Canary 25597a546.
++  description_out.depth_clip =
++      !regs.Get<reg::PA_CL_CLIP_CNTL>().clip_disable && !REXCVAR_GET(force_depth_clamp);
+   bool depth_stencil_bound_and_used = false;
+   if (!edram_rov_used) {
+     // Depth/stencil. No stencil, always passing depth test and no depth writing
+     // means depth disabled.
+     if (bound_depth_and_color_render_target_bits & 1) {
+       if (normalized_depth_control.z_enable) {
+-        description_out.depth_func = normalized_depth_control.zfunc;
++        description_out.depth_func = REXCVAR_GET(diag_depth_always)
++                                         ? xenos::CompareFunction::kAlways
++                                         : normalized_depth_control.zfunc;
+         description_out.depth_write = normalized_depth_control.z_write_enable;
+       } else {
+         description_out.depth_func = xenos::CompareFunction::kAlways;
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 2be0e8e..0032667 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -10,6 +10,8 @@
+  */
+ 
+ #include <algorithm>
++#include <cstdio>
++#include <set>
+ #include <array>
+ #include <cfloat>
+ #include <cstddef>
+@@ -405,6 +407,30 @@ bool D3D12TextureCache::Initialize() {
+   }
+   scaled_resolve_heap_count_ = 0;
+ 
++  // GetSamplerParameters drops linear filtering for formats the host cannot
++  // sample with it. Canary 197929d96.
++  for (uint32_t i = 0; i < rex::countof(host_formats_); ++i) {
++    const HostFormat& host_format = host_formats_[i];
++    uint64_t format_bit = uint64_t(1) << i;
++    if (host_format.dxgi_format_unsigned != DXGI_FORMAT_UNKNOWN) {
++      D3D12_FEATURE_DATA_FORMAT_SUPPORT format_support = {
++          host_format.dxgi_format_unsigned};
++      if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &format_support,
++                                                sizeof(format_support))) &&
++          (format_support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)) {
++        host_filterable_unsigned_ |= format_bit;
++      }
++    }
++    if (host_format.dxgi_format_signed != DXGI_FORMAT_UNKNOWN) {
++      D3D12_FEATURE_DATA_FORMAT_SUPPORT format_support = {host_format.dxgi_format_signed};
++      if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &format_support,
++                                                sizeof(format_support))) &&
++          (format_support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)) {
++        host_filterable_signed_ |= format_bit;
++      }
++    }
++  }
++
+   // Create the loading root signature.
+   D3D12_ROOT_PARAMETER root_parameters[3];
+   // Parameter 0 is constants (changed multiple times when untiling).
+@@ -941,15 +967,14 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
+       xenos::ClampModeUsesBorder(parameters.clamp_y) ||
+       xenos::ClampModeUsesBorder(parameters.clamp_z)) {
+     parameters.border_color = fetch.border_color;
++    parameters.force_bc_w_to_max = fetch.force_bc_w_to_max;
+   } else {
+     parameters.border_color = xenos::BorderColor::k_ABGR_Black;
+   }
+ 
+-  uint32_t mip_min_level, mip_max_level;
+-  texture_util::GetSubresourcesFromFetchConstant(fetch, nullptr, nullptr, nullptr, nullptr, nullptr,
+-                                                 &mip_min_level, &mip_max_level);
+-  parameters.mip_min_level = mip_min_level;
+-  bool has_mips = mip_max_level > mip_min_level;
++  uint32_t base_page, mip_min_level, mip_max_level;
++  texture_util::GetSubresourcesFromFetchConstant(fetch, nullptr, nullptr, nullptr, &base_page,
++                                                 nullptr, &mip_min_level, &mip_max_level);
+ 
+   xenos::TextureFilter mag_filter = binding.mag_filter == xenos::TextureFilter::kUseFetchConst
+                                         ? fetch.mag_filter
+@@ -965,8 +990,15 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
+   bool mip_filter_bilinear_or_trilinear =
+       mip_filter == xenos::TextureFilter::kPoint || mip_filter == xenos::TextureFilter::kLinear;
+   bool mip_base_map = mip_filter == xenos::TextureFilter::kBaseMap;
++  // With kBaseMap and a real base page, the base map IS level 0 - keeping the
++  // fetch constant's min level would sample the wrong subresource.
++  // Canary 4a863a0e1.
++  if (mip_base_map && base_page != 0) {
++    mip_min_level = 0;
++  }
++  parameters.mip_min_level = mip_min_level;
++  bool has_mips = mip_max_level > mip_min_level;
+ 
+-  // TODO(Triang3l): Disable filtering for texture formats not supporting it.
+   xenos::AnisoFilter aniso_filter = binding.aniso_filter == xenos::AnisoFilter::kUseFetchConst
+                                         ? fetch.aniso_filter
+                                         : binding.aniso_filter;
+@@ -988,6 +1020,27 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
+   }
+   parameters.mip_base_map = mip_base_map;
+ 
++  // Fall back to point sampling if the host formats don't report
++  // D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE.
++  if (parameters.mag_linear || parameters.min_linear || parameters.mip_linear ||
++      parameters.aniso_filter != xenos::AnisoFilter::kDisabled) {
++    TextureKey texture_key;
++    uint8_t texture_swizzled_signs;
++    BindingInfoFromFetchConstant(fetch, texture_key, &texture_swizzled_signs);
++    uint64_t format_bit =
++        texture_key.is_valid ? uint64_t(1) << uint32_t(texture_key.format) : 0;
++    if (!texture_key.is_valid ||
++        (texture_util::IsAnySignNotSigned(texture_swizzled_signs) &&
++         (host_filterable_unsigned_ & format_bit) == 0) ||
++        (texture_util::IsAnySignSigned(texture_swizzled_signs) &&
++         (host_filterable_signed_ & format_bit) == 0)) {
++      parameters.mag_linear = 0;
++      parameters.min_linear = 0;
++      parameters.mip_linear = 0;
++      parameters.aniso_filter = xenos::AnisoFilter::kDisabled;
++    }
++  }
++
+   return parameters;
+ }
+ 
+@@ -1056,6 +1109,9 @@ void D3D12TextureCache::WriteSampler(SamplerParameters parameters,
+       desc.BorderColor[3] = 0.0f;
+       break;
+   }
++  if (parameters.force_bc_w_to_max) {
++    desc.BorderColor[3] = 1.0f;
++  }
+   desc.MinLOD = float(parameters.mip_min_level);
+   if (parameters.mip_base_map) {
+     // "It is undefined whether LOD clamping based on MinLOD and MaxLOD Sampler
+@@ -1559,6 +1615,71 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
+ 
+ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base,
+                                                               bool load_mips) {
++  // [ng2] Dump the video planes exactly as the GPU is handed them: linear k_8,
++  // 320x580 luma and 160x290 chroma, which is what this title decodes its
++  // videos into. If they come out as a correct picture the guest's decoder is
++  // fine and the fault is downstream; if they are already scrambled it is
++  // upstream. Nothing short of looking at the bytes separates those two.
++  {
++    const TextureKey& dk = texture.key();
++    const uint32_t dw = uint32_t(dk.width_minus_1) + 1;
++    const uint32_t dh = uint32_t(dk.height_minus_1) + 1;
++    const bool is_plane = dk.format == xenos::TextureFormat::k_8 && !dk.tiled &&
++                          ((dw == 320 && dh == 580) || (dw == 160 && dh == 290));
++    // Sample DURING playback, not at the first bind. The first bind of
++    // these buffers happens before the video has written anything - two
++    // of the chroma planes came out a flat 128, which is a blank frame,
++    // so the luma alongside them was never a picture to begin with.
++    static uint32_t plane_binds = 0;
++    static uint32_t dumps_written = 0;
++    bool take_it = false;
++    if (is_plane) {
++      ++plane_binds;
++      // Count LUMA and CHROMA separately. Sampling every Nth plane bind
++      // looked fine and produced 36 chroma planes and no luma at all: with
++      // 9 buffers x 3 planes the binds cycle with period 27, and a stride
++      // sharing a factor with 27 can only ever land on one plane in three.
++      // Counting per kind removes the aliasing instead of guessing a stride.
++      const bool is_luma = (dw == 320);
++      static uint32_t luma_binds = 0;
++      static uint32_t chroma_binds = 0;
++      const uint32_t n = is_luma ? ++luma_binds : ++chroma_binds;
++      take_it = (n % 20u == 0u) && dumps_written < 30u;
++      if (take_it) ++dumps_written;
++    }
++    if (take_it) {
++      const uint32_t pitch_bytes = uint32_t(dk.pitch) * 32u;
++      auto* dbg_mem = command_processor_.debug_memory();
++      const uint8_t* src =
++          dbg_mem ? dbg_mem->TranslatePhysical<const uint8_t*>(
++                        uint32_t(dk.base_page) << 12)
++                  : nullptr;
++      if (src != nullptr) {
++        char path[256];
++        std::snprintf(path, sizeof(path), "C:\\ng2dump\\plane_%ux%u_p%u_%08X_n%02u.pgm",
++                      dw, dh, pitch_bytes, uint32_t(dk.base_page),
++                      dumps_written);
++        if (FILE* f = std::fopen(path, "wb")) {
++          std::fprintf(f, "P5\n%u %u\n255\n", dw, dh);
++          for (uint32_t y = 0; y < dh; ++y)
++            std::fwrite(src + size_t(y) * pitch_bytes, 1, dw, f);
++          std::fclose(f);
++          // Also the RAW region, so the row stride can be re-tried
++          // offline. The PGM above bakes in an assumed pitch, and if
++          // that assumption is the bug the PGM cannot show it.
++          std::snprintf(path, sizeof(path), "C:\\ng2dump\\raw_%ux%u_p%u_%08X_n%02u.bin",
++                        dw, dh, pitch_bytes, uint32_t(dk.base_page),
++                      dumps_written);
++          if (FILE* r = std::fopen(path, "wb")) {
++            std::fwrite(src, 1, size_t(pitch_bytes) * dh, r);
++            std::fclose(r);
++          }
++          REXLOG_INFO("[texdump] wrote {}", path);
++        }
++      }
++    }
++  }
++
+   D3D12Texture& d3d12_texture = static_cast<D3D12Texture&>(texture);
+   TextureKey texture_key = d3d12_texture.key();
+ 
+@@ -1921,7 +2042,35 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+       source_box.back = source_box.front + std::max(depth >> level, uint32_t(1));
+       source_box_ptr = &source_box;
+     } else {
++      // Non-packed level: copy the whole footprint. The footprint is sized as
++      // the guest mip reduced then scaled, while the host mip subresource is
++      // the base scaled then reduced, so for the deepest mips of scaled
++      // textures the footprint can be a row or column larger. Compressed dests
++      // round up to the block and absorb it. For uncompressed dests clamp the
++      // copy to the exact subresource with an explicit source box to avoid
++      // overrunning. Clamp per axis to min(footprint, subresource) since a
++      // non-power-of-two axis can be smaller than the subresource while another
++      // axis is larger, and the box must not exceed the source footprint
++      // either. Canary f25003c0e.
+       source_box_ptr = nullptr;
++      if (!host_block_compressed) {
++        const D3D12_SUBRESOURCE_FOOTPRINT& footprint = location_source.PlacedFootprint.Footprint;
++        uint32_t dst_width =
++            std::max((width * texture_resolution_scale_x) >> level, uint32_t(1));
++        uint32_t dst_height =
++            std::max((height * texture_resolution_scale_y) >> level, uint32_t(1));
++        uint32_t dst_depth = std::max(depth >> level, uint32_t(1));
++        if (footprint.Width > dst_width || footprint.Height > dst_height ||
++            footprint.Depth > dst_depth) {
++          source_box.left = 0;
++          source_box.top = 0;
++          source_box.front = 0;
++          source_box.right = std::min(footprint.Width, dst_width);
++          source_box.bottom = std::min(footprint.Height, dst_height);
++          source_box.back = std::min(footprint.Depth, dst_depth);
++          source_box_ptr = &source_box;
++        }
++      }
+     }
+     for (uint32_t slice = 0; slice < array_size; ++slice) {
+       command_list.D3DCopyTextureRegion(&location_dest, 0, 0, 0, &location_source, source_box_ptr);
+diff --git a/src/graphics/flags.cpp b/src/graphics/flags.cpp
+index e2983a4..398b398 100644
+--- a/src/graphics/flags.cpp
++++ b/src/graphics/flags.cpp
+@@ -16,6 +16,37 @@
+ REXCVAR_DEFINE_BOOL(gpu_allow_invalid_fetch_constants, false, "GPU",
+                     "Allow invalid fetch constants");
+ REXCVAR_DEFINE_BOOL(native_2x_msaa, true, "GPU", "Enable native 2x MSAA");
++REXCVAR_DEFINE_BOOL(diag_alpha_test_off, false, "GPU",
++                    "DIAGNOSTIC: never reject a pixel on the alpha test. Makes alpha-tested "
++                    "geometry render solid - the point is to find out whether the alpha test "
++                    "is what removes geometry that is otherwise submitted.");
++REXCVAR_DEFINE_BOOL(diag_cull_none, false, "GPU",
++                    "DIAGNOSTIC: force the rasterizer cull mode to NONE, ignoring the "
++                    "guest's face culling. Renders back faces that should be hidden - the "
++                    "point is to find out whether geometry is being culled away.");
++REXCVAR_DEFINE_BOOL(diag_depth_always, false, "GPU",
++                    "DIAGNOSTIC: force the depth comparison to ALWAYS, so nothing is "
++                    "rejected by the depth test. Breaks occlusion - the point is to find "
++                    "out whether geometry is being depth-rejected.");
++REXCVAR_DEFINE_INT32(diag_vs_const_nan_fix, 0, "GPU",
++                     "DIAGNOSTIC: substitute for NaN in vertex shader float constants. "
++                     "1 replaces NaN with 0; 2 replaces it with the matching row of an "
++                     "identity matrix (assuming 4-register-aligned matrices). The census "
++                     "proved NaN reaches these constants; this establishes whether that "
++                     "NaN CAUSES the flat-blue scene or merely accompanies it.");
++REXCVAR_DEFINE_INT32(draw_census, 0, "GPU",
++                     "Log a summary of draws issued and draws dropped (and why) every N "
++                     "seconds. 0 disables. Diagnostic: four of the five ways a draw can be "
++                     "dropped return silently, so nothing else distinguishes 'issued but "
++                     "invisible' from 'never issued'.");
++REXCVAR_DEFINE_BOOL(spirv_disable_rounding_mode_rte, false, "GPU",
++                    "Disable RoundingModeRTE capability in SPIR-V shaders. Enable this to "
++                    "allow shader debugging in RenderDoc, which doesn't support this "
++                    "capability.");
++REXCVAR_DEFINE_BOOL(force_depth_clamp, false, "GPU",
++                    "Use host depth clamping instead of near and far plane clipping when "
++                    "guest clipping is enabled. X/Y/W clipping is unaffected. On Vulkan, "
++                    "this requires depthClamp support.");
+ REXCVAR_DEFINE_BOOL(depth_float24_round, false, "GPU", "Round float24 depth values");
+ REXCVAR_DEFINE_BOOL(depth_float24_convert_in_pixel_shader, false, "GPU",
+                     "Convert float24 depth in pixel shader");
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 953c5fd..a8555f6 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -115,11 +115,14 @@ void RenderTargetCache::GetPSIColorFormatInfo(xenos::ColorRenderTargetFormat for
+       break;
+     case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
+     case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
+-      // No NaNs on the Xbox 360 GPU, though can't use the extended range with
+-      // Direct3D and Vulkan conversions.
+-      // TODO(Triang3l): Use the extended-range encoding in all implementations.
+-      clamp_rgb_low = clamp_alpha_low = -65504.0f;
+-      clamp_rgb_high = clamp_alpha_high = 65504.0f;
++      // No NaNs on the Xbox 360 GPU. The interlock paths of both backends
++      // emulate the extended-range encoding in their pack and unpack, so the
++      // whole guest range survives the clamp - exponent 31 is a finite value
++      // there, not Inf, and reaches 131008. Clamping to the IEEE binary16
++      // maximum of 65504 instead, as this did before, silently crushed the top
++      // of every HDR render target.
++      clamp_rgb_low = clamp_alpha_low = -131008.0f;
++      clamp_rgb_high = clamp_alpha_high = 131008.0f;
+       if (!(write_mask & 0b0001)) {
+         keep_mask_low |= 0xFFFFu;
+       }
+diff --git a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
+index 31de175..4d3d852 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_fetch.cpp
+@@ -143,10 +143,34 @@ void DxbcShaderTranslator::ProcessVertexFetchInstruction(
+   // - Load needed words to system_temp_result_, words 0, 1, 2, 3 to X, Y, Z, W
+   //   respectively.
+ 
+-  // FIXME(Triang3l): Bound checking is not done here, but haven't encountered
+-  // any games relying on out-of-bounds access. On Adreno 200 on Android (LG
+-  // P705), however, words (not full elements) out of glBufferData bounds
+-  // contain 0.
++  // Words at or past the end of the fetch buffer must read as 0. The shared
++  // memory binding covers all of physical memory, so a word out of bounds
++  // would load unrelated guest data where the hardware clamps and returns
++  // zeros. Games rely on that: an overallocated draw expects the vertices it
++  // never wrote to collapse into degenerate primitives. Compute the exclusive
++  // end of the buffer in bytes from the fetch constant and a mask of which
++  // words of the element fall inside it. Ported from Canary 9e9d3cdd3.
++  uint32_t bounds_temp = PushSystemTemp(0, 2);
++  uint32_t word_mask_temp = bounds_temp + 1;
++  // bounds_temp.x = buffer size in words (bits 2:25 of the second fetch
++  // constant word).
++  a_.OpUBFE(dxbc::Dest::R(bounds_temp, 0b0001), dxbc::Src::LU(24), dxbc::Src::LU(2),
++            fetch_constant_src.SelectFromSwizzled(1));
++  // bounds_temp.y = base address of the buffer in bytes.
++  a_.OpAnd(dxbc::Dest::R(bounds_temp, 0b0010), fetch_constant_src.SelectFromSwizzled(0),
++           dxbc::Src::LU(~uint32_t(3)));
++  // bounds_temp.x = exclusive end of the buffer in bytes.
++  a_.OpUMAd(dxbc::Dest::R(bounds_temp, 0b0001), dxbc::Src::R(bounds_temp, dxbc::Src::kXXXX),
++            dxbc::Src::LU(4), dxbc::Src::R(bounds_temp, dxbc::Src::kYYYY));
++  // word_mask_temp = byte addresses of the words of the element.
++  a_.OpIAdd(dxbc::Dest::R(word_mask_temp), address_src,
++            dxbc::Src::LI((0 - int32_t(first_word_index)) * 4,
++                          (1 - int32_t(first_word_index)) * 4,
++                          (2 - int32_t(first_word_index)) * 4,
++                          (3 - int32_t(first_word_index)) * 4));
++  // word_mask_temp = whether each word is within the buffer bounds.
++  a_.OpULT(dxbc::Dest::R(word_mask_temp, needed_words), dxbc::Src::R(word_mask_temp),
++           dxbc::Src::R(bounds_temp, dxbc::Src::kXXXX));
+ 
+   // Loading the FXC way, Load4.xyw becomes Load2 and Load - would be a
+   // compromise between AMD, where there are load_dwordx2/3/4, and Nvidia, where
+@@ -209,6 +233,12 @@ void DxbcShaderTranslator::ProcessVertexFetchInstruction(
+   }
+   a_.OpEndIf();
+ 
++  // Zero the words that fell outside the buffer (OpULT leaves all-ones for the
++  // ones inside), then release bounds_temp and word_mask_temp.
++  a_.OpAnd(dxbc::Dest::R(system_temp_result_, needed_words),
++           dxbc::Src::R(system_temp_result_), dxbc::Src::R(word_mask_temp));
++  PopSystemTemp(2);
++
+   dxbc::Src result_src(dxbc::Src::R(system_temp_result_));
+ 
+   // - Endian swap the words.
+@@ -671,6 +701,13 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+   }
+ 
+   uint32_t tfetch_index = instr.operands[1].storage_index;
++  // A 1D fetch with a multi-component coordinate addresses a 2D grid, so
++  // everything below that depends on the shape of the coordinates must use
++  // this rather than the fetch's own dimension. Canary fbdb1f281.
++  xenos::FetchOpDimension coordinate_dimension =
++      instr.dimension == xenos::FetchOpDimension::k1D && instr.operands[0].component_count > 1
++          ? xenos::FetchOpDimension::k2D
++          : instr.dimension;
+ 
+   // Whether to use gradients (implicit or explicit) for LOD calculation.
+   bool use_computed_lod = instr.attributes.use_computed_lod &&
+@@ -711,7 +748,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     // be floored as expected, but the left/upper pixel is still sampled
+     // instead.
+     const float rounding_offset = 1.5f / 1024.0f;
+-    switch (instr.dimension) {
++    switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+         offsets[0] = instr.attributes.offset_x + rounding_offset;
+         if (instr.opcode == FetchOpcode::kGetTextureWeights) {
+@@ -779,7 +816,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     // calculation with normalized coordinates (or, if a texture filled with LOD
+     // indices is used, coordinates will need to be normalized as normally).
+     if (!instr.attributes.unnormalized_coordinates) {
+-      switch (instr.dimension) {
++      switch (coordinate_dimension) {
+         case xenos::FetchOpDimension::k1D:
+           // Always need size for 1D textures to support wide 1D textures.
+           size_needed_components |= 0b0001;
+@@ -797,14 +834,18 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     // Size needed for normalization (or, for stacked texture layers,
+     // denormalization) and for offsets.
+     size_needed_components |= offsets_not_zero;
+-    switch (instr.dimension) {
++    switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+-        if (instr.attributes.unnormalized_coordinates) {
+-          size_needed_components |= 0b0001;
+-        }
++        // Always need the size for 1D textures to handle wide ones (> 8192
++        // wide), which are mapped onto 2D grids. Canary 947075f88.
++        size_needed_components |= 0b0001;
+         break;
+       case xenos::FetchOpDimension::k2D:
+-        if (instr.attributes.unnormalized_coordinates) {
++        // A tfetch1D promoted by its source swizzle may still use a 1D fetch
++        // constant. Its size interpretation is selected below at runtime.
++        // Canary 7cd47947b.
++        if (instr.dimension == xenos::FetchOpDimension::k1D ||
++            instr.attributes.unnormalized_coordinates) {
+           size_needed_components |= 0b0011;
+         }
+         break;
+@@ -835,17 +876,44 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     size_needed_components |= 0b1000;
+   }
+   uint32_t size_and_is_3d_temp = size_needed_components ? PushSystemTemp() : UINT32_MAX;
++  // For 1D textures, keep the uint width_minus_1 before it becomes a float -
++  // the wide 1D check below needs it. Canary 947075f88.
++  uint32_t size_1d_width_minus_1_temp = UINT32_MAX;
+   if (size_needed_components) {
+-    switch (instr.dimension) {
++    switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+         a_.OpUBFE(dxbc::Dest::R(size_and_is_3d_temp, 0b0001), dxbc::Src::LU(24), dxbc::Src::LU(0),
+                   RequestTextureFetchConstantWord(tfetch_index, 2));
++        // Save the uint width_minus_1 for wide 1D detection later.
++        size_1d_width_minus_1_temp = PushSystemTemp();
++        a_.OpMov(dxbc::Dest::R(size_1d_width_minus_1_temp, 0b0001),
++                 dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kXXXX));
+         break;
+       case xenos::FetchOpDimension::k2D:
+       case xenos::FetchOpDimension::kCube:
+         a_.OpUBFE(dxbc::Dest::R(size_and_is_3d_temp, size_needed_components),
+                   dxbc::Src::LU(13, 13, 0, 0), dxbc::Src::LU(0, 13, 0, 0),
+                   RequestTextureFetchConstantWord(tfetch_index, 2));
++        if (instr.dimension == xenos::FetchOpDimension::k1D) {
++          // Promoted tfetch1D: the constant may still describe a 1D texture,
++          // whose width is one 24-bit field rather than two 13-bit ones.
++          // Choose between the two layouts at runtime. Canary 7cd47947b.
++          assert_true((size_needed_components & 0b0011) == 0b0011);
++          size_1d_width_minus_1_temp = PushSystemTemp();
++          a_.OpUBFE(dxbc::Dest::R(size_1d_width_minus_1_temp, 0b0001),
++                    dxbc::Src::LU(xenos::kTexture1DMaxWidthLog2), dxbc::Src::LU(0),
++                    RequestTextureFetchConstantWord(tfetch_index, 2));
++          a_.OpMov(dxbc::Dest::R(size_1d_width_minus_1_temp, 0b0010), dxbc::Src::LU(0));
++          a_.OpUBFE(dxbc::Dest::R(size_and_is_3d_temp, 0b1000), dxbc::Src::LU(2),
++                    dxbc::Src::LU(9), RequestTextureFetchConstantWord(tfetch_index, 5));
++          a_.OpIEq(dxbc::Dest::R(size_and_is_3d_temp, 0b1000),
++                   dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kWWWW),
++                   dxbc::Src::LU(uint32_t(xenos::DataDimension::k1D)));
++          a_.OpMovC(dxbc::Dest::R(size_and_is_3d_temp, 0b0011),
++                    dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kWWWW),
++                    dxbc::Src::R(size_1d_width_minus_1_temp),
++                    dxbc::Src::R(size_and_is_3d_temp));
++        }
+         break;
+       case xenos::FetchOpDimension::k3DOrStacked:
+         // tfetch3D is used for both stacked and 3D - first, check if 3D.
+@@ -876,6 +944,35 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+       // Fetch constants store size minus 1 - add 1.
+       a_.OpIAdd(dxbc::Dest::R(size_and_is_3d_temp, size_needed_components & 0b0111),
+                 dxbc::Src::R(size_and_is_3d_temp), dxbc::Src::LU(1));
++      // HZB reducers in 555308B6 and 5553080B lock the sampler to one mip
++      // and address it with unnormalized coordinates. Those coordinates are
++      // in the locked mip's grid, but the denominator below was always the
++      // base level size, so each reduction after the first read garbage.
++      // Limit this to 2D unnormalized fetches with a locked mip. This changes
++      // only the denominator. Canary 8486e97a0.
++      bool selected_mip_grid_possible = instr.opcode == FetchOpcode::kTextureFetch &&
++                                        instr.dimension == xenos::FetchOpDimension::k2D &&
++                                        instr.attributes.unnormalized_coordinates;
++      if (selected_mip_grid_possible) {
++        uint32_t selected_mip_temp = PushSystemTemp();
++        // Word 4 has MipMinLevel in bits 2:5 and MipMaxLevel in bits 6:9.
++        a_.OpUBFE(dxbc::Dest::R(selected_mip_temp, 0b0011), dxbc::Src::LU(4, 4, 0, 0),
++                  dxbc::Src::LU(2, 6, 0, 0), RequestTextureFetchConstantWord(tfetch_index, 4));
++        a_.OpIEq(dxbc::Dest::R(selected_mip_temp, 0b0100),
++                 dxbc::Src::R(selected_mip_temp, dxbc::Src::kXXXX),
++                 dxbc::Src::R(selected_mip_temp, dxbc::Src::kYYYY));
++        // max(size >> mip, 1) for non-pow2 textures. Scaling stays unchanged.
++        a_.OpUShR(dxbc::Dest::R(selected_mip_temp, 0b1010),
++                  dxbc::Src::R(size_and_is_3d_temp, 0b01000000),
++                  dxbc::Src::R(selected_mip_temp, dxbc::Src::kXXXX));
++        a_.OpUMax(dxbc::Dest::R(selected_mip_temp, 0b1010), dxbc::Src::R(selected_mip_temp),
++                  dxbc::Src::LU(1));
++        a_.OpMovC(dxbc::Dest::R(size_and_is_3d_temp, 0b0011),
++                  dxbc::Src::R(selected_mip_temp, dxbc::Src::kZZZZ),
++                  dxbc::Src::R(selected_mip_temp, 0b00001101),
++                  dxbc::Src::R(size_and_is_3d_temp));
++        PopSystemTemp();
++      }
+       // Convert the size to float for multiplication/division.
+       a_.OpUToF(dxbc::Dest::R(size_and_is_3d_temp, size_needed_components & 0b0111),
+                 dxbc::Src::R(size_and_is_3d_temp));
+@@ -1002,10 +1099,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     // coordinates need to be transformed back into the cube space.
+     bool coord_operand_temp_pushed = false;
+     dxbc::Src coord_operand = LoadOperand(
+-        instr.operands[0], (1 << xenos::GetFetchOpDimensionComponentCount(instr.dimension)) - 1,
++        instr.operands[0], (1 << xenos::GetFetchOpDimensionComponentCount(coordinate_dimension)) - 1,
+         coord_operand_temp_pushed);
+     uint32_t normalized_components = 0b0000;
+-    switch (instr.dimension) {
++    switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+         normalized_components = 0b0001;
+         break;
+@@ -1145,11 +1242,88 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+         }
+       }
+     }
++    // Keyed off the FETCH's dimension, not the coordinate's: a tfetch1D promoted
++    // to 2D coordinates still needs the 1D remapping. Canary 7cd47947b.
+     switch (instr.dimension) {
+-      case xenos::FetchOpDimension::k1D:
+-        // Pad to 2D array coordinates.
+-        a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110), dxbc::Src::LF(0.0f));
+-        break;
++      case xenos::FetchOpDimension::k1D: {
++        // Check whether the fetch constant's actual dimension is k1D (word 5,
++        // bits 9-10). If not, skip the wide 1D handling - the size bits mean
++        // different things per dimension. Canary 947075f88.
++        a_.OpUBFE(dxbc::Dest::R(coord_and_sampler_temp, 0b1000), dxbc::Src::LU(2),
++                  dxbc::Src::LU(9), RequestTextureFetchConstantWord(tfetch_index, 5));
++        a_.OpIEq(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                 dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW),
++                 dxbc::Src::LU(uint32_t(xenos::DataDimension::k1D)));
++        a_.OpIf(true, dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++        // 1D texture - is it wide (> 8192)?
++        a_.OpUGE(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                 dxbc::Src::R(size_1d_width_minus_1_temp, dxbc::Src::kXXXX),
++                 dxbc::Src::LU(xenos::kTexture2DCubeMaxWidthHeight));
++        a_.OpIf(true, dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++        {
++          // Wide 1D - remap to 2D. original_width = width_minus_1 + 1.
++          a_.OpIAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                    dxbc::Src::R(size_1d_width_minus_1_temp, dxbc::Src::kXXXX),
++                    dxbc::Src::LI(1));
++          a_.OpUToF(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++          // linear_x = coord.x * original_width, parked in coord.y.
++          a_.OpMul(dxbc::Dest::R(coord_and_sampler_temp, 0b0010),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kXXXX),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++          // scaled = linear_x / 8192, parked in coord.z.
++          a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kYYYY),
++                   dxbc::Src::LF(float(xenos::kTexture2DCubeMaxWidthHeight)));
++          // row_index = floor(scaled), parked in coord.w.
++          a_.OpRoundNI(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                       dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          // coord.x = fract(scaled).
++          a_.OpFrc(dxbc::Dest::R(coord_and_sampler_temp, 0b0001),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          // num_rows = ceil(original_width / 8192).
++          a_.OpIAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                    dxbc::Src::R(size_1d_width_minus_1_temp, dxbc::Src::kXXXX),
++                    dxbc::Src::LI(1));
++          a_.OpUToF(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ),
++                   dxbc::Src::LF(float(xenos::kTexture2DCubeMaxWidthHeight)));
++          a_.OpRoundPI(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                       dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          a_.OpMin(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ),
++                   dxbc::Src::LF(float(xenos::kTexture1DWideMaxRows)));
++          // coord.y = (row_index + 0.5) / num_rows - the CENTRE of the row, not
++          // its edge. At the edge linear filtering would blend 50/50 with the
++          // previous row (texels 8192 apart), and even point sampling could
++          // land on it.
++          a_.OpAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW), dxbc::Src::LF(0.5f));
++          a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0010),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          // coord.z = 0 (array layer).
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0100), dxbc::Src::LF(0.0f));
++        }
++        a_.OpElse();
++        {
++          // Normal 1D texture - pad to 2D array coordinates. A promoted fetch
++          // already supplies Y, so only Z needs clearing.
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp,
++                                 coordinate_dimension == xenos::FetchOpDimension::k1D ? 0b0110
++                                                                                      : 0b0100),
++                   dxbc::Src::LF(0.0f));
++        }
++        a_.OpEndIf();
++        a_.OpElse();
++        {
++          // Non-1D texture bound to a 1D fetch - just pad the coordinates.
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110), dxbc::Src::LF(0.0f));
++        }
++        a_.OpEndIf();
++      } break;
+       case xenos::FetchOpDimension::k2D:
+         // Pad to 2D array coordinates.
+         a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0100), dxbc::Src::LF(0.0f));
+@@ -1428,7 +1602,7 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+         }
+         if (use_computed_lod) {
+           grad_v_temp = PushSystemTemp();
+-          switch (instr.dimension) {
++          switch (coordinate_dimension) {
+             case xenos::FetchOpDimension::k1D:
+               grad_component_count = 1;
+               break;
+@@ -1444,11 +1618,11 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+           uint32_t grad_mask = (1 << grad_component_count) - 1;
+           // Convert the bias to a gradient scale.
+           a_.OpExp(lod_dest, lod_src);
+-          // FIXME(Triang3l): Gradient exponent adjustment is currently not done
+-          // in getCompTexLOD, so don't do it here too.
+-#if 0
+-          // Extract gradient exponent biases from the fetch constant and merge
+-          // them with the LOD bias.
++          // Merge the per-axis gradient exponent biases into the gradient
++          // scale. Zero, the common case, is a no-op. getCompTexLOD keeps
++          // returning the raw queried LOD, treating this like the fetch
++          // constant LOD bias, which is also not folded into it.
++          // Canary 0f2980de4.
+           a_.OpIBFE(dxbc::Dest::R(grad_h_lod_temp, 0b0011), dxbc::Src::LU(5),
+                     dxbc::Src::LU(22, 27, 0, 0),
+                     RequestTextureFetchConstantWord(tfetch_index, 4));
+@@ -1459,22 +1633,14 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+                    dxbc::Src::R(grad_h_lod_temp, dxbc::Src::kYYYY));
+           a_.OpMul(lod_dest, lod_src,
+                    dxbc::Src::R(grad_h_lod_temp, dxbc::Src::kXXXX));
+-#endif
+           // Obtain the gradients and apply biases to them.
+           if (instr.attributes.use_register_gradients) {
+             // Register gradients are already in the cube space for cube maps.
+             a_.OpMul(dxbc::Dest::R(grad_h_lod_temp, grad_mask),
+                      dxbc::Src::R(system_temp_grad_h_lod_), lod_src);
+-            // FIXME(Triang3l): Gradient exponent adjustment is currently not
+-            // done in getCompTexLOD, so don't do it here too.
+-#if 0
+             a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask),
+                      dxbc::Src::R(system_temp_grad_v_vfetch_address_),
+                      dxbc::Src::R(grad_v_temp, dxbc::Src::kWWWW));
+-#else
+-            a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask),
+-                     dxbc::Src::R(system_temp_grad_v_vfetch_address_), lod_src);
+-#endif
+             // TODO(Triang3l): Are cube map register gradients unnormalized if
+             // the coordinates themselves are unnormalized?
+             if (instr.attributes.unnormalized_coordinates &&
+@@ -1507,17 +1673,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+                      lod_src);
+             a_.OpDerivRTYCoarse(dxbc::Dest::R(grad_v_temp, grad_mask),
+                                 dxbc::Src::R(coord_and_sampler_temp));
+-            // FIXME(Triang3l): Gradient exponent adjustment is currently not
+-            // done in getCompTexLOD, so don't do it here too.
+-#if 0
+-            a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask),
+-                     dxbc::Src::R(grad_v_temp),
++            a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask), dxbc::Src::R(grad_v_temp),
+                      dxbc::Src::R(grad_v_temp, dxbc::Src::kWWWW));
+-#else
+-            a_.OpMul(dxbc::Dest::R(grad_v_temp, grad_mask), dxbc::Src::R(grad_v_temp), lod_src);
+-#endif
+           }
+-          if (instr.dimension == xenos::FetchOpDimension::k1D) {
++          if (coordinate_dimension == xenos::FetchOpDimension::k1D) {
+             // Pad the gradients to 2D because 1D textures are fetched as 2D
+             // arrays.
+             a_.OpMov(dxbc::Dest::R(grad_h_lod_temp, 0b0010), dxbc::Src::LF(0.0f));
+@@ -1947,6 +2106,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     }
+   }
+ 
++  if (size_1d_width_minus_1_temp != UINT32_MAX) {
++    PopSystemTemp();
++  }
++
+   if (size_and_is_3d_temp != UINT32_MAX) {
+     PopSystemTemp();
+   }
+diff --git a/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp b/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
+index e90a622..6eead08 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_memexport.cpp
+@@ -185,8 +185,12 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
+         while (rex::bit_scan_forward(eM_remaining, &eM_index)) {
+           eM_remaining &= ~(uint8_t(1) << eM_index);
+           uint32_t eM = system_temps_memexport_data_[eM_index];
+-          a_.OpBFI(dxbc::Dest::R(eM, components), dxbc::Src::LU(31), dxbc::Src::LU(0),
+-                   dxbc::Src::LF(0.5f), dxbc::Src::R(eM));
++          // The bias must land in round_bias_temp, NOT in eM - writing it to eM
++          // destroys the scaled value that is about to be biased, and leaves
++          // the add reading a register nothing has written (PushSystemTemp
++          // does not zero by default). Canary da47dfaac.
++          a_.OpBFI(dxbc::Dest::R(round_bias_temp, components), dxbc::Src::LU(31),
++                   dxbc::Src::LU(0), dxbc::Src::LF(0.5f), dxbc::Src::R(eM));
+           a_.OpAdd(dxbc::Dest::R(eM, components), dxbc::Src::R(eM), dxbc::Src::R(round_bias_temp));
+           a_.OpFToI(dxbc::Dest::R(eM, components), dxbc::Src::R(eM));
+         }
+@@ -398,8 +402,10 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
+         while (rex::bit_scan_forward(eM_remaining, &eM_index)) {
+           eM_remaining &= ~(uint8_t(1) << eM_index);
+           uint32_t eM = system_temps_memexport_data_[eM_index];
+-          a_.OpBFI(dxbc::Dest::R(eM), dxbc::Src::LU(31), dxbc::Src::LU(0), dxbc::Src::LF(0.5f),
+-                   dxbc::Src::R(eM));
++          // Same fix as the packed path above - the bias goes to
++          // round_bias_temp, not over the value being biased.
++          a_.OpBFI(dxbc::Dest::R(round_bias_temp), dxbc::Src::LU(31),
++                   dxbc::Src::LU(0), dxbc::Src::LF(0.5f), dxbc::Src::R(eM));
+           a_.OpAdd(dxbc::Dest::R(eM), dxbc::Src::R(eM), dxbc::Src::R(round_bias_temp));
+           a_.OpFToI(dxbc::Dest::R(eM), dxbc::Src::R(eM));
+         }
+@@ -459,27 +465,33 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
+     }
+     a_.OpBreak();
+ 
++    // Convert to extended-range float16 with the helper shared with the ROV
++    // render target packing: the guest's float16 has no Inf and no NaN, and
++    // exponent 31 holds finite values up to 131008.
++    auto f32_to_f16_extended_range = [&](uint32_t components) {
++      uint8_t eM_remaining_ext = export_eM;
++      uint32_t eM_index_ext;
++      while (rex::bit_scan_forward(eM_remaining_ext, &eM_index_ext)) {
++        eM_remaining_ext &= ~(uint8_t(1) << eM_index_ext);
++        Float32ToF16ExtendedRange(system_temps_memexport_data_[eM_index_ext],
++                                  components);
++      }
++    };
++
+     a_.OpCase(dxbc::Src::LU(uint32_t(xenos::ColorFormat::k_16_FLOAT)));
+     {
+-      // TODO(Triang3l): Use extended range conversion.
+-      eM_remaining = export_eM;
+-      while (rex::bit_scan_forward(eM_remaining, &eM_index)) {
+-        eM_remaining &= ~(uint8_t(1) << eM_index);
+-        uint32_t eM = system_temps_memexport_data_[eM_index];
+-        a_.OpF32ToF16(dxbc::Dest::R(eM, 0b0001), dxbc::Src::R(eM, dxbc::Src::kXXXX));
+-      }
++      f32_to_f16_extended_range(0b0001);
+       a_.OpMov(element_size_dest, dxbc::Src::LU(1));
+     }
+     a_.OpBreak();
+ 
+     a_.OpCase(dxbc::Src::LU(uint32_t(xenos::ColorFormat::k_16_16_FLOAT)));
+     {
+-      // TODO(Triang3l): Use extended range conversion.
++      f32_to_f16_extended_range(0b0011);
+       eM_remaining = export_eM;
+       while (rex::bit_scan_forward(eM_remaining, &eM_index)) {
+         eM_remaining &= ~(uint8_t(1) << eM_index);
+         uint32_t eM = system_temps_memexport_data_[eM_index];
+-        a_.OpF32ToF16(dxbc::Dest::R(eM, 0b0011), dxbc::Src::R(eM));
+         a_.OpBFI(dxbc::Dest::R(eM, 0b0001), dxbc::Src::LU(16), dxbc::Src::LU(16),
+                  dxbc::Src::R(eM, dxbc::Src::kYYYY), dxbc::Src::R(eM, dxbc::Src::kXXXX));
+       }
+@@ -489,12 +501,11 @@ void DxbcShaderTranslator::ExportToMemory(uint8_t export_eM) {
+ 
+     a_.OpCase(dxbc::Src::LU(uint32_t(xenos::ColorFormat::k_16_16_16_16_FLOAT)));
+     {
+-      // TODO(Triang3l): Use extended range conversion.
++      f32_to_f16_extended_range(0b1111);
+       eM_remaining = export_eM;
+       while (rex::bit_scan_forward(eM_remaining, &eM_index)) {
+         eM_remaining &= ~(uint8_t(1) << eM_index);
+         uint32_t eM = system_temps_memexport_data_[eM_index];
+-        a_.OpF32ToF16(dxbc::Dest::R(eM), dxbc::Src::R(eM));
+         a_.OpBFI(dxbc::Dest::R(eM, 0b0011), dxbc::Src::LU(16), dxbc::Src::LU(16),
+                  dxbc::Src::R(eM, 0b1101), dxbc::Src::R(eM, 0b1000));
+       }
+diff --git a/src/graphics/pipeline/shader/dxbc_translator_om.cpp b/src/graphics/pipeline/shader/dxbc_translator_om.cpp
+index a7d508a..14dbe2b 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator_om.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_om.cpp
+@@ -1185,8 +1185,9 @@ void DxbcShaderTranslator::ROV_UnpackColor(uint32_t rt_index, uint32_t packed_te
+     // Unpack the components.
+     a_.OpUBFE(color_components_dest, dxbc::Src::LU(16), dxbc::Src::LU(0, 16, 0, 16),
+               dxbc::Src::R(packed_temp, 0b01010000 + packed_temp_components * 0b01010101));
+-    // Convert from 16-bit float.
+-    a_.OpF16ToF32(color_components_dest, dxbc::Src::R(color_temp));
++    // Convert from extended-range float16, exponent 31 holds finite values on
++    // the guest.
++    Float16ExtendedRangeTo32(color_temp, i ? 0b1111 : 0b0011);
+     a_.OpBreak();
+   }
+ 
+@@ -1344,15 +1345,21 @@ void DxbcShaderTranslator::ROV_PackPreClampedColor(uint32_t rt_index, uint32_t c
+     a_.OpCase(dxbc::Src::LU(RenderTargetCache::AddPSIColorFormatFlags(
+         i ? xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT
+           : xenos::ColorRenderTargetFormat::k_16_16_FLOAT)));
++    // Convert to extended-range float16 instead of the plain IEEE conversion,
++    // exponent 31 holds finite values on the guest. Done for the whole
++    // register up front rather than per component, because the helper needs
++    // its own scratch registers.
++    Float32ToF16ExtendedRange(color_temp, i ? 0b1111 : 0b0011);
+     for (uint32_t j = 0; j < (uint32_t(2) << i); ++j) {
+       dxbc::Dest packed_dest_half(
+           dxbc::Dest::R(packed_temp, 1 << (packed_temp_components + (j >> 1))));
+-      // Convert to 16-bit float.
+-      a_.OpF32ToF16((j & 1) ? temp1_dest : packed_dest_half, dxbc::Src::R(color_temp).Select(j));
+-      // Pack green or alpha.
++      // Pack green or alpha into the high half.
+       if (j & 1) {
+-        a_.OpBFI(packed_dest_half, dxbc::Src::LU(16), dxbc::Src::LU(16), temp1_src,
++        a_.OpBFI(packed_dest_half, dxbc::Src::LU(16), dxbc::Src::LU(16),
++                 dxbc::Src::R(color_temp).Select(j),
+                  dxbc::Src::R(packed_temp).Select(packed_temp_components + (j >> 1)));
++      } else {
++        a_.OpMov(packed_dest_half, dxbc::Src::R(color_temp).Select(j));
+       }
+     }
+     a_.OpBreak();
+@@ -1709,6 +1716,73 @@ void DxbcShaderTranslator::CompletePixelShader_AlphaToMaskSample(
+   }
+ }
+ 
++void DxbcShaderTranslator::Float32ToF16ExtendedRange(uint32_t reg,
++                                                     uint32_t components) {
++  uint32_t original_temp = PushSystemTemp();
++  uint32_t mask_temp = PushSystemTemp();
++  // The Xbox 360 float16 has no NaN, map it to 0 before converting. Otherwise
++  // the overflow check below reads its exponent as an overflow, and since min
++  // and max drop the NaN operand in DXBC, the clamp would turn it into
++  // +131008.
++  a_.OpNE(dxbc::Dest::R(mask_temp, components), dxbc::Src::R(reg),
++          dxbc::Src::R(reg));
++  a_.OpMovC(dxbc::Dest::R(reg, components), dxbc::Src::R(mask_temp),
++            dxbc::Src::LF(0.0f), dxbc::Src::R(reg));
++  // Keep the original float32 values for the overflow path.
++  a_.OpMov(dxbc::Dest::R(original_temp, components), dxbc::Src::R(reg));
++  // The standard conversion covers magnitudes up to 65504, anything larger
++  // becomes Inf with all five exponent bits set.
++  a_.OpF32ToF16(dxbc::Dest::R(reg, components), dxbc::Src::R(reg));
++  // Find the lanes that overflowed.
++  a_.OpAnd(dxbc::Dest::R(mask_temp, components), dxbc::Src::R(reg),
++           dxbc::Src::LU(0x7C00));
++  a_.OpIEq(dxbc::Dest::R(mask_temp, components), dxbc::Src::R(mask_temp),
++           dxbc::Src::LU(0x7C00));
++  // Encode the overflowed lanes into exponent 31, which the Xbox 360 treats
++  // as finite. Clamp to the 131008 limit, halve so the exponent lands at 30
++  // or below, convert, then add one to the exponent to undo the halving.
++  a_.OpMin(dxbc::Dest::R(original_temp, components),
++           dxbc::Src::R(original_temp), dxbc::Src::LF(131008.0f));
++  a_.OpMax(dxbc::Dest::R(original_temp, components),
++           dxbc::Src::R(original_temp), dxbc::Src::LF(-131008.0f));
++  a_.OpMul(dxbc::Dest::R(original_temp, components),
++           dxbc::Src::R(original_temp), dxbc::Src::LF(0.5f));
++  a_.OpF32ToF16(dxbc::Dest::R(original_temp, components),
++                dxbc::Src::R(original_temp));
++  a_.OpIAdd(dxbc::Dest::R(original_temp, components),
++            dxbc::Src::R(original_temp), dxbc::Src::LU(0x0400));
++  // Choose the encoded value for the overflowed lanes.
++  a_.OpMovC(dxbc::Dest::R(reg, components), dxbc::Src::R(mask_temp),
++            dxbc::Src::R(original_temp), dxbc::Src::R(reg));
++  // Release original_temp and mask_temp.
++  PopSystemTemp(2);
++}
++
++void DxbcShaderTranslator::Float16ExtendedRangeTo32(uint32_t reg,
++                                                    uint32_t components) {
++  uint32_t reduced_temp = PushSystemTemp();
++  uint32_t mask_temp = PushSystemTemp();
++  // Find the exponent 31 lanes, which hold finite values on the Xbox 360
++  // rather than Inf or NaN.
++  a_.OpAnd(dxbc::Dest::R(mask_temp, components), dxbc::Src::R(reg),
++           dxbc::Src::LU(0x7C00));
++  a_.OpIEq(dxbc::Dest::R(mask_temp, components), dxbc::Src::R(mask_temp),
++           dxbc::Src::LU(0x7C00));
++  // Lower their exponent by one so the conversion sees a normal float16, then
++  // double the result to undo it.
++  a_.OpIAdd(dxbc::Dest::R(reduced_temp, components), dxbc::Src::R(reg),
++            dxbc::Src::LI(-0x0400));
++  a_.OpMovC(dxbc::Dest::R(reg, components), dxbc::Src::R(mask_temp),
++            dxbc::Src::R(reduced_temp), dxbc::Src::R(reg));
++  a_.OpF16ToF32(dxbc::Dest::R(reg, components), dxbc::Src::R(reg));
++  a_.OpMul(dxbc::Dest::R(reduced_temp, components), dxbc::Src::R(reg),
++           dxbc::Src::LF(2.0f));
++  a_.OpMovC(dxbc::Dest::R(reg, components), dxbc::Src::R(mask_temp),
++            dxbc::Src::R(reduced_temp), dxbc::Src::R(reg));
++  // Release reduced_temp and mask_temp.
++  PopSystemTemp(2);
++}
++
+ void DxbcShaderTranslator::CompletePixelShader_AlphaToMask() {
+   // Check if alpha to coverage can be done at all in this shader.
+   if (!current_shader().writes_color_target(0) || IsForceEarlyDepthStencilGlobalFlagEnabled()) {
+diff --git a/src/graphics/pipeline/shader/interpreter.cpp b/src/graphics/pipeline/shader/interpreter.cpp
+index cc726b7..2947ce9 100644
+--- a/src/graphics/pipeline/shader/interpreter.cpp
++++ b/src/graphics/pipeline/shader/interpreter.cpp
+@@ -575,7 +575,8 @@ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+   bool scalar_src_absolute = false;
+   switch (scalar_opcode_info.operand_count) {
+     case 1: {
+-      // r#/c#.w or r#/c#.wx.
++      // r#/c#.w, or r#/c#.wx unless the paired vector opcode has three
++      // operands, in which case r#/c#.wz. Canary 92ada8ebc.
+       const float* scalar_src_ptr;
+       uint32_t scalar_src_register = instr.src_reg(3);
+       std::array<float, 4> scalar_src_float_constant;
+@@ -594,8 +595,10 @@ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+       uint32_t scalar_src_swizzle = instr.src_swizzle(3);
+       scalar_operand_component_count = scalar_opcode_info.single_operand_is_two_component ? 2 : 1;
+       for (uint32_t i = 0; i < scalar_operand_component_count; ++i) {
++        uint32_t source_component =
++            i == 0 ? 3 : (vector_opcode_info.GetOperandCount() == 3 ? 2 : 0);
+         scalar_operands[i] = scalar_src_ptr[ucode::AluInstruction::GetSwizzledComponentIndex(
+-            scalar_src_swizzle, (3 + i) & 3)];
++            scalar_src_swizzle, source_component)];
+       }
+     } break;
+     case 2: {
+diff --git a/src/graphics/pipeline/shader/spirv_translator.cpp b/src/graphics/pipeline/shader/spirv_translator.cpp
+index 1774f97..3374988 100644
+--- a/src/graphics/pipeline/shader/spirv_translator.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator.cpp
+@@ -20,6 +20,7 @@
+ #include <SPIRV/GLSL.std.450.h>
+ #include <fmt/format.h>
+ 
++#include <rex/graphics/flags.h>
+ #include <rex/assert.h>
+ #include <rex/graphics/pipeline/shader/spirv.h>
+ #include <rex/graphics/pipeline/shader/spirv_translator.h>
+@@ -1226,7 +1227,9 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
+     builder_->addCapability(spv::CapabilitySignedZeroInfNanPreserve);
+     builder_->addExecutionMode(function_main_, spv::ExecutionModeSignedZeroInfNanPreserve, 32);
+   }
+-  if (features_.rounding_mode_rte_float32) {
++  // RenderDoc cannot debug shaders declaring RoundingModeRTE, so allow turning
++  // it off. Canary 61a8aa360.
++  if (features_.rounding_mode_rte_float32 && !REXCVAR_GET(spirv_disable_rounding_mode_rte)) {
+     builder_->addCapability(spv::CapabilityRoundingModeRTE);
+     builder_->addExecutionMode(function_main_, spv::ExecutionModeRoundingModeRTE, 32);
+   }
+diff --git a/src/graphics/pipeline/shader/spirv_translator_alu.cpp b/src/graphics/pipeline/shader/spirv_translator_alu.cpp
+index 706ac7e..8717005 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_alu.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_alu.cpp
+@@ -985,7 +985,10 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
+                     type_float_, ext_inst_glsl_std_450_, GLSLstd450NClamp,
+                     builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+                                                      GLSLstd450Floor, maxa_address),
+-                    builder_->makeFloatConstant(-256.0f), builder_->makeFloatConstant(255.0f))),
++                    // Scalar maxas/maxasf clamp a0 to [0, 255], unlike the
++                    // vector maxa which allows [-256, 255]. Matches the DXBC
++                    // translator. Canary 4aeb518c9.
++                    builder_->makeFloatConstant(0.0f), builder_->makeFloatConstant(255.0f))),
+             var_main_address_register_);
+       }
+       if (a == b) {
+diff --git a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
+index 9ce3bb4..7975d67 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
+@@ -1153,6 +1153,12 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+             z_stacked =
+                 builder_->createNoContractionBinOp(spv::OpFAdd, type_float_, z_stacked, z_offset);
+           }
++          // Clamp the layer index to a valid range so an Inf or NaN coordinate
++          // does not select an undefined array layer. Canary 2d5b41080.
++          z_stacked = builder_->createTriBuiltinCall(
++              type_float_, ext_inst_glsl_std_450_, GLSLstd450NClamp, z_stacked, const_float_0_,
++              builder_->createNoContractionBinOp(spv::OpFSub, type_float_, z_size,
++                                                 builder_->makeFloatConstant(1.0f)));
+           builder_->createBranch(&block_dimension_merge);
+           // Select one of the two.
+           builder_->setBuildPoint(&block_dimension_merge);
+@@ -1453,8 +1459,14 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+         // 2D vectors for k1D (because 1D images are emulated as 2D arrays),
+         // k2D.
+         // 3D vectors for k3DOrStacked, kCube.
++        // Cube auto-LOD without register gradients uses implicit LOD + bias to
++        // work around wrong-mip explicit cube gradients on Vulkan. Other
++        // dimensions keep explicit gradients. Canary 3254ac20f.
++        bool use_lod_bias = use_computed_lod && !instr.attributes.use_register_gradients &&
++                            instr.dimension == xenos::FetchOpDimension::kCube;
++
+         spv::Id gradients_h = spv::NoResult, gradients_v = spv::NoResult;
+-        if (use_computed_lod) {
++        if (use_computed_lod && !use_lod_bias) {
+           // TODO(Triang3l): Gradient exponent adjustment is currently not done
+           // in getCompTexLOD, so not doing it here too for now. Apply the
+           // gradient exponent biases from the word 4 of the fetch constant in
+@@ -1585,26 +1597,13 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+                   spv::OpVectorTimesScalar, type_float3_, gradients_v, lod_gradient_scale);
+             } break;
+             case xenos::FetchOpDimension::kCube: {
+-              if (instr.attributes.use_register_gradients) {
+-                // Register gradients are already in the cube space for cube
+-                // maps.
+-                // TODO(Triang3l): Are cube map register gradients unnormalized
+-                // if the coordinates themselves are unnormalized?
+-                gradients_h = builder_->createLoad(var_main_tfetch_gradients_h_, spv::NoPrecision);
+-                gradients_v = builder_->createLoad(var_main_tfetch_gradients_v_, spv::NoPrecision);
+-              } else {
+-                id_vector_temp_.clear();
+-                for (uint32_t i = 0; i < 3; ++i) {
+-                  id_vector_temp_.push_back(coordinates[i]);
+-                }
+-                spv::Id gradient_coordinate_vector =
+-                    builder_->createCompositeConstruct(type_float3_, id_vector_temp_);
+-                builder_->addCapability(spv::CapabilityDerivativeControl);
+-                gradients_h = builder_->createUnaryOp(spv::OpDPdxCoarse, type_float3_,
+-                                                      gradient_coordinate_vector);
+-                gradients_v = builder_->createUnaryOp(spv::OpDPdyCoarse, type_float3_,
+-                                                      gradient_coordinate_vector);
+-              }
++              // Only register gradients reach here - auto-LOD takes the
++              // implicit LOD + bias path guarded above. Register gradients are
++              // already in cube space.
++              // TODO(Triang3l): Are cube map register gradients unnormalized
++              // if the coordinates themselves are unnormalized?
++              gradients_h = builder_->createLoad(var_main_tfetch_gradients_h_, spv::NoPrecision);
++              gradients_v = builder_->createLoad(var_main_tfetch_gradients_v_, spv::NoPrecision);
+               gradients_h = builder_->createNoContractionBinOp(
+                   spv::OpVectorTimesScalar, type_float3_, gradients_h, lod_gradient_scale);
+               gradients_v = builder_->createNoContractionBinOp(
+@@ -1615,9 +1614,13 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+ 
+         // Sample the texture.
+         spv::ImageOperandsMask image_operands_mask =
+-            use_computed_lod ? spv::ImageOperandsGradMask : spv::ImageOperandsLodMask;
++            use_lod_bias ? spv::ImageOperandsBiasMask
++                         : (use_computed_lod ? spv::ImageOperandsGradMask
++                                             : spv::ImageOperandsLodMask);
+         spv::Id sample_result_unsigned, sample_result_signed;
+-        if (!use_computed_lod) {
++        if (use_lod_bias) {
++          texture_parameters.bias = lod;
++        } else if (!use_computed_lod) {
+           texture_parameters.lod = lod;
+         }
+         if (instr.dimension == xenos::FetchOpDimension::k3DOrStacked) {
+@@ -1837,7 +1840,7 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+           sample_result_signed =
+               if_data_is_3d.createMergePhi(sample_result_signed_3d, sample_result_signed_stacked);
+         } else {
+-          if (use_computed_lod) {
++          if (use_computed_lod && !use_lod_bias) {
+             texture_parameters.gradX = gradients_h;
+             texture_parameters.gradY = gradients_v;
+           }
+@@ -2205,7 +2208,10 @@ void SpirvShaderTranslator::SampleTexture(spv::Builder::TextureParameters& textu
+               builder_->createNoContractionBinOp(spv::OpFSub, type_float4_, sign_result,
+                                                  lerp_first),
+               lerp_factor);
+-          sign_result = builder_->createNoContractionBinOp(spv::OpFAdd, type_float4_, sign_result,
++          // first + (second - first) * factor. This added the difference to
++          // sign_result - the SECOND layer - so the blend was wrong.
++          // Canary e519d59e4.
++          sign_result = builder_->createNoContractionBinOp(spv::OpFAdd, type_float4_, lerp_first,
+                                                            lerp_difference);
+         }
+       }
+diff --git a/src/graphics/pipeline/shader/spirv_translator_memexport.cpp b/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
+index 14c0ea9..9f8ae42 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_memexport.cpp
+@@ -534,7 +534,8 @@ void SpirvShaderTranslator::ExportToMemory(uint8_t export_eM) {
+     add_format_case(fixed16_packed, 3);
+   }
+ 
+-  // TODO(Triang3l): Use the extended range float16 conversion.
++  // Xbox 360 float16 uses extended range: exponent 31 is a large finite value,
++  // not Inf/NaN. See PackFloat16x2ExtendedRange.
+ 
+   // k_16_FLOAT
+   format_switch.makeBeginCase(static_cast<unsigned int>(xenos::ColorFormat::k_16_FLOAT));
+@@ -545,8 +546,7 @@ void SpirvShaderTranslator::ExportToMemory(uint8_t export_eM) {
+       id_vector_temp_.push_back(
+           builder_->createCompositeExtract(eM_swapped[eM_index], type_float_, 0));
+       id_vector_temp_.push_back(const_float_0_);
+-      spv::Id format_packed_16_float_x = builder_->createUnaryBuiltinCall(
+-          type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16,
++      spv::Id format_packed_16_float_x = PackFloat16x2ExtendedRange(
+           builder_->createCompositeConstruct(type_float2_, id_vector_temp_));
+       id_vector_temp_.clear();
+       id_vector_temp_.resize(4, const_uint_0_);
+@@ -565,10 +565,10 @@ void SpirvShaderTranslator::ExportToMemory(uint8_t export_eM) {
+       uint_vector_temp_.clear();
+       uint_vector_temp_.push_back(0);
+       uint_vector_temp_.push_back(1);
+-      spv::Id format_packed_16_16_float_xy = builder_->createUnaryBuiltinCall(
+-          type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16,
+-          builder_->createRvalueSwizzle(spv::NoPrecision, type_float2_, eM_swapped[eM_index],
+-                                        uint_vector_temp_));
++      spv::Id format_packed_16_16_float_xy =
++          PackFloat16x2ExtendedRange(builder_->createRvalueSwizzle(
++              spv::NoPrecision, type_float2_, eM_swapped[eM_index],
++              uint_vector_temp_));
+       id_vector_temp_.clear();
+       id_vector_temp_.resize(4, const_uint_0_);
+       id_vector_temp_.front() = format_packed_16_16_float_xy;
+@@ -588,10 +588,10 @@ void SpirvShaderTranslator::ExportToMemory(uint8_t export_eM) {
+         uint_vector_temp_.clear();
+         uint_vector_temp_.push_back(2 * component_index);
+         uint_vector_temp_.push_back(2 * component_index + 1);
+-        format_packed_16_16_16_16_float_xy_zw[component_index] = builder_->createUnaryBuiltinCall(
+-            type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16,
+-            builder_->createRvalueSwizzle(spv::NoPrecision, type_float2_, eM_swapped[eM_index],
+-                                          uint_vector_temp_));
++        format_packed_16_16_16_16_float_xy_zw[component_index] =
++            PackFloat16x2ExtendedRange(builder_->createRvalueSwizzle(
++                spv::NoPrecision, type_float2_, eM_swapped[eM_index],
++                uint_vector_temp_));
+       }
+       id_vector_temp_.clear();
+       id_vector_temp_.push_back(format_packed_16_16_16_16_float_xy_zw[0]);
+diff --git a/src/graphics/pipeline/shader/spirv_translator_rb.cpp b/src/graphics/pipeline/shader/spirv_translator_rb.cpp
+index 765c141..45e1255 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_rb.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_rb.cpp
+@@ -2284,6 +2284,130 @@ void SpirvShaderTranslator::FSI_DepthStencilTest(spv::Id msaa_samples,
+   }
+ }
+ 
++spv::Id SpirvShaderTranslator::PackFloat16x2ExtendedRange(spv::Id float2_value) {
++  // The Xbox 360 float16 has no NaN, map it to 0. Also keeps the overflow
++  // detection below from misreading a NaN's exponent 31 as a finite extended
++  // value, and FClamp's NaN result is undefined.
++  float2_value = builder_->createTriOp(
++      spv::OpSelect, type_float2_,
++      builder_->createUnaryOp(spv::OpIsNan, type_bool2_, float2_value),
++      const_float2_0_, float2_value);
++  // The standard conversion covers magnitudes up to 65504. Anything larger
++  // overflows to Inf (exponent field 0x7C00). Re-encode the overflowed lanes
++  // using the extended range: halve into the standard range, convert
++  // (exponent <= 30), then bump the exponent by 1 into the exponent 31 slot
++  // the Xbox 360 treats as finite.
++  spv::Id standard = builder_->createUnaryBuiltinCall(
++      type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16, float2_value);
++  spv::Id const_0x7C00 = builder_->makeUintConstant(0x7C00);
++  spv::Id lower_overflow =
++      builder_->createBinOp(spv::OpIEqual, type_bool_,
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  standard, const_0x7C00),
++                            const_0x7C00);
++  spv::Id upper_overflow = builder_->createBinOp(
++      spv::OpIEqual, type_bool_,
++      builder_->createBinOp(
++          spv::OpBitwiseAnd, type_uint_,
++          builder_->createBinOp(spv::OpShiftRightLogical, type_uint_, standard,
++                                builder_->makeUintConstant(16)),
++          const_0x7C00),
++      const_0x7C00);
++  id_vector_temp_.clear();
++  id_vector_temp_.resize(2, builder_->makeFloatConstant(-131008.0f));
++  spv::Id const_neg_131008 =
++      builder_->makeCompositeConstant(type_float2_, id_vector_temp_);
++  id_vector_temp_.clear();
++  id_vector_temp_.resize(2, builder_->makeFloatConstant(131008.0f));
++  spv::Id const_131008 =
++      builder_->makeCompositeConstant(type_float2_, id_vector_temp_);
++  spv::Id clamped = builder_->createTriBuiltinCall(
++      type_float2_, ext_inst_glsl_std_450_, GLSLstd450FClamp, float2_value,
++      const_neg_131008, const_131008);
++  id_vector_temp_.clear();
++  id_vector_temp_.resize(2, builder_->makeFloatConstant(0.5f));
++  spv::Id halved = builder_->createBinOp(
++      spv::OpFMul, type_float2_, clamped,
++      builder_->makeCompositeConstant(type_float2_, id_vector_temp_));
++  spv::Id halved_packed = builder_->createUnaryBuiltinCall(
++      type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16, halved);
++  // halved_packed has exponent <= 30 in both lanes, so adding 0x0400 per lane
++  // bumps the exponent without ever carrying across lanes.
++  spv::Id extended =
++      builder_->createBinOp(spv::OpIAdd, type_uint_, halved_packed,
++                            builder_->makeUintConstant(0x04000400));
++  spv::Id const_0xFFFF = builder_->makeUintConstant(0xFFFF);
++  spv::Id const_0xFFFF0000 = builder_->makeUintConstant(0xFFFF0000);
++  spv::Id result_lower =
++      builder_->createTriOp(spv::OpSelect, type_uint_, lower_overflow,
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  extended, const_0xFFFF),
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  standard, const_0xFFFF));
++  spv::Id result_upper =
++      builder_->createTriOp(spv::OpSelect, type_uint_, upper_overflow,
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  extended, const_0xFFFF0000),
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  standard, const_0xFFFF0000));
++  return builder_->createBinOp(spv::OpBitwiseOr, type_uint_, result_lower,
++                               result_upper);
++}
++
++spv::Id SpirvShaderTranslator::UnpackFloat16x2ExtendedRange(spv::Id packed_uint) {
++  // Inverse of PackFloat16x2ExtendedRange. Exponent 31 lanes are large finite
++  // values rather than Inf or NaN. Decrement their exponent by 1 into the
++  // standard range, unpack, then double to compensate.
++  spv::Id const_0x7C00 = builder_->makeUintConstant(0x7C00);
++  spv::Id lower_overflow =
++      builder_->createBinOp(spv::OpIEqual, type_bool_,
++                            builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                                  packed_uint, const_0x7C00),
++                            const_0x7C00);
++  spv::Id upper_overflow = builder_->createBinOp(
++      spv::OpIEqual, type_bool_,
++      builder_->createBinOp(
++          spv::OpBitwiseAnd, type_uint_,
++          builder_->createBinOp(spv::OpShiftRightLogical, type_uint_,
++                                packed_uint, builder_->makeUintConstant(16)),
++          const_0x7C00),
++      const_0x7C00);
++  spv::Id standard =
++      builder_->createUnaryBuiltinCall(type_float2_, ext_inst_glsl_std_450_,
++                                       GLSLstd450UnpackHalf2x16, packed_uint);
++  // Decrement the exponent only in overflowed lanes (0x0400 in the low lane,
++  // 0x04000000 in the high one) so the subtraction never borrows across lanes.
++  spv::Id sub_lower =
++      builder_->createTriOp(spv::OpSelect, type_uint_, lower_overflow,
++                            builder_->makeUintConstant(0x0400), const_uint_0_);
++  spv::Id sub_upper = builder_->createTriOp(
++      spv::OpSelect, type_uint_, upper_overflow,
++      builder_->makeUintConstant(0x04000000), const_uint_0_);
++  spv::Id reduced =
++      builder_->createBinOp(spv::OpISub, type_uint_, packed_uint,
++                            builder_->createBinOp(spv::OpBitwiseOr, type_uint_,
++                                                  sub_lower, sub_upper));
++  spv::Id reduced_unpacked = builder_->createUnaryBuiltinCall(
++      type_float2_, ext_inst_glsl_std_450_, GLSLstd450UnpackHalf2x16, reduced);
++  id_vector_temp_.clear();
++  id_vector_temp_.resize(2, builder_->makeFloatConstant(2.0f));
++  spv::Id extended = builder_->createBinOp(
++      spv::OpFMul, type_float2_, reduced_unpacked,
++      builder_->makeCompositeConstant(type_float2_, id_vector_temp_));
++  spv::Id result_x = builder_->createTriOp(
++      spv::OpSelect, type_float_, lower_overflow,
++      builder_->createCompositeExtract(extended, type_float_, 0),
++      builder_->createCompositeExtract(standard, type_float_, 0));
++  spv::Id result_y = builder_->createTriOp(
++      spv::OpSelect, type_float_, upper_overflow,
++      builder_->createCompositeExtract(extended, type_float_, 1),
++      builder_->createCompositeExtract(standard, type_float_, 1));
++  id_vector_temp_.clear();
++  id_vector_temp_.push_back(result_x);
++  id_vector_temp_.push_back(result_y);
++  return builder_->createCompositeConstruct(type_float2_, id_vector_temp_);
++}
++
+ std::array<spv::Id, 2> SpirvShaderTranslator::FSI_ClampAndPackColor(spv::Id color_float4,
+                                                                     spv::Id format_with_flags) {
+   spv::Block& block_format_head = *builder_->getBuildPoint();
+@@ -2552,30 +2676,15 @@ std::array<spv::Id, 2> SpirvShaderTranslator::FSI_ClampAndPackColor(spv::Id colo
+   std::array<spv::Id, 2> packed_16_float;
+   {
+     builder_->setBuildPoint(&block_format_16_float);
+-    // TODO(Triang3l): Xenos extended-range float16.
+-    id_vector_temp_.clear();
+-    id_vector_temp_.resize(4, builder_->makeFloatConstant(-65504.0f));
+-    spv::Id const_float4_minus_float16_max =
+-        builder_->makeCompositeConstant(type_float4_, id_vector_temp_);
+-    id_vector_temp_.clear();
+-    id_vector_temp_.resize(4, builder_->makeFloatConstant(65504.0f));
+-    spv::Id const_float4_float16_max =
+-        builder_->makeCompositeConstant(type_float4_, id_vector_temp_);
+-    // NaN to 0, not to -max.
+-    spv::Id color_clamped = builder_->createTriBuiltinCall(
+-        type_float4_, ext_inst_glsl_std_450_, GLSLstd450FClamp,
+-        builder_->createTriOp(spv::OpSelect, type_float4_,
+-                              builder_->createUnaryOp(spv::OpIsNan, type_bool4_, color_float4),
+-                              const_float4_0_, color_float4),
+-        const_float4_minus_float16_max, const_float4_float16_max);
++    // NaN is flushed to 0, and the clamp to the guest's own +-131008 range,
++    // inside PackFloat16x2ExtendedRange.
+     for (uint32_t i = 0; i < 2; ++i) {
+       uint_vector_temp_.clear();
+       uint_vector_temp_.push_back(2 * i);
+       uint_vector_temp_.push_back(2 * i + 1);
+-      packed_16_float[i] = builder_->createUnaryBuiltinCall(
+-          type_uint_, ext_inst_glsl_std_450_, GLSLstd450PackHalf2x16,
+-          builder_->createRvalueSwizzle(spv::NoPrecision, type_float2_, color_clamped,
+-                                        uint_vector_temp_));
++      packed_16_float[i] =
++          PackFloat16x2ExtendedRange(builder_->createRvalueSwizzle(
++              spv::NoPrecision, type_float2_, color_float4, uint_vector_temp_));
+     }
+     builder_->createBranch(&block_format_merge);
+   }
+@@ -2841,10 +2950,9 @@ std::array<spv::Id, 4> SpirvShaderTranslator::FSI_UnpackColor(std::array<spv::Id
+   {
+     for (uint32_t i = 0; i < 2; ++i) {
+       builder_->setBuildPoint(i ? &block_format_16_16_16_16_float : &block_format_16_16_float);
+-      // TODO(Triang3l): Xenos extended-range float16.
+       for (uint32_t j = 0; j <= i; ++j) {
+-        spv::Id components_float2 = builder_->createUnaryBuiltinCall(
+-            type_float2_, ext_inst_glsl_std_450_, GLSLstd450UnpackHalf2x16, color_packed[j]);
++        spv::Id components_float2 =
++            UnpackFloat16x2ExtendedRange(color_packed[j]);
+         for (uint32_t k = 0; k < 2; ++k) {
+           unpacked_16_float[i][2 * j + k] =
+               builder_->createCompositeExtract(components_float2, type_float_, k);
+diff --git a/src/graphics/pipeline/shader/translator.cpp b/src/graphics/pipeline/shader/translator.cpp
+index e472251..3dc1f93 100644
+--- a/src/graphics/pipeline/shader/translator.cpp
++++ b/src/graphics/pipeline/shader/translator.cpp
+@@ -1156,7 +1156,8 @@ uint32_t ParsedTextureFetchInstruction::GetNonZeroResultComponents() const {
+ 
+ static void ParseAluInstructionOperand(const AluInstruction& op, uint32_t i,
+                                        uint32_t swizzle_component_count,
+-                                       InstructionOperand& out_op) {
++                                       InstructionOperand& out_op,
++                                       uint32_t scalar_second_component = 0) {
+   out_op.is_negated = op.src_negate(i);
+   uint32_t reg = op.src_reg(i);
+   if (op.src_is_temp(i)) {
+@@ -1186,9 +1187,10 @@ static void ParseAluInstructionOperand(const AluInstruction& op, uint32_t i,
+     // Scalar `a` (W).
+     out_op.components[0] = GetSwizzledAluSourceComponent(swizzle, 3);
+   } else if (swizzle_component_count == 2) {
+-    // Scalar left-hand `a` (W) and right-hand `b` (X).
++    // Scalar left-hand `a` (W) and right-hand `b` (X or Z).
+     out_op.components[0] = GetSwizzledAluSourceComponent(swizzle, 3);
+-    out_op.components[1] = GetSwizzledAluSourceComponent(swizzle, 0);
++    out_op.components[1] =
++        GetSwizzledAluSourceComponent(swizzle, scalar_second_component);
+   } else if (swizzle_component_count == 3) {
+     assert_always();
+   } else if (swizzle_component_count == 4) {
+@@ -1348,8 +1350,12 @@ void ParseAluInstruction(const AluInstruction& op, xenos::ShaderType shader_type
+   instr.scalar_operand_count = scalar_opcode_info.operand_count;
+   if (instr.scalar_operand_count) {
+     if (instr.scalar_operand_count == 1) {
++      // The scalar operation shares source 3 with the vector operation. If the
++      // vector operation uses source 3, the scalar `b` component is Z;
++      // otherwise it is X. Canary 92ada8ebc.
+       ParseAluInstructionOperand(op, 3, scalar_opcode_info.single_operand_is_two_component ? 2 : 1,
+-                                 instr.scalar_operands[0]);
++                                 instr.scalar_operands[0],
++                                 vector_opcode_info.GetOperandCount() == 3 ? 2 : 0);
+     } else {
+       // Constant and temporary register.
+ 
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index 76f5600..96f7324 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <cstdint>
++#include <set>
+ #include <utility>
+ 
+ #include <rex/assert.h>
+@@ -934,19 +935,37 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+   texture_util::GetSubresourcesFromFetchConstant(fetch, &width_minus_1, &height_minus_1,
+                                                  &depth_or_array_size_minus_1, &base_page,
+                                                  &mip_page, nullptr, &mip_max_level);
+-  if (base_page == 0 && mip_page == 0) {
+-    // No texture data at all.
++  if (base_page == 0 && mip_page == 0 &&
++      (fetch.swizzle & 0b110110110110) != 0b100100100100) {
++    // No texture data at all. Any header taking every swizzle component from
++    // literal 0s or 1s may still be valid. 4D530919 binds one as the dummy
++    // alpha plane of Bink movies - which this title plays. Such examples get a
++    // texture with their dimensions for LOD queries. Zero extents skip the
++    // upload and watches. Ported from Canary ec5e0f40e.
+     return;
+   }
++  uint32_t pitch = fetch.pitch;
+   if (fetch.dimension == xenos::DataDimension::k1D) {
+     bool is_invalid_1d = false;
+-    // TODO(Triang3l): Support long 1D textures.
++    // Handle wide 1D textures (> 8192 wide) by mapping them to a 2D grid.
++    // The shaders convert 1D coordinates to 2D using the original width from
++    // the fetch constant. Canary 947075f88.
+     if (width_minus_1 >= xenos::kTexture2DCubeMaxWidthHeight) {
+-      REXGPU_ERROR(
+-          "1D texture is too wide ({}) - ignoring! Report the game to Xenia "
+-          "developers",
+-          width_minus_1 + 1);
+-      is_invalid_1d = true;
++      uint32_t total_width = width_minus_1 + 1;
++      uint32_t row_width = xenos::kTexture2DCubeMaxWidthHeight;
++      uint32_t num_rows = (total_width + row_width - 1) / row_width;
++      num_rows = std::min(num_rows, xenos::kTexture1DWideMaxRows);
++      width_minus_1 = row_width - 1;
++      height_minus_1 = num_rows - 1;
++      // Disable mipmaps for wide 1D textures. The shader's coordinate remapping
++      // assumes base level dimensions (num_rows), but at mip level N the 2D
++      // texture becomes (8192 >> N) x (num_rows >> N), which breaks the mapping
++      // once num_rows >> N reaches 1 while the shader still expects several
++      // rows. Mipmaps are rarely used with 1D lookup textures anyway.
++      mip_max_level = 0;
++      // The guest pitch is meaningless for a texture the guest believes is 1D
++      // (the 9 bit field could not even express the line width).
++      pitch = xenos::kTexture2DCubeMaxWidthHeight >> 5;
+     }
+     assert_false(fetch.tiled);
+     if (fetch.tiled) {
+@@ -977,7 +996,7 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+   key_out.width_minus_1 = width_minus_1;
+   key_out.height_minus_1 = height_minus_1;
+   key_out.depth_or_array_size_minus_1 = depth_or_array_size_minus_1;
+-  key_out.pitch = fetch.pitch;
++  key_out.pitch = pitch;
+   key_out.mip_max_level = mip_max_level;
+   key_out.tiled = fetch.tiled;
+   key_out.packed_mips = fetch.packed_mips;
+@@ -986,6 +1005,26 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+ 
+   key_out.is_valid = 1;
+ 
++  // [ng2] Every texture a shader SAMPLES passes through here - LoadTextureData
++  // does not, it saw only two in a whole run. Deduplicated by key.
++  {
++    static std::set<uint64_t> seen_bindings;
++    const uint64_t id = (uint64_t(key_out.base_page) << 40) ^
++                        (uint64_t(uint32_t(key_out.format)) << 32) ^
++                        (uint64_t(key_out.width_minus_1) << 16) ^
++                        uint64_t(key_out.height_minus_1) ^
++                        (uint64_t(key_out.tiled) << 63);
++    if (seen_bindings.insert(id).second) {
++      REXLOG_INFO(
++          "[texbind] format={} {}x{} tiled={} pitch={} endian={} dim={} "
++          "base_page=0x{:X}",
++          uint32_t(key_out.format), uint32_t(key_out.width_minus_1) + 1,
++          uint32_t(key_out.height_minus_1) + 1, uint32_t(key_out.tiled),
++          uint32_t(key_out.pitch), uint32_t(key_out.endianness),
++          uint32_t(key_out.dimension), uint32_t(key_out.base_page));
++    }
++  }
++
+   if (swizzled_signs_out != nullptr) {
+     *swizzled_signs_out = texture_util::SwizzleSigns(fetch);
+   }
+diff --git a/src/graphics/pipeline/texture/util.cpp b/src/graphics/pipeline/texture/util.cpp
+index 26d554c..07f7024 100644
+--- a/src/graphics/pipeline/texture/util.cpp
++++ b/src/graphics/pipeline/texture/util.cpp
+@@ -212,7 +212,11 @@ TextureGuestLayout GetGuestTextureLayout(xenos::DataDimension dimension,
+     // GetPackedMipOffset may result in packing along Y for `width > height`
+     // textures.
+     assert_false(has_packed_levels);
+-    height_texels = 1;
++    // For wide 1D textures mapped to 2D, height_texels is the number of rows.
++    // Only force height = 1 for normal 1D textures.
++    if (height_texels <= 1) {
++      height_texels = 1;
++    }
+   }
+   uint32_t depth = dimension == xenos::DataDimension::k3D ? depth_or_array_size : 1;
+   switch (dimension) {
+diff --git a/src/graphics/primitive_processor.cpp b/src/graphics/primitive_processor.cpp
+index d49e9c3..8f4b609 100644
+--- a/src/graphics/primitive_processor.cpp
++++ b/src/graphics/primitive_processor.cpp
+@@ -295,17 +295,19 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
+   xenos::TessellationMode tessellation_mode = regs.Get<reg::VGT_HOS_CNTL>().tess_mode;
+   Shader::HostVertexShaderType host_vertex_shader_type;
+   if (tessellation_enabled) {
+-    // Currently only supporting tessellation in known cases for safety, and not
+-    // yet converting patch strips / fans to patch lists until games using them
+-    // are found for easier debugging when it actually happens.
+-    // TODO(Triang3l): Conversion of patch strips / fans if found.
++    // Currently only supporting tessellation in known cases for safety.
+     host_vertex_shader_type = Shader::HostVertexShaderType(-1);
+     switch (guest_primitive_type) {
+       case xenos::PrimitiveType::kTriangleList:
++      case xenos::PrimitiveType::kTriangleFan:
++      case xenos::PrimitiveType::kTriangleStrip:
+         // Also supported by triangle strips and fans according to:
+         // https://www.khronos.org/registry/OpenGL/extensions/AMD/AMD_vertex_shader_tessellator.txt
+-        // Would need to convert those to triangle lists, but haven't seen any
+-        // games using tessellated strips / fans so far.
++        // Convert strips and fans to triangle lists for tessellation.
++        // Canary 3eab2b8b3.
++        if (guest_primitive_type != xenos::PrimitiveType::kTriangleList) {
++          host_primitive_type = xenos::PrimitiveType::kTriangleList;
++        }
+         switch (tessellation_mode) {
+           case xenos::TessellationMode::kDiscrete:
+             // - 415607E1 - nets above barrels in the beginning of the first
+@@ -510,9 +512,29 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
+           assert_true(host_primitive_type == xenos::PrimitiveType::kTriangleList);
+           cacheable.host_draw_vertex_count =
+               GetTriangleFanListIndexCount(cacheable.host_draw_vertex_count);
+-          cacheable.index_buffer_type = ProcessedIndexBufferType::kHostBuiltinForAuto;
+-          assert_true(builtin_ib_offset_triangle_fans_to_lists_ != SIZE_MAX);
+-          cacheable.host_index_buffer_handle = builtin_ib_offset_triangle_fans_to_lists_;
++          if (builtin_ib_offset_triangle_fans_to_lists_ != SIZE_MAX) {
++            cacheable.index_buffer_type = ProcessedIndexBufferType::kHostBuiltinForAuto;
++            cacheable.host_index_buffer_handle = builtin_ib_offset_triangle_fans_to_lists_;
++          } else if (cacheable.host_draw_vertex_count) {
++            // The backend never asked for the builtin fan-to-list conversion, so
++            // there is no prebuilt index buffer. Only reachable through the
++            // tessellation path above, which forces kTriangleList, so build the
++            // conversion at runtime. Canary 3eab2b8b3.
++            cacheable.index_buffer_type = ProcessedIndexBufferType::kHostConverted;
++            auto host_indices = reinterpret_cast<uint16_t*>(
++                RequestHostConvertedIndexBufferForCurrentFrame(
++                    xenos::IndexFormat::kInt16, cacheable.host_draw_vertex_count, false, 0,
++                    cacheable.host_index_buffer_handle));
++            if (!host_indices) {
++              return false;
++            }
++            uint16_t* host_indices_write = host_indices;
++            for (uint32_t i = 2; i < guest_draw_vertex_count; ++i) {
++              *(host_indices_write++) = uint16_t(i - 1);
++              *(host_indices_write++) = uint16_t(i);
++              *(host_indices_write++) = 0;
++            }
++          }
+           break;
+         case xenos::PrimitiveType::kLineLoop:
+           // Plus 1 element (if there's anything to draw) in the strip, still
+@@ -533,6 +555,36 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
+           assert_true(builtin_ib_offset_quad_lists_to_triangle_lists_ != SIZE_MAX);
+           cacheable.host_index_buffer_handle = builtin_ib_offset_quad_lists_to_triangle_lists_;
+           break;
++        case xenos::PrimitiveType::kTriangleStrip:
++          assert_true(host_primitive_type == xenos::PrimitiveType::kTriangleList);
++          cacheable.host_draw_vertex_count =
++              GetTriangleStripListIndexCount(cacheable.host_draw_vertex_count);
++          if (cacheable.host_draw_vertex_count) {
++            // No prebuilt strip-to-list index buffer exists. Only reachable
++            // through the tessellation path above, which forces kTriangleList,
++            // so build the conversion at runtime. Canary 3eab2b8b3.
++            cacheable.index_buffer_type = ProcessedIndexBufferType::kHostConverted;
++            auto host_indices = reinterpret_cast<uint16_t*>(
++                RequestHostConvertedIndexBufferForCurrentFrame(
++                    xenos::IndexFormat::kInt16, cacheable.host_draw_vertex_count, false, 0,
++                    cacheable.host_index_buffer_handle));
++            if (!host_indices) {
++              return false;
++            }
++            uint16_t* host_indices_write = host_indices;
++            for (uint32_t i = 2; i < guest_draw_vertex_count; ++i) {
++              if ((i & 1) == 0) {
++                *(host_indices_write++) = uint16_t(i - 2);
++                *(host_indices_write++) = uint16_t(i - 1);
++                *(host_indices_write++) = uint16_t(i);
++              } else {
++                *(host_indices_write++) = uint16_t(i - 1);
++                *(host_indices_write++) = uint16_t(i - 2);
++                *(host_indices_write++) = uint16_t(i);
++              }
++            }
++          }
++          break;
+         default:
+           assert_always();
+           return false;
+diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
+index ec0df7c..487080a 100644
+--- a/src/graphics/shared_memory.cpp
++++ b/src/graphics/shared_memory.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cstring>
+ #include <utility>
+ 
+@@ -309,6 +310,9 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length, bool written_
+   }
+ 
+   if (memory_invalidation_callback_handle_) {
++    // A page that isn't writable here gets no watch. A later guest
++    // protect-to-writable invalidates it so its writes are still caught.
++    // Canary aed81ca93.
+     memory().EnablePhysicalMemoryAccessCallbacks(
+         valid_page_first << page_size_log2_,
+         (valid_page_last - valid_page_first + 1) << page_size_log2_, true, false);
+@@ -487,6 +491,24 @@ std::pair<uint32_t, uint32_t> SharedMemory::MemoryInvalidationCallback(
+   length = std::min(length, kBufferSize - physical_address_start);
+   uint32_t physical_address_last = physical_address_start + (length - 1);
+ 
++  // [ng2] This callback fires when the CPU writes memory the GPU has cached.
++  // The video planes live around 0x0B700000-0x0BE00000, so counting the writes
++  // that land there says whether the guest CPU is producing those planes at
++  // all - the other half of the question the [resolve] log asks.
++  {
++    static std::atomic<uint32_t> ng2_hits{0};
++    static std::atomic<uint32_t> ng2_bytes{0};
++    if (physical_address_start < 0x0BE00000u && physical_address_last >= 0x0B700000u) {
++      uint32_t n = ng2_hits.fetch_add(1) + 1;
++      ng2_bytes.fetch_add(length);
++      if (n <= 12 || (n % 500) == 0) {
++        REXLOG_INFO("[cpuwrite] 0x{:08X}..0x{:08X} ({} bytes) hit #{} total {} KB",
++                    physical_address_start, physical_address_last, length, n,
++                    ng2_bytes.load() >> 10);
++      }
++    }
++  }
++
+   uint32_t page_first = physical_address_start >> page_size_log2_;
+   uint32_t page_last = physical_address_last >> page_size_log2_;
+   uint32_t block_first = page_first >> 6;
+diff --git a/src/graphics/util/draw.cpp b/src/graphics/util/draw.cpp
+index 305380e..67ab9f7 100644
+--- a/src/graphics/util/draw.cpp
++++ b/src/graphics/util/draw.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
++#include <set>
+ 
+ #include <rex/assert.h>
+ #include <rex/cvar.h>
+@@ -1107,6 +1108,27 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
+                      xenos::ColorRenderTargetFormat(color_edram_info.format)),
+       dest_format_info.name, rb_copy_dest_base, copy_dest_extent_start, copy_dest_extent_end);
+ 
++  // [ng2] The one question this answers: are the video's 320x580 k_8 planes
++  // WRITTEN BY THE GPU? If they show up here they are resolve destinations, the
++  // decode runs on the GPU, and reading guest memory to judge the decoder was
++  // meaningless. If they never appear, the CPU wrote them and the translated
++  // code owns the fault. Deduplicated by destination, so this is a short list.
++  {
++    static std::set<uint64_t> seen_resolves;
++    const uint64_t id = (uint64_t(rb_copy_dest_base) << 16) ^
++                        (uint64_t(uint32_t(dest_format)) << 8) ^
++                        uint64_t(uint32_t(x1 - x0));
++    if (seen_resolves.insert(id).second) {
++      REXLOG_INFO(
++          "[resolve] dest=0x{:08X} fmt={} {}x{} pitch={} height={} "
++          "extent=0x{:08X}..0x{:08X}",
++          rb_copy_dest_base, dest_format_info.name, x1 - x0, y1 - y0,
++          uint32_t(rb_copy_dest_pitch.copy_dest_pitch),
++          uint32_t(rb_copy_dest_pitch.copy_dest_height), copy_dest_extent_start,
++          copy_dest_extent_end);
++    }
++  }
++
+   return true;
+ }
+ 
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..7bf1ffd 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -5764,9 +5764,14 @@ void VulkanCommandProcessor::UpdateDynamicState(const draw_util::ViewportInfo& v
+           stencil_ref_mask_back_reg = XE_GPU_REG_RB_STENCILREFMASK_BF;
+         } else {
+           // Choose the back face values only if drawing only back faces.
+-          stencil_ref_mask_front_reg = regs.Get<reg::PA_SU_SC_MODE_CNTL>().cull_front
+-                                           ? XE_GPU_REG_RB_STENCILREFMASK_BF
+-                                           : XE_GPU_REG_RB_STENCILREFMASK;
++          // Back-face values only when drawing ONLY back faces - culling the
++          // front alone is not enough, the back must not also be culled.
++          // Canary 77597d62a.
++          auto pa_su_sc_mode_cntl = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
++          stencil_ref_mask_front_reg =
++              (pa_su_sc_mode_cntl.cull_front && !pa_su_sc_mode_cntl.cull_back)
++                  ? XE_GPU_REG_RB_STENCILREFMASK_BF
++                  : XE_GPU_REG_RB_STENCILREFMASK;
+           stencil_ref_mask_back_reg = stencil_ref_mask_front_reg;
+         }
+       } else {
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+index 91ac08f..cf70c29 100644
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -1326,15 +1326,38 @@ void VulkanPipelineCache::WritePipelineRenderTargetDescription(
+         /* 15 */ PipelineBlendFactor::kOneMinusConstantAlpha,
+         /* 16 */ PipelineBlendFactor::kSrcAlphaSaturate,
+     };
++
++    // Like kBlendFactorMap, but with the colour factors replaced by their alpha
++    // equivalents. Alpha is scalar, so the hardware treats a _COLOR factor in
++    // the alpha slot as the matching _ALPHA factor. Canary 53061c63f.
++    static const PipelineBlendFactor kBlendFactorAlphaMap[32] = {
++        /*  0 */ PipelineBlendFactor::kZero,
++        /*  1 */ PipelineBlendFactor::kOne,
++        /*  2 */ PipelineBlendFactor::kZero,  // ?
++        /*  3 */ PipelineBlendFactor::kZero,  // ?
++        /*  4 */ PipelineBlendFactor::kSrcAlpha,
++        /*  5 */ PipelineBlendFactor::kOneMinusSrcAlpha,
++        /*  6 */ PipelineBlendFactor::kSrcAlpha,
++        /*  7 */ PipelineBlendFactor::kOneMinusSrcAlpha,
++        /*  8 */ PipelineBlendFactor::kDstAlpha,
++        /*  9 */ PipelineBlendFactor::kOneMinusDstAlpha,
++        /* 10 */ PipelineBlendFactor::kDstAlpha,
++        /* 11 */ PipelineBlendFactor::kOneMinusDstAlpha,
++        /* 12 */ PipelineBlendFactor::kConstantAlpha,
++        /* 13 */ PipelineBlendFactor::kOneMinusConstantAlpha,
++        /* 14 */ PipelineBlendFactor::kConstantAlpha,
++        /* 15 */ PipelineBlendFactor::kOneMinusConstantAlpha,
++        /* 16 */ PipelineBlendFactor::kSrcAlphaSaturate,
++    };
+     render_target_out.src_color_blend_factor =
+         kBlendFactorMap[uint32_t(blend_control.color_srcblend)];
+     render_target_out.dst_color_blend_factor =
+         kBlendFactorMap[uint32_t(blend_control.color_destblend)];
+     render_target_out.color_blend_op = blend_control.color_comb_fcn;
+     render_target_out.src_alpha_blend_factor =
+-        kBlendFactorMap[uint32_t(blend_control.alpha_srcblend)];
++        kBlendFactorAlphaMap[uint32_t(blend_control.alpha_srcblend)];
+     render_target_out.dst_alpha_blend_factor =
+-        kBlendFactorMap[uint32_t(blend_control.alpha_destblend)];
++        kBlendFactorAlphaMap[uint32_t(blend_control.alpha_destblend)];
+     render_target_out.alpha_blend_op = blend_control.alpha_comb_fcn;
+     if (!command_processor_.GetVulkanDevice()->properties().constantAlphaColorBlendFactors) {
+       if (blend_control.color_srcblend == xenos::BlendFactor::kConstantAlpha) {
+diff --git a/src/graphics/vulkan/texture_cache.cpp b/src/graphics/vulkan/texture_cache.cpp
+index ecbd940..3573e2b 100644
+--- a/src/graphics/vulkan/texture_cache.cpp
++++ b/src/graphics/vulkan/texture_cache.cpp
+@@ -1739,6 +1739,16 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+         vulkan_texture.image(), ui::vulkan::util::InitializeSubresourceRange(),
+         texture_src_stage_mask, texture_dst_stage_mask, texture_src_access_mask,
+         texture_dst_access_mask, texture_old_layout, texture_new_layout);
++  } else {
++    // Same layout and usage, but another upload may have written this image
++    // earlier in the submission - a TRANSFER_WRITE -> TRANSFER_WRITE barrier
++    // orders the next CmdCopyBufferToImage after any prior copy.
++    // Canary 1fdbe569e.
++    command_processor_.PushImageMemoryBarrier(
++        vulkan_texture.image(), ui::vulkan::util::InitializeSubresourceRange(),
++        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
++        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
++        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+   }
+   command_processor_.SubmitBarriers(true);
+   VkBufferImageCopy* copy_regions = command_buffer.CmdCopyBufferToImageEmplace(
+diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
+index bd43109..048b578 100644
+--- a/src/system/function_dispatcher.cpp
++++ b/src/system/function_dispatcher.cpp
+@@ -13,6 +13,10 @@
+  *              role as a function dispatch table rather than a CPU emulator.
+  */
+ 
++#include <algorithm>
++#include <mutex>
++#include <vector>
++#include <utility>
+ #include <rex/assert.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+@@ -249,6 +253,45 @@ uint32_t FunctionDispatcher::FindCallerModuleBase(uint32_t guest_address) {
+   return 0;
+ }
+ 
++
++namespace {
++// [ng2] Flat, sorted-on-demand table of every registered function's host entry
++// point. Built once at registration, searched only when a fault needs naming.
++std::vector<std::pair<const void*, uint32_t>>& Ng2Table() {
++  static std::vector<std::pair<const void*, uint32_t>> t;
++  return t;
++}
++std::mutex& Ng2Mutex() {
++  static std::mutex m;
++  return m;
++}
++}  // namespace
++
++void Ng2RecordFunction(uint32_t guest_address, const void* host) {
++  std::lock_guard<std::mutex> lock(Ng2Mutex());
++  Ng2Table().emplace_back(host, guest_address);
++}
++
++uint32_t Ng2LookupGuestByHost(const void* rip, const void** entry_out) {
++  std::lock_guard<std::mutex> lock(Ng2Mutex());
++  auto& t = Ng2Table();
++  if (t.empty()) return 0;
++  static size_t sorted_to = 0;
++  if (sorted_to != t.size()) {
++    std::sort(t.begin(), t.end());
++    sorted_to = t.size();
++  }
++  // The containing function is the last entry point at or below the RIP.
++  auto it = std::upper_bound(t.begin(), t.end(), rip,
++                             [](const void* v, const std::pair<const void*, uint32_t>& e) {
++                               return v < e.first;
++                             });
++  if (it == t.begin()) return 0;
++  --it;
++  if (entry_out) *entry_out = it->first;
++  return it->second;
++}
++
+ bool FunctionDispatcher::SetFunction(uint32_t guest_address, ::PPCFunc* func) {
+   std::lock_guard<std::recursive_mutex> lock(dispatch_mutex_);
+   assert_true(!module_tables_.empty());
+@@ -260,6 +303,12 @@ bool FunctionDispatcher::SetFunction(uint32_t guest_address, ::PPCFunc* func) {
+ 
+   function_table_[guest_address] = func;
+ 
++  // [ng2] Keep a flat guest->host list so a host RIP caught in a fault handler
++  // can be turned back into the guest function that contains it. The map above
++  // is keyed the wrong way for that, and without this a faulting instruction is
++  // just an address in a 150 MB executable with no symbols.
++  Ng2RecordFunction(guest_address, reinterpret_cast<const void*>(func));
++
+   if (!memory_->SetFunction(guest_address, func)) {
+     REXLOG_ERROR("SetFunction: dispatcher / Memory module-table state out of sync at {:08X}",
+                  guest_address);
+@@ -398,3 +447,12 @@ std::optional<std::pair<uint32_t, uint32_t>> FunctionDispatcher::UnregisterModul
+ }
+ 
+ }  // namespace rex::runtime
++
++// [ng2] Plain C entry point so the port can resolve a host RIP to a guest
++// function through GetProcAddress, without linking against a symbol that only
++// exists in this instrumented build.
++extern "C" __declspec(dllexport) uint32_t Ng2LookupGuestByHostC(const void* rip) {
++  return rex::runtime::Ng2LookupGuestByHost(rip, nullptr);
++}
++
++
+diff --git a/src/system/mmio_handler.cpp b/src/system/mmio_handler.cpp
+index 2b93005..6833c41 100644
+--- a/src/system/mmio_handler.cpp
++++ b/src/system/mmio_handler.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cstring>
+ #include <utility>
+ 
+@@ -18,6 +19,7 @@
+ #include <rex/logging.h>
+ #include <rex/memory.h>
+ #include <rex/platform.h>
++#include <rex/system/function_dispatcher.h>
+ #include <rex/system/mmio_handler.h>
+ #include <rex/types.h>
+ 
+@@ -414,6 +416,34 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
+       // Another thread has cleared this watch. Abort.
+       return true;
+     }
++    // [ng2] A write-watch fault carries the one thing the whole video hunt
++    // needs: the address of the guest instruction that wrote the byte. The
++    // plane data is provably produced here on the CPU, so the store that fills
++    // 0x0B700000-0x0BE00000 belongs to the video decoder, and its host RIP maps
++    // straight back to a recompiled guest function.
++    if (is_write) {
++      // The guest writes through a VIRTUAL address, so the fault lands below
++      // physical_membase_ and subtracting it underflows. Work from the virtual
++      // base and mask off the 360's mapping bits, which is what turns a guest
++      // virtual address back into the physical page the planes live on.
++      uint64_t voff = uint64_t(fault_host_address) - uint64_t(virtual_membase_);
++      uint64_t phys = voff & 0x0FFFFFFFull;
++      if (phys >= 0x0B700000ull && phys < 0x0BE00000ull) {
++        static std::atomic<uint32_t> ng2_seen{0};
++        uint32_t n = ng2_seen.fetch_add(1);
++        if (n < 60) {
++          const void* entry = nullptr;
++          uint32_t guest_fn = rex::runtime::Ng2LookupGuestByHost(
++              reinterpret_cast<const void*>(ex->pc()), &entry);
++          REXLOG_INFO(
++              "[vidstore] guest_va=0x{:08X} phys=0x{:08X} rip=0x{:016X} "
++              "guest_fn=0x{:08X} +0x{:X}",
++              uint32_t(voff), uint32_t(phys), uint64_t(ex->pc()), guest_fn,
++              entry ? uint64_t(ex->pc()) - uint64_t(entry) : 0ull);
++        }
++      }
++    }
++
+     // The address is not found within any range, so either a write watch or an
+     // actual access violation.
+     if (access_violation_callback_) {
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 5bd3dc5..eb6385f 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -116,12 +116,39 @@ target_link_libraries(rexui PUBLIC
+ )
+ target_link_libraries(rexui PRIVATE utf8cpp)
+ 
++# REX_HAS_FIDELITYFX_SDK gates two quite different things, and conflating them
++# costs Windows users the only upscaler in the runtime:
++#
++#   * the SPATIAL present effects (cas, fsr = FidelityFX CAS and FSR 1.0
++#     EASU/RCAS). Their shaders are PREBUILT AND COMMITTED to this tree, under
++#     src/ui/shaders/bytecode/d3d12_5_1/ and src/ui/shaders/vulkan_spirv/, and
++#     no file under src/ui/ includes a FidelityFX header outside <ffx_api/...>.
++#     So this half needs the fetched SDK for exactly nothing.
++#
++#   * the TEMPORAL path (fsr2, fsr3), which really does call into ffx-api. That
++#     is guarded separately by REX_HAS_FIDELITYFX_RUNTIME, and every call site
++#     already has a pure-arithmetic fallback for when it is absent.
++#
++# Because both were behind the same define, and REXGLUE_ENABLE_FIDELITYFX
++# defaults OFF, the shipped build advertises present_effect="bilinear" and
++# nothing else - even though it is carrying working FSR and CAS shaders.
++#
++# SPATIAL_ONLY turns those on with no fetch, no ffx-api library, no extra DLL
++# and no shader compiler. fsr2/fsr3 stay selectable and degrade to spatial FSR,
++# which is what the runtime already warns they may do.
++option(REXGLUE_FIDELITYFX_SPATIAL_ONLY
++       "Enable the committed spatial FSR/CAS present effects without fetching the FidelityFX SDK"
++       OFF)
++
+ if(REXGLUE_FIDELITYFX_SOURCE_DIR AND EXISTS "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include")
+     target_include_directories(rexui PRIVATE
+         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include"
+         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/ffx-api/include"
+     )
+     target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
++elseif(REXGLUE_FIDELITYFX_SPATIAL_ONLY)
++    target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
++    message(STATUS "FidelityFX: spatial CAS/FSR only (no SDK fetch, no ffx-api)")
+ endif()
+ 
+ set(REXUI_HAS_FIDELITYFX_RUNTIME OFF)
