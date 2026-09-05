@@ -75,6 +75,33 @@ def tiled_offset_2d(x, y, pitch, bpb_log2):
             (((((y & 8) >> 2) + (x >> 3)) & 3) << 6) + (offset & 0x3F))
 
 
+# Xenos endianness (XE_GPU_ENDIAN). The dump records it per texture and it was
+# being PARSED AND THEN IGNORED, which is why Fable II's DXT1 art decoded as
+# psychedelic noise: a DXT1 block opens with two 16-bit colour endpoints, so
+# without the 8in16 swap every colour is byte-reversed. NG2's textures are
+# k_8 / k_8_8_8_8 with no swap needed, so the gap never showed there.
+ENDIAN_NONE, ENDIAN_8IN16, ENDIAN_8IN32, ENDIAN_16IN32 = 0, 1, 2, 3
+
+
+def swap_endian(data, endian):
+    """Undo the guest's byte order. Returns data unchanged for kNone."""
+    if endian == ENDIAN_NONE or not data:
+        return data
+    b = bytearray(data)
+    if endian == ENDIAN_8IN16:
+        b[0:len(b) - len(b) % 2:2], b[1:len(b) - len(b) % 2:2] = (
+            bytes(b[1:len(b) - len(b) % 2:2]), bytes(b[0:len(b) - len(b) % 2:2]))
+    elif endian == ENDIAN_8IN32:
+        n = len(b) - len(b) % 4
+        for i in range(0, n, 4):
+            b[i:i + 4] = b[i:i + 4][::-1]
+    elif endian == ENDIAN_16IN32:
+        n = len(b) - len(b) % 4
+        for i in range(0, n, 4):
+            b[i:i + 4] = b[i + 2:i + 4] + b[i:i + 2]
+    return bytes(b)
+
+
 def untile(data, w, h, bpb, block, pitch_blocks):
     """Return linear block data for a tiled texture."""
     bw, bh = (w + block - 1) // block, (h + block - 1) // block
@@ -343,6 +370,8 @@ def main():
             failed += 1
             continue
         data = open(raw, "rb").read()
+        # Before anything else: the bytes are in the guest's order.
+        data = swap_endian(data, endian)
 
         bpb, block = FMT_INFO[fmt]
         if tiled:

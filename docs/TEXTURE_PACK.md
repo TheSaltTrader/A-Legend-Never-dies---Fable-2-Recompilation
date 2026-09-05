@@ -25,7 +25,31 @@ Remember from NG2, and it is still true here: **a GPU plugin cvar cannot be
 passed on the command line.** It only arrives through `cvar::LoadConfig`
 deferral, i.e. the generated tuning TOML. `--texture_dump` does nothing.
 
-## The decode is wrong here, and file counts hid it
+## FIXED: the decode was ignoring endianness
+
+The dump records nine fields per texture and the decoder was reading all nine -
+then **using eight**. `endianness` was parsed into a variable and never applied.
+
+Fable II's DXT1 art carries `endianness = 1` (8in16, swap bytes within each
+16-bit word). A DXT1 block opens with two 16-bit colour endpoints, so skipping
+that swap byte-reverses every colour: the output keeps its shapes and comes out
+in psychedelic colour. NG2's textures are `k_8` / `k_8_8_8_8` and needed no
+swap, which is why the gap never showed there.
+
+`swap_endian()` now runs on the raw bytes before untiling, covering kNone,
+8in16, 8in32 and 16in32.
+
+    DXT1 textures   before      after
+    noise             41          0
+    flat               2          2
+    dead right edge    -          2   (of 252 - rare, not systemic)
+
+A 512x512 skybox that decoded as coloured static now decodes as a pink sunset
+over mountain silhouettes.
+
+Two of 252 still show a dead right edge and are not explained yet.
+
+## How the wrongness was originally hidden
 
 `tools/upscale_textures.py` runs and reports `decoded=332 ... failed=55`,
 writing 593 PNGs. **That is not evidence of anything.** NG2's tool was verified
