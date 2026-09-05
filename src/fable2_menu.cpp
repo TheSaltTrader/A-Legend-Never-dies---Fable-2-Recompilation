@@ -559,6 +559,18 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       if (!live) RestartTag();
     }
 
+    RowStart("Skip intro videos",
+             "Presses A through the boot logos for you. It works by adding a "
+             "synthetic controller whose presses are merged with your own - "
+             "nothing in the game is patched - and ANY genuine input disarms it "
+             "at once, so a cinematic you want to watch is one stick nudge away "
+             "from being left alone. The video FILES are never hidden: this game "
+             "treats a video that fails to open as a bad disc and stops.");
+    {
+      if (ImGui::Checkbox("##skipintro", &s.skip_intro)) changed = true;
+      if (!live) RestartTag();
+    }
+
     RowStart("Accurate depth",
              "Converts depth to the Xbox 360's float24 format exactly, in the "
              "pixel shader, instead of approximating it. Costs shader work and "

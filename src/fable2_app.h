@@ -29,7 +29,10 @@
 #include "fable2_disc.h"
 #include "fable2_fptrap.h"
 #include "fable2_dlc.h"
+#include <rex/input/input_system.h>
+#include <rex/input/device_assignment.h>
 #include "fable2_saveimport.h"
+#include "fable2_autoskip.h"
 #include "fable2_menu.h"
 #include "fable2_platform.h"
 #include "fable2_settings.h"
@@ -266,6 +269,42 @@ class Fable2App : public rex::ReXApp {
     REXLOG_INFO("Save: {} of {} imported", done, packages.size());
   }
 
+  // Every controller drives guest user 0.
+  //
+  // The runtime's default is SlotAssignment: device ordinal N feeds guest user
+  // N. Fable II is single-player and polls user 0 only, so a pad that does not
+  // enumerate FIRST lands on user 1 where nobody is listening - measured here
+  // with an arcade stick on ordinal 0 and the Xbox pad on ordinal 1, which did
+  // nothing at all. SharedAssignment is the SDK's own answer for the case.
+  //
+  // It asks for the concrete input system rather than assuming it, so a
+  // different backend keeps the default instead of crashing.
+  void UseOneGuestUser() {
+    auto* runtime_ptr = runtime();
+    if (runtime_ptr == nullptr) {
+      return;
+    }
+    auto* input = dynamic_cast<rex::input::InputSystem*>(runtime_ptr->input_system());
+    if (input == nullptr) {
+      REXLOG_WARN("Input: not the SDL input system; controllers stay on the "
+                  "default per-slot assignment");
+      return;
+    }
+    input->SetDeviceAssignment(std::make_unique<rex::input::SharedAssignment>());
+
+    // Added AFTER the assignment so it is picked up with everything else. It
+    // reports nothing at all unless armed.
+    fable2::SetAutoSkipEnabled(settings_.skip_intro);
+    input->AddDriver(fable2::MakeAutoSkipDriver());
+    if (settings_.skip_intro) {
+      // The boot logos play immediately, so the arm goes in here rather than
+      // waiting for a signal this port cannot see.
+      fable2::ArmAutoSkip();
+    }
+    REXLOG_INFO("Input: every controller drives guest user 0{}",
+                settings_.skip_intro ? ", intro auto-skip armed" : "");
+  }
+
   void OnPostSetup() override {
     if (const char* dump = std::getenv("FABLE2_DUMP_CVARS"); dump && *dump)
       DumpCvars(dump);
@@ -288,6 +327,7 @@ class Fable2App : public rex::ReXApp {
     // screen runs before the runtime is built, so there is no ContentManager
     // and no signed-in profile to import into. Here both exist and the guest
     // has not started looking for saves yet.
+    UseOneGuestUser();
     ImportQueuedSaves();
 
     // The window exists by now, so the comfort settings go straight on it.

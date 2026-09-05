@@ -150,7 +150,14 @@ struct Fable2Settings {
   // alpha-test flicker.
   bool accurate_depth = false;
   bool fuzzy_alpha = false;
+  // Press A through the boot logos for you. A synthetic pad, ORed into
+  // the real one; any genuine input disarms it immediately.
+  bool skip_intro = true;
   bool texture_dump = false;
+  // OFF by default. The replacement path is new code in the shared plugin,
+  // and with it on the game crashed at character select - a screen that is
+  // stable for 8 straight frames with it off. Until that is understood this
+  // stays opt-in.
   bool texture_pack = false;
   std::string texture_path;
   int texture_cache_mb = 0;
@@ -254,6 +261,7 @@ struct Fable2Settings {
         << "save_import_path=" << save_import_path << "\n"
         << "accurate_depth=" << (accurate_depth ? 1 : 0) << "\n"
         << "fuzzy_alpha=" << (fuzzy_alpha ? 1 : 0) << "\n"
+        << "skip_intro=" << (skip_intro ? 1 : 0) << "\n"
         << "texture_dump=" << (texture_dump ? 1 : 0) << "\n"
         << "texture_pack=" << (texture_pack ? 1 : 0) << "\n"
         << "texture_path=" << texture_path << "\n"
@@ -336,6 +344,7 @@ struct Fable2Settings {
     else if (k == "save_import_path") save_import_path = v;
     else if (k == "accurate_depth") accurate_depth = Truthy(v);
     else if (k == "fuzzy_alpha") fuzzy_alpha = Truthy(v);
+    else if (k == "skip_intro") skip_intro = Truthy(v);
     else if (k == "texture_dump") texture_dump = Truthy(v);
     else if (k == "texture_pack") texture_pack = Truthy(v);
     else if (k == "texture_path") texture_path = v;

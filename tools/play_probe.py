@@ -146,6 +146,10 @@ def main():
     ap.add_argument("--exe-args", action="append", default=[],
                     help="arguments for --exe, repeatable; ours are not added")
     ap.add_argument("--no-mnk", action="store_true")
+    ap.add_argument("--manual", action="store_true",
+                    help="hands off: send no keys and never steal focus, so a "
+                         "person can drive with a controller. Frames and the log "
+                         "are still captured. Any --press is ignored.")
     ap.add_argument("--hold", type=float, default=0.20,
                     help="seconds to hold each key down")
     ap.add_argument("--extra", action="append", default=[], metavar="ARG",
@@ -192,6 +196,12 @@ def main():
             cmd += EXPLICIT_BINDS
         cmd += args.extra
 
+    if args.manual and args.press:
+        # Said rather than silently dropped: a schedule that looks honoured and
+        # is not would make the frames impossible to interpret.
+        print("--manual: ignoring %d scheduled press(es); you are driving."
+              % len(args.press))
+        args.press = []
     proc = subprocess.Popen(cmd, cwd=os.path.dirname(exe))
     print(f"launched pid {proc.pid}")
 
@@ -208,6 +218,10 @@ def main():
         print("no window appeared")
         return 1
     print(f"window 0x{hwnd:X} '{win32gui.GetWindowText(hwnd)}'")
+    if args.manual:
+        print("MANUAL: no keys will be sent and focus will not be taken again.")
+        print("        Drive with the controller or the keyboard; frames are still")
+        print("        captured every %.0fs for %.0fs." % (args.interval, args.seconds))
 
     # An HWND exists slightly before Windows Graphics Capture will accept it;
     # binding too early throws "Failed to convert item to GraphicsCaptureItem"
@@ -234,6 +248,8 @@ def main():
             when, name, done, hold = item
             if not done and elapsed >= when:
                 item[2] = True
+                # In manual mode this loop never runs - the schedule is empty -
+                # so focus is taken exactly once, at launch, and never again.
                 ok = focus(hwnd)
                 send_key(KEYS[name], hold if hold is not None else args.hold)
                 print(f"  {elapsed:5.1f}s  pressed {name}"
