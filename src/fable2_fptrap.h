@@ -296,6 +296,56 @@ class FPTrap {
     return result;
   }
 
+  // The guest call stack, unwound from the FAULTING context.
+  //
+  // RtlCaptureStackBackTrace walks the caller's own stack, which inside a
+  // vectored handler is the exception dispatch stack - it reaches the faulting
+  // function and stops. Unwinding the context the exception carries is what
+  // actually crosses into the guest callers.
+  static std::string Backtrace(EXCEPTION_POINTERS* info) {
+    CONTEXT ctx = *info->ContextRecord;
+    std::string out;
+    for (int depth = 0; depth < 14; ++depth) {
+      const DWORD64 pc = ctx.Rip;
+      if (!pc) {
+        break;
+      }
+      out += fmt::format("#{} {}", depth, Describe(uintptr_t(pc)));
+      out += "|";
+
+      DWORD64 image_base = 0;
+      PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(pc, &image_base, nullptr);
+      if (!fn) {
+        break;  // a leaf or an unknown module - the chain ends here
+      }
+      PVOID handler_data = nullptr;
+      DWORD64 establisher = 0;
+      RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, pc, fn, &ctx, &handler_data, &establisher,
+                       nullptr);
+      if (!ctx.Rip) {
+        break;
+      }
+    }
+    return out;
+  }
+
+  // The log takes one line at a time, so the packed trace is split for output.
+  static std::vector<std::string> SplitFrames(const std::string& packed) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (start < packed.size()) {
+      const size_t end = packed.find('|', start);
+      if (end == std::string::npos) {
+        break;
+      }
+      if (end > start) {
+        out.emplace_back(packed.substr(start, end - start));
+      }
+      start = end + 1;
+    }
+    return out;
+  }
+
   // First bytes at the faulting instruction, so the opcode can be identified.
   // Read defensively: this runs inside an exception handler.
   static std::string ReadOpcode(uintptr_t address) {
@@ -365,6 +415,13 @@ class FPTrap {
                     : ops.verdict == Verdict::kConsumer ? "touched an existing NaN"
                                                         : "invalid operation",
                     Describe(at), ops.detail);
+        // Only the sites that MAKE the poison are worth a stack walk. Consumers
+        // are downstream by definition and there are far more of them.
+        if (div_zero || ops.verdict == Verdict::kCreator) {
+          for (const auto& frame : SplitFrames(Backtrace(info))) {
+            REXLOG_WARN("   {}", frame);
+          }
+        }
       }
     }
     // Mask whichever exception just fired so the instruction can retry and the
