@@ -48,3 +48,24 @@ xer_as_local = true
 cr_as_local = true
 reserved_as_local = true
 non_volatile_as_local = true
+
+# Vector registers that must stay in the SHARED context even though
+# non_volatile_as_local isolates the rest.
+#
+# Localising a non-volatile VMX128 register makes it a zero-initialised local,
+# so a function that RECEIVES a value in one reads zero. Seven functions here do
+# that. Three of them (sub_82DED628/908/D60) run a dot product on v92, so a
+# vector arrived as zero, its length came out zero, and 1/sqrt(0) produced the
+# Inf that 0 x Inf turned into the NaN that made the 3D scene render flat blue.
+#
+# De-localising ALL of v64-v127 fixes that and is still WRONG: the recompiler
+# emits nothing for the __savevmx/__restvmx prologue helpers, so a shared
+# register used as scratch is never restored and silently clobbers its caller.
+# Isolation is what makes skipping those helpers safe. Share only the registers
+# that genuinely carry values across a call.
+#
+# Found by censusing the generated source for a register READ before it is
+# written - a spill to memory does not count. sub_83000200 is deliberately
+# absent: it is _setjmp, declared above, so the recompiler models it rather than
+# running the generated body, and it touches the whole file.
+shared_vector_registers = [64, 65, 77, 78, 79, 80, 81, 82, 83, 84, 86, 87, 90, 91, 92, 93, 94]
