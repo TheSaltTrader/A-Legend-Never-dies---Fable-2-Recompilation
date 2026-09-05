@@ -117,6 +117,17 @@ struct Fable2Settings {
   // reduction, not an amount. Only read when present_effect is "fsr".
   double fsr_sharpness = 0.2;
 
+  // Repair NaN in the vertex shader float constants before they reach the GPU.
+  // 0 off, 1 substitute zero, 2 substitute an identity matrix row.
+  //
+  // Fable II's guest math puts NaN into these constants (0 x Inf, from a
+  // reciprocal of a zero-length vector), and a NaN transform makes the whole
+  // 3D scene render as flat blue while the UI keeps drawing on top. 1 renders
+  // the world correctly; 2 avoids the blue slightly better but mangles
+  // geometry, because it guesses that matrices are 4-register aligned.
+  // Neither restores CHARACTERS - a destroyed skinning matrix cannot be
+  // reconstructed by substitution - so this is a workaround, not the fix.
+  int nan_constant_repair = 1;
   bool present_dither = false;
   bool letterbox = true;
 
@@ -213,6 +224,7 @@ struct Fable2Settings {
         << "present_effect=" << present_effect << "\n"
         << "cas_sharpness=" << cas_sharpness << "\n"
         << "fsr_sharpness=" << fsr_sharpness << "\n"
+        << "nan_constant_repair=" << nan_constant_repair << "\n"
         << "present_dither=" << (present_dither ? 1 : 0) << "\n"
         << "letterbox=" << (letterbox ? 1 : 0) << "\n"
         << "readback=" << readback << "\n"
@@ -243,6 +255,7 @@ struct Fable2Settings {
     video_height = std::clamp(video_height, 480, 4095);
     fps = std::clamp(fps, 24, 240);
     resolution_scale = std::clamp(resolution_scale, 1, 8);
+    nan_constant_repair = std::clamp(nan_constant_repair, 0, 2);
     anisotropic = std::clamp(anisotropic, -1, 5);
     if (antialias != "none" && antialias != "fxaa" && antialias != "fxaa_extreme")
       antialias = "none";
@@ -285,6 +298,7 @@ struct Fable2Settings {
     else if (k == "present_effect") present_effect = v;
     else if (k == "cas_sharpness") cas_sharpness = std::atof(v.c_str());
     else if (k == "fsr_sharpness") fsr_sharpness = std::atof(v.c_str());
+    else if (k == "nan_constant_repair") nan_constant_repair = std::atoi(v.c_str());
     else if (k == "present_dither") present_dither = Truthy(v);
     else if (k == "letterbox") letterbox = Truthy(v);
     else if (k == "readback") readback = v;

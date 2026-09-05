@@ -526,6 +526,28 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(!live);
+    RowStart("Fix blue 3D scene",
+             "Repairs NaN in the vertex shader constants before they reach the "
+             "GPU. Fable II's guest code divides by a zero-length vector, and "
+             "the resulting NaN transform makes the whole 3D scene draw as flat "
+             "blue while the UI keeps drawing on top of it. \"Zero\" renders the "
+             "world correctly and is the right choice. \"Identity row\" holds the "
+             "blue off slightly longer but distorts geometry, because it has to "
+             "guess how matrices are laid out. Neither brings CHARACTERS back - "
+             "a destroyed skinning matrix cannot be rebuilt by substitution - so "
+             "this is a workaround for a bug that is still open, and \"Off\" is "
+             "there to see the bug as it really is.");
+    {
+      int repair_index = std::clamp(s.nan_constant_repair, 0, 2);
+      const char* repair_names[] = {"Off (shows the bug)", "Zero (recommended)",
+                                    "Identity row"};
+      if (ImGui::Combo("##nanrepair", &repair_index, repair_names, 3)) {
+        s.nan_constant_repair = repair_index;
+        changed = true;
+      }
+      if (!live) RestartTag();
+    }
+
     RowStart("Upscaling",
              "How the game's picture is scaled up to fill the window. Fable II "
              "renders at 1120x720 (1280x720 with the resolution patch), so on "

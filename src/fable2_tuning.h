@@ -116,6 +116,11 @@ struct Fable2Tuning {
                      "additional CAS sharpness, 0-1"});
     }
 
+    // Sent unconditionally, including 0, so turning the repair off in the menu
+    // actually reaches the plugin instead of leaving the previous value set.
+    out.push_back({"diag_vs_const_nan_fix", std::to_string(s.nan_constant_repair),
+                   "repair NaN in vertex shader constants: 0 off, 1 zero, 2 identity row"});
+
     out.push_back({"present_dither", s.present_dither ? "true" : "false",
                    "dither the 10bpc output down to 8bpc"});
     out.push_back({"present_letterbox", s.letterbox ? "true" : "false",
