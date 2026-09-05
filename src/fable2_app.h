@@ -33,6 +33,8 @@
 #include <rex/input/device_assignment.h>
 #include "fable2_saveimport.h"
 #include "fable2_autoskip.h"
+#include "fable2_hwdetect.h"
+#include "fable2_perf.h"
 #include "fable2_menu.h"
 #include "fable2_platform.h"
 #include "fable2_settings.h"
@@ -85,6 +87,23 @@ class Fable2App : public rex::ReXApp {
   // every launch until this was moved here.
   void OnConfigurePaths(rex::PathConfig& paths) override {
     settings_.Load();
+    // Choose the memory-hungry settings from the card, ONCE. The latch is
+    // what makes it safe: a value the player edits afterwards is never
+    // overwritten on a later launch.
+    if (!settings_.hardware_detected) {
+      const auto gpu = fable2::DetectGpu();
+      if (gpu.valid) {
+        const auto rec = fable2::RecommendSettings(gpu);
+        settings_.texture_cache_mb = rec.texture_cache_mb;
+        settings_.texture_scale = rec.texture_scale;
+        settings_.hardware_detected = true;
+        settings_.Save();
+        REXLOG_INFO("Hardware: {}", rec.summary);
+        if (!rec.caveat.empty()) {
+          REXLOG_WARN("Hardware: {}", rec.caveat);
+        }
+      }
+    }
     ApplyEnvironmentOverrides();
     settings_.Clamp();
 
@@ -328,6 +347,7 @@ class Fable2App : public rex::ReXApp {
     // and no signed-in profile to import into. Here both exist and the guest
     // has not started looking for saves yet.
     UseOneGuestUser();
+    fable2::StartPerfMonitor();
     ImportQueuedSaves();
 
     // The window exists by now, so the comfort settings go straight on it.
@@ -345,6 +365,32 @@ class Fable2App : public rex::ReXApp {
   // it, because the two answer different questions. F4 enumerates the registry
   // and so cannot fall behind the build; this one explains what matters.
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    // F8 shows or hides the readouts. A number in the corner is a tool, so it
+    // is off until asked for - but reaching it must not need a menu, because
+    // what it measures is what the menu being open changes.
+    rex::ui::RegisterBind(
+        "bind_fable2_hud", "F8", "Show or hide the on-screen readouts", [this] {
+          settings_.hud_enabled = !settings_.hud_enabled;
+          REXLOG_INFO("F8: on-screen readouts {}",
+                      settings_.hud_enabled ? "on" : "off");
+        });
+
+    // F9 switches the texture pack during play. This is the only practical way
+    // to judge a pack: through a settings screen the eye loses the detail it
+    // was comparing before the overlay closes.
+    rex::ui::RegisterBind(
+        "bind_fable2_texpack", "F9", "Toggle the upscaled texture pack", [this] {
+          if (settings_.texture_path.empty()) {
+            REXLOG_WARN("F9: no texture folder is set - nothing to switch to");
+            return;
+          }
+          settings_.texture_pack = !settings_.texture_pack;
+          REXLOG_INFO("F9: texture pack {}", settings_.texture_pack ? "ON" : "OFF");
+          fable2::ApplyLiveSettings(settings_, window());
+          // Deliberately NOT saved: a half-finished comparison must not become
+          // the stored preference. The checkbox is the decision.
+        });
+
     rex::ui::RegisterBind(
         "bind_fable2_settings", "F10", "Toggle the Fable II settings menu",
         [this, drawer] {

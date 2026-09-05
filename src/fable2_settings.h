@@ -158,7 +158,26 @@ struct Fable2Settings {
   // and with it on the game crashed at character select - a screen that is
   // stable for 8 straight frames with it off. Until that is understood this
   // stays opt-in.
+  // On-screen readouts, toggled with F8. Off by default: a number in the
+  // corner is a tool, not a decoration.
+  bool hud_enabled = false;
+  bool hud_fps = true;
+  bool hud_gpu = true;
+  bool hud_vram = true;
+  bool hud_menu_bars = true;   // the live cost bars in the Textures panel
+  // A LATCH, not a preference: hardware detection runs once and records
+  // that it ran, so a value changed by hand is never overwritten later.
+  bool hardware_detected = false;
   bool texture_pack = false;
+  // How far the packer enlarges. 2x is the recommendation and the
+  // measured one: replacements are uncompressed, so 4x came to about
+  // 6 GB against a 4 GB maximum soft cache and thrashed.
+  int texture_scale = 2;
+  // Real-ESRGAN, off until it is downloaded. Its DETAIL is laid over a
+  // plain resize rather than replacing the image, so tone and colour
+  // stay the game's.
+  bool texture_ai = false;
+  float texture_ai_strength = 0.75f;
   std::string texture_path;
   int texture_cache_mb = 0;
   bool present_dither = false;
@@ -263,7 +282,16 @@ struct Fable2Settings {
         << "fuzzy_alpha=" << (fuzzy_alpha ? 1 : 0) << "\n"
         << "skip_intro=" << (skip_intro ? 1 : 0) << "\n"
         << "texture_dump=" << (texture_dump ? 1 : 0) << "\n"
+        << "hud_enabled=" << (hud_enabled ? 1 : 0) << "\n"
+        << "hud_fps=" << (hud_fps ? 1 : 0) << "\n"
+        << "hud_gpu=" << (hud_gpu ? 1 : 0) << "\n"
+        << "hud_vram=" << (hud_vram ? 1 : 0) << "\n"
+        << "hud_menu_bars=" << (hud_menu_bars ? 1 : 0) << "\n"
+        << "hardware_detected=" << (hardware_detected ? 1 : 0) << "\n"
         << "texture_pack=" << (texture_pack ? 1 : 0) << "\n"
+        << "texture_scale=" << texture_scale << "\n"
+        << "texture_ai=" << (texture_ai ? 1 : 0) << "\n"
+        << "texture_ai_strength=" << texture_ai_strength << "\n"
         << "texture_path=" << texture_path << "\n"
         << "texture_cache_mb=" << texture_cache_mb << "\n"
         << "present_dither=" << (present_dither ? 1 : 0) << "\n"
@@ -298,6 +326,10 @@ struct Fable2Settings {
     resolution_scale = std::clamp(resolution_scale, 1, 8);
     nan_constant_repair = std::clamp(nan_constant_repair, 0, 2);
     texture_cache_mb = std::clamp(texture_cache_mb, 0, 8192);
+    if (texture_scale != 2 && texture_scale != 4 && texture_scale != 8) {
+      texture_scale = 2;
+    }
+    texture_ai_strength = std::clamp(texture_ai_strength, 0.0f, 1.0f);
     anisotropic = std::clamp(anisotropic, -1, 5);
     if (antialias != "none" && antialias != "fxaa" && antialias != "fxaa_extreme")
       antialias = "none";
@@ -346,7 +378,16 @@ struct Fable2Settings {
     else if (k == "fuzzy_alpha") fuzzy_alpha = Truthy(v);
     else if (k == "skip_intro") skip_intro = Truthy(v);
     else if (k == "texture_dump") texture_dump = Truthy(v);
+    else if (k == "hud_enabled") hud_enabled = Truthy(v);
+    else if (k == "hud_fps") hud_fps = Truthy(v);
+    else if (k == "hud_gpu") hud_gpu = Truthy(v);
+    else if (k == "hud_vram") hud_vram = Truthy(v);
+    else if (k == "hud_menu_bars") hud_menu_bars = Truthy(v);
+    else if (k == "hardware_detected") hardware_detected = Truthy(v);
     else if (k == "texture_pack") texture_pack = Truthy(v);
+    else if (k == "texture_scale") texture_scale = std::atoi(v.c_str());
+    else if (k == "texture_ai") texture_ai = Truthy(v);
+    else if (k == "texture_ai_strength") texture_ai_strength = float(std::atof(v.c_str()));
     else if (k == "texture_path") texture_path = v;
     else if (k == "texture_cache_mb") texture_cache_mb = std::atoi(v.c_str());
     else if (k == "present_dither") present_dither = Truthy(v);

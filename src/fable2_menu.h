@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include "fable2_textool.h"
+
 #include <functional>
 #include <memory>
 #include <string>

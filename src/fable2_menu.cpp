@@ -1,5 +1,7 @@
 #include "fable2_menu.h"
 
+#include "fable2_textool.h"
+
 #include "fable2_saveimport.h"
 
 #include <algorithm>
@@ -362,6 +364,181 @@ std::vector<std::string> UpscaleValues(const std::string& current) {
 // an output/upscale filter (`present_effect` declares exactly one value,
 // bilinear) and texture replacement (no such facility exists in the GPU
 // plugin at all).
+// The texture pack: extract, enlarge, load back. Laid out like the NG2 port's
+// so the two read the same.
+void DrawTexturesSection(Fable2Settings& s, bool& changed) {
+  // Worker state for the pack build. Function-local because the sections
+  // here are free functions, and because exactly one build can be running.
+  static fable2::ToolProgress tex_progress_;
+  static std::thread tex_thread_;
+  static double tex_started_at_ = 0.0;
+
+  SectionHeader("Textures",
+                "Extract the game's textures, enlarge them, and load the "
+                "results back in. Dumping costs a file write the first time "
+                "each texture is seen; leave it off once a pack is made.");
+
+  const bool have_path = !s.texture_path.empty();
+  const std::filesystem::path dir =
+      have_path ? std::filesystem::path(s.texture_path) : std::filesystem::path();
+  const int dumped = have_path ? fable2::CountDumped(dir) : 0;
+  const int packed = have_path ? fable2::CountPacked(dir) : 0;
+  const bool busy = tex_progress_.running.load();
+
+  {
+    ImGui::BeginTable("texrows", 2, ImGuiTableFlags_SizingStretchProp);
+
+    RowStart("Folder",
+             "Where dumped and upscaled textures are kept. Needs room: the raw "
+             "dump is roughly the size of the game's texture data.");
+    {
+      char buf[512];
+      std::snprintf(buf, sizeof(buf), "%s", s.texture_path.c_str());
+      ImGui::SetNextItemWidth(-1.0f);
+      if (ImGui::InputText("##texpath", buf, sizeof(buf))) {
+        s.texture_path = buf;
+        changed = true;
+      }
+    }
+
+    RowStart("Dump while playing",
+             "Writes every texture the game loads. Play the areas you care "
+             "about with this on - a run that only reaches the menu collects "
+             "video frames and little else.\n\n"
+             "It composes with the pack, since the dump reads the GAME's "
+             "textures and a replacement never touches those. Prefer one at a "
+             "time though: both at once puts a file write AND a read on the GPU "
+             "thread for every new texture.");
+    ImGui::BeginDisabled(!have_path || busy);
+    changed |= ImGui::Checkbox("##texdump", &s.texture_dump);
+    ImGui::EndDisabled();
+
+    RowStart("Use the upscaled textures",
+             "Loads the finished pack instead of the game's own. Nothing "
+             "happens until a pack has been made.\n\n"
+             "F9 toggles this during play without opening this screen, which is "
+             "the only practical way to compare - the difference is in detail "
+             "the eye loses while a menu is in the way.\n\n"
+             "F9 does NOT change this setting. It is a look, not a decision, so "
+             "leaving a comparison half-finished cannot quietly turn the pack "
+             "off for the next launch.");
+    ImGui::BeginDisabled(!have_path || packed == 0 || busy);
+    if (ImGui::Checkbox("##texuse", &s.texture_pack)) {
+      changed = true;
+    }
+    ImGui::EndDisabled();
+
+    ImGui::EndTable();
+  }
+
+  Muted("%d dumped, %d in the pack.  Press F9 in game to switch the pack on and "
+        "off and see the difference.", dumped, packed);
+  if (s.texture_dump) {
+    Muted("Dumping takes effect next launch - the GPU reads it at startup.");
+  }
+
+  // --- the run -----------------------------------------------------------
+  if (busy) {
+    const double done = double(tex_progress_.done.load());
+    const double total = double(tex_progress_.total.load());
+    float fraction = total > 0.0 ? float(done / total) : 0.0f;
+    fraction = fraction < 0.0f ? 0.0f : (fraction > 1.0f ? 1.0f : fraction);
+
+    // Time remaining from the rate so far, and only once enough is done to
+    // mean anything: an estimate off the first file is a guess with a number
+    // on it, which is worse than no number.
+    char overlay[96];
+    const double elapsed = ImGui::GetTime() - tex_started_at_;
+    if (done >= 3.0 && elapsed > 1.0 && total > done) {
+      const double remain = (elapsed / done) * (total - done);
+      if (remain >= 90.0) {
+        std::snprintf(overlay, sizeof(overlay), "%.0f%%  -  about %.0f min left",
+                      fraction * 100.0f, remain / 60.0);
+      } else {
+        std::snprintf(overlay, sizeof(overlay), "%.0f%%  -  about %.0f s left",
+                      fraction * 100.0f, remain);
+      }
+    } else {
+      std::snprintf(overlay, sizeof(overlay), "%.0f%%", fraction * 100.0f);
+    }
+    ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), overlay);
+    Muted("%s", tex_progress_.Current().c_str());
+    if (ImGui::Button("Cancel")) {
+      tex_progress_.cancel = true;
+    }
+    return;
+  }
+
+  if (tex_thread_.joinable()) {
+    tex_thread_.join();
+  }
+
+  // How far to enlarge. The cost beside 4x and 8x is measured, not a hedge:
+  // replacements are uncompressed, so a 4x pack of this size came to about
+  // 6 GB against a 4 GB maximum soft cache and thrashed.
+  static const int kScales[] = {2, 4, 8};
+  static const char* const kScaleNames[] = {
+      "2x  (about 1.5 GB - recommended)",
+      "4x  (about 6 GB - needs the 8 GB cache, may still hitch)",
+      "8x  (about 24 GB - for future hardware)"};
+  int scale_index = 0;
+  for (int i = 0; i < IM_ARRAYSIZE(kScales); ++i) {
+    if (kScales[i] == s.texture_scale) {
+      scale_index = i;
+    }
+  }
+  ImGui::TextUnformatted("Upscale");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(330.0f);
+  if (ImGui::Combo("##texscale", &scale_index, kScaleNames, IM_ARRAYSIZE(kScaleNames))) {
+    s.texture_scale = kScales[scale_index];
+    changed = true;
+  }
+
+  // The AI upscaler and the download that enables it. Not shipped: 43 MB of
+  // third-party binary under its own licence, so whether it is on the machine
+  // stays the player's decision.
+  const bool ai_ready = fable2::UpscalerInstalled();
+  ImGui::BeginDisabled(!ai_ready);
+  changed |= ImGui::Checkbox("Enhance with AI (Real-ESRGAN)", &s.texture_ai);
+  ImGui::EndDisabled();
+  if (ai_ready) {
+    ImGui::SetNextItemWidth(240.0f);
+    changed |= ImGui::SliderFloat("Detail strength", &s.texture_ai_strength,
+                                  0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip(
+          "How much of the model's fine detail is laid over the original.\n"
+          "Tone and colour always stay the game's - only the detail is\n"
+          "borrowed, so a higher value sharpens rather than repaints.");
+    }
+  } else {
+    Muted("The AI upscaler is not installed yet.");
+    Muted("It needs Python, and downloads about 43 MB from GitHub.");
+    if (ImGui::Button("Download AI upscaler (43 MB)")) {
+      tex_started_at_ = ImGui::GetTime();
+      tex_thread_ = fable2::DownloadUpscalerAsync(tex_progress_);
+    }
+  }
+
+  ImGui::BeginDisabled(!have_path || dumped == 0);
+  if (ImGui::Button(s.texture_ai ? "Build pack with AI" : "Build pack")) {
+    tex_started_at_ = ImGui::GetTime();
+    tex_thread_ = fable2::BuildPackAsync(dir, s.texture_scale, s.texture_ai,
+                                         s.texture_ai_strength, tex_progress_);
+  }
+  ImGui::EndDisabled();
+  if (!have_path) {
+    Muted("Set a folder first.");
+  } else if (dumped == 0) {
+    Muted("Nothing dumped yet - turn on \"Dump while playing\" and play a little.");
+  }
+  const std::string summary = tex_progress_.Summary();
+  if (!summary.empty()) {
+    Muted("%s", summary.c_str());
+  }
+}
+
 bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
   bool changed = false;
   const bool live = opts.restart_bound_editable;
@@ -611,45 +788,6 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       if (!live) RestartTag();
     }
 
-    RowStart("Texture folder",
-             "Where dumped and upscaled textures live. The dump goes to a "
-             "\"dump\" subfolder and the pack is read from \"pack\". Both "
-             "switches below do nothing until this is set.");
-    {
-      char buf[512];
-      std::snprintf(buf, sizeof(buf), "%s", s.texture_path.c_str());
-      if (ImGui::InputText("##texpath", buf, sizeof(buf))) {
-        s.texture_path = buf;
-        changed = true;
-      }
-      if (!live) RestartTag();
-    }
-
-    RowStart("Dump textures",
-             "Writes every unique guest texture out for upscaling. The plugin "
-             "converts textures ON THE GPU, so finished pixels never exist on "
-             "the CPU side - what gets written is the raw guest bytes plus the "
-             "texture key, and tools/upscale_textures.py untiles and decodes "
-             "them offline. Menus mostly yield video planes, so play actual "
-             "gameplay to collect real art. Costs one memcpy per texture the "
-             "first time it is seen.");
-    {
-      if (ImGui::Checkbox("##texdump", &s.texture_dump)) changed = true;
-      if (!live) RestartTag();
-    }
-
-    RowStart("Use texture pack",
-             "Loads the upscaled textures from the \"pack\" subfolder instead of "
-             "the game's own. Generate them first with tools/upscale_textures.py "
-             "- the pack is raw RGBA, not PNG, because decoding PNG cost about a "
-             "full frame per texture on the render thread. Fonts, HUD atlases and "
-             "gradient ramps are excluded by the tool, since a model invents "
-             "detail in glyph edges and that is what makes a pack look broken.");
-    {
-      if (ImGui::Checkbox("##texpack", &s.texture_pack)) changed = true;
-      if (!live) RestartTag();
-    }
-
     RowStart("NaN constant repair",
              "A DIAGNOSTIC, and it should stay Off. It substitutes for NaN in "
              "the vertex shader constants before they reach the GPU. That used "
@@ -809,6 +947,8 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
   // from Xenia Canary's patch file for this title, and every address was
   // checked against our own image - the disassembly is in
   // config/hooks/patches.toml.
+  DrawTexturesSection(s, changed);
+
   SectionHeader("Community patches",
                 "From Xenia Canary's patch file for Fable II (Margen67, Guy). "
                 "These change the game's own behaviour, so they are off by "
@@ -965,6 +1105,12 @@ void ApplyLiveSettings(const Fable2Settings& s, rex::ui::Window* window) {
   SetCvar("present_letterbox", s.letterbox ? "true" : "false");
   SetCvar("vsync", s.vsync ? "true" : "false");
   SetCvar("mnk_mode", s.keyboard_control ? "true" : "false");
+  // The pack path, so F9 and the checkbox both take effect without a
+  // restart. Empty string means "use the game's own textures", which is
+  // how switching it OFF is expressed - the plugin reloads either way.
+  SetCvar("texture_pack_path",
+          (s.texture_pack && !s.texture_path.empty()) ? (s.texture_path + "/pack")
+                                                     : std::string());
   SetCvar("mnk_mouse", s.mouse_look ? "true" : "false");
   SetCvar("mnk_sensitivity", std::to_string(s.mouse_sensitivity));
   SetCvar("audio_mute", s.mute ? "true" : "false");

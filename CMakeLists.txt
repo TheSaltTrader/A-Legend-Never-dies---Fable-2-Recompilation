@@ -16,6 +16,9 @@ set(FABLE2_SOURCES
     src/fable2_dlc.cpp
     src/fable2_saveimport.cpp
     src/fable2_autoskip.cpp
+    src/fable2_hwdetect.cpp
+    src/fable2_perf.cpp
+    src/fable2_textool.cpp
     src/fable2_disc.cpp
     src/fable2_menu.cpp
     src/fable2_platform.cpp
