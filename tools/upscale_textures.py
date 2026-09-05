@@ -38,6 +38,8 @@ FMT_4_4_4_4 = 15
 FMT_DXT1 = 18
 FMT_DXT2_3 = 19
 FMT_DXT4_5 = 20
+FMT_DXN = 49
+FMT_DXT5A = 59
 
 try:
     from PIL import Image
@@ -50,7 +52,7 @@ FMT_NAMES = {
     FMT_8: "k_8", FMT_1_5_5_5: "k_1_5_5_5", FMT_5_6_5: "k_5_6_5",
     FMT_8_8_8_8: "k_8_8_8_8", FMT_8_8: "k_8_8", FMT_8_8_8_8_A: "k_8_8_8_8_A",
     FMT_4_4_4_4: "k_4_4_4_4", FMT_DXT1: "k_DXT1", FMT_DXT2_3: "k_DXT2_3",
-    FMT_DXT4_5: "k_DXT4_5",
+    FMT_DXT4_5: "k_DXT4_5", FMT_DXN: "k_DXN", FMT_DXT5A: "k_DXT5A",
 }
 
 # bytes per block, and block size in pixels
@@ -58,6 +60,7 @@ FMT_INFO = {
     FMT_8: (1, 1), FMT_1_5_5_5: (2, 1), FMT_5_6_5: (2, 1), FMT_4_4_4_4: (2, 1),
     FMT_8_8: (2, 1), FMT_8_8_8_8: (4, 1), FMT_8_8_8_8_A: (4, 1),
     FMT_DXT1: (8, 4), FMT_DXT2_3: (16, 4), FMT_DXT4_5: (16, 4),
+    FMT_DXN: (16, 4), FMT_DXT5A: (8, 4),
 }
 
 
@@ -167,6 +170,51 @@ def decode_dxt(data, w, h, fmt):
                 d = (y * w + x) * 4
                 px[d:d + 4] = bytes((c[0], c[1], c[2],
                                      alpha[i] if alpha is not None else c[3]))
+    return bytes(px)
+
+
+def _bc4_block(data, o):
+    """One BC4 block (8 bytes) to 16 bytes, one per texel, row-major."""
+    e0, e1 = data[o], data[o + 1]
+    if e0 > e1:
+        lut = [e0, e1] + [((7 - i) * e0 + i * e1) // 7 for i in range(1, 7)]
+    else:
+        lut = [e0, e1] + [((5 - i) * e0 + i * e1) // 5 for i in range(1, 5)] + [0, 255]
+    bits = int.from_bytes(data[o + 2:o + 8], "little")
+    return bytes(lut[(bits >> (3 * i)) & 7] for i in range(16))
+
+
+def decode_bc45(data, w, h, fmt):
+    """k_DXT5A (one channel) and k_DXN (two) to RGBA.
+
+    DXN holds a normal map's X and Y; Z is not stored, so it is rebuilt as
+    sqrt(1 - x^2 - y^2). Leaving blue at zero would look fine in a thumbnail
+    and be wrong for anything that reads it.
+    """
+    stride = 8 if fmt == FMT_DXT5A else 16
+    bw, bh = (w + 3) // 4, (h + 3) // 4
+    px = bytearray(w * h * 4)
+    for by in range(bh):
+        for bx in range(bw):
+            o = (by * bw + bx) * stride
+            if o + stride > len(data):
+                continue
+            red = _bc4_block(data, o)
+            grn = _bc4_block(data, o + 8) if fmt == FMT_DXN else None
+            for i in range(16):
+                x, y = bx * 4 + (i & 3), by * 4 + (i >> 2)
+                if x >= w or y >= h:
+                    continue
+                d = (y * w + x) * 4
+                r = red[i]
+                if grn is None:
+                    px[d:d + 4] = bytes((r, r, r, 255))
+                else:
+                    g = grn[i]
+                    nx, ny = (r / 127.5) - 1.0, (g / 127.5) - 1.0
+                    nz2 = 1.0 - nx * nx - ny * ny
+                    b = int(((nz2 ** 0.5 if nz2 > 0.0 else 0.0) + 1.0) * 127.5)
+                    px[d:d + 4] = bytes((r, g, min(255, max(0, b)), 255))
     return bytes(px)
 
 
@@ -376,7 +424,7 @@ def main():
         # double-swaps them. Worse, k_8 is single-byte: an 8in16 swap on it
         # exchanges ADJACENT PIXELS and turns a clean mask into noise, which
         # is exactly what a global swap did to 8 of 15 k_8 textures.
-        if fmt in (FMT_DXT1, FMT_DXT2_3, FMT_DXT4_5):
+        if fmt in (FMT_DXT1, FMT_DXT2_3, FMT_DXT4_5, FMT_DXN, FMT_DXT5A):
             data = swap_endian(data, endian)
 
         bpb, block = FMT_INFO[fmt]
@@ -391,6 +439,8 @@ def main():
         try:
             if fmt in (FMT_DXT1, FMT_DXT2_3, FMT_DXT4_5):
                 px = decode_dxt(data, w, h, fmt)
+            elif fmt in (FMT_DXN, FMT_DXT5A):
+                px = decode_bc45(data, w, h, fmt)
             else:
                 px = decode_plain(data, w, h, fmt)
             img = Image.frombytes("RGBA", (w, h), px)

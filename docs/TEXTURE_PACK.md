@@ -100,3 +100,42 @@ trust `decoded=N` as a success criterion; open the pictures.
   block is 8 for DXT1, 16 for DXT4/5, and the tile maths is per block).
 * `fmt49` appears in the dump and has no name in the tool - report it rather
   than guessing.
+
+
+## k_DXN and k_DXT5A (added for Fable II)
+
+NG2 is DXT1/DXT4_5, so the tool never grew the BC4-family formats. Fable II's
+gameplay dump is **319 DXT1, 169 DXN, 75 DXT4_5, 3 DXT5A** - DXN is the second
+most common format in the title and every one was skipped.
+
+Both reuse the BC4 alpha-block scheme already implemented for DXT4_5:
+
+    k_DXT5A (BC4)   8 bytes   one channel
+    k_DXN   (BC5)  16 bytes   two of those, red then green
+
+DXN stores a normal map's X and Y only, so Z is rebuilt as
+`sqrt(1 - x^2 - y^2)`. Leaving blue at zero would look plausible in a thumbnail
+and be wrong for anything that reads it.
+
+    decoded         403 -> 575
+    skipped_format  191 -> 19
+
+**Verified against what the format MEANS, not a generic metric.** A correct
+tangent-space normal map sits near R128 G128 B255. Across all 169 DXN textures
+the means are **R 126, G 126, B 251**, with B >= 200 in 169 of 169 - and opening
+one shows the expected lavender field with embossed belts, buckles and cloth
+folds. A structure-or-noise heuristic could not have told that apart from
+garbage; the format's own signature can.
+
+## What is NOT done, and it is the same as NG2's list
+
+Replacement is still not implemented in the plugin - `texture_pack_path` is
+defined and never read, in the SHARED SDK, so neither port has it. NG2's design
+for it stands: a pack texture needs its own resource at the new size, an
+stb_image decode, a direct upload bypassing the load shader, and an SRV whose
+format and swizzle match the replacement rather than the guest format.
+
+Also inherited from NG2's notes, and it applies here: **the plugin and the
+runtime must be built from the SAME source tree.** A source-built
+rexgpu-xenos.dll against a stock rexruntime.dll exits during startup with no
+error. Both are staged together here, which is why that has not bitten.
