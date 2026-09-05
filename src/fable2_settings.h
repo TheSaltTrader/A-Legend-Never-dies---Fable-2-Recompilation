@@ -145,6 +145,11 @@ struct Fable2Settings {
   // Imported in OnPostSetup, which is after the ContentManager and
   // profile exist and before the guest looks for saves.
   std::string save_import_path;
+  // Two levers the plugin already had. accurate_depth buys depth
+  // precision for shader work; fuzzy_alpha is the plugin's own fix for
+  // alpha-test flicker.
+  bool accurate_depth = false;
+  bool fuzzy_alpha = false;
   bool texture_dump = false;
   bool texture_pack = false;
   std::string texture_path;
@@ -247,6 +252,8 @@ struct Fable2Settings {
         << "fsr_sharpness=" << fsr_sharpness << "\n"
         << "nan_constant_repair=" << nan_constant_repair << "\n"
         << "save_import_path=" << save_import_path << "\n"
+        << "accurate_depth=" << (accurate_depth ? 1 : 0) << "\n"
+        << "fuzzy_alpha=" << (fuzzy_alpha ? 1 : 0) << "\n"
         << "texture_dump=" << (texture_dump ? 1 : 0) << "\n"
         << "texture_pack=" << (texture_pack ? 1 : 0) << "\n"
         << "texture_path=" << texture_path << "\n"
@@ -327,6 +334,8 @@ struct Fable2Settings {
     else if (k == "fsr_sharpness") fsr_sharpness = std::atof(v.c_str());
     else if (k == "nan_constant_repair") nan_constant_repair = std::atoi(v.c_str());
     else if (k == "save_import_path") save_import_path = v;
+    else if (k == "accurate_depth") accurate_depth = Truthy(v);
+    else if (k == "fuzzy_alpha") fuzzy_alpha = Truthy(v);
     else if (k == "texture_dump") texture_dump = Truthy(v);
     else if (k == "texture_pack") texture_pack = Truthy(v);
     else if (k == "texture_path") texture_path = v;

@@ -559,18 +559,40 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       if (!live) RestartTag();
     }
 
+    RowStart("Accurate depth",
+             "Converts depth to the Xbox 360's float24 format exactly, in the "
+             "pixel shader, instead of approximating it. Costs shader work and "
+             "buys depth precision - the thing it fixes is z-fighting and "
+             "shadow acne on distant geometry.");
+    {
+      if (ImGui::Checkbox("##accdepth", &s.accurate_depth)) changed = true;
+      if (!live) RestartTag();
+    }
+
+    RowStart("Fuzzy alpha test",
+             "The plugin's own workaround for alpha-test flicker, where a pixel "
+             "right on the test threshold flips between frames. Approximates the "
+             "comparison with a small epsilon.");
+    {
+      if (ImGui::Checkbox("##fuzzyalpha", &s.fuzzy_alpha)) changed = true;
+      if (!live) RestartTag();
+    }
+
     RowStart("Texture cache",
              "How much host memory the GPU plugin may hold textures in. "
              "Leave at Default to use the plugin's own limits - raising it "
              "helps a large texture pack stay resident instead of being "
              "evicted and re-uploaded.");
     {
-      static const int kMb[] = {0, 512, 1024, 2048, 4096};
-      const char* kNames[] = {"Default", "512 MB", "1 GB", "2 GB", "4 GB"};
+      static const int kMb[] = {0, 512, 1024, 2048, 4096, 8192};
+      // 8 GB is the plugin's ceiling (soft 4096 / hard 8192) and it is what a
+      // 4x pack needs: replacements are uncompressed, so a 4x texture costs
+      // about 128x a DXT1 original.
+      const char* kNames[] = {"Default", "512 MB", "1 GB", "2 GB", "4 GB", "8 GB"};
       int idx = 0;
-      for (int i = 0; i < 5; ++i)
+      for (int i = 0; i < 6; ++i)
         if (kMb[i] == s.texture_cache_mb) idx = i;
-      if (ImGui::Combo("##texcache", &idx, kNames, 5)) {
+      if (ImGui::Combo("##texcache", &idx, kNames, 6)) {
         s.texture_cache_mb = kMb[idx];
         changed = true;
       }
@@ -601,6 +623,18 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
              "first time it is seen.");
     {
       if (ImGui::Checkbox("##texdump", &s.texture_dump)) changed = true;
+      if (!live) RestartTag();
+    }
+
+    RowStart("Use texture pack",
+             "Loads the upscaled textures from the \"pack\" subfolder instead of "
+             "the game's own. Generate them first with tools/upscale_textures.py "
+             "- the pack is raw RGBA, not PNG, because decoding PNG cost about a "
+             "full frame per texture on the render thread. Fonts, HUD atlases and "
+             "gradient ramps are excluded by the tool, since a model invents "
+             "detail in glyph edges and that is what makes a pack look broken.");
+    {
+      if (ImGui::Checkbox("##texpack", &s.texture_pack)) changed = true;
       if (!live) RestartTag();
     }
 

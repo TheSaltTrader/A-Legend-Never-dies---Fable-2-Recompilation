@@ -21,6 +21,7 @@ tool has no dependencies beyond Pillow, which the upscaler needs anyway.
 
 import argparse
 import os
+import re
 import struct
 import sys
 import time
@@ -39,7 +40,15 @@ FMT_DXT1 = 18
 FMT_DXT2_3 = 19
 FMT_DXT4_5 = 20
 FMT_DXN = 49
+FMT_16_16_FLOAT = 6
+FMT_16_16_16_16_FLOAT = 7
 FMT_DXT5A = 59
+
+# TextureKey.endianness
+ENDIAN_NONE = 0
+ENDIAN_8IN16 = 1
+ENDIAN_8IN32 = 2
+ENDIAN_16IN32 = 3
 
 try:
     from PIL import Image
@@ -47,6 +56,8 @@ try:
 except ImportError:      # reported properly in main()
     Image = None
     Image_LANCZOS = None
+
+DECODED_RE = re.compile(r"^([0-9A-Fa-f]{16})_(\d+)x(\d+)_(.+)\.png$")
 
 FMT_NAMES = {
     FMT_8: "k_8", FMT_1_5_5_5: "k_1_5_5_5", FMT_5_6_5: "k_5_6_5",
@@ -64,6 +75,35 @@ FMT_INFO = {
 }
 
 
+def swap_endian(data, mode):
+    """Undo the guest's endianness, from the TextureKey's own field.
+
+    The 360 stores texture words byte-swapped and the GPU unswaps them on load;
+    the plugin dumps the RAW bytes, so this has to do the same. Skipping it does
+    not raise - it decodes to something that looks like coloured static, which
+    is why it survived a "0 failed" run. Measured over a sample of the game's
+    own DXT textures, the mean difference between neighbouring pixels is 11.6
+    with this applied and 31.8 without: real art is spatially smooth, wrongly
+    ordered data is close to white noise.
+
+    Block formats are safe to swap before untiling: the swap granularity (2 or
+    4 bytes) divides every block size, and blocks sit at aligned offsets.
+    """
+    if mode == ENDIAN_NONE or not data:
+        return data
+    b = bytearray(data)
+    if mode == ENDIAN_8IN16:
+        n = len(b) & ~1
+        b[0:n:2], b[1:n:2] = bytes(b[1:n:2]), bytes(b[0:n:2])
+    elif mode == ENDIAN_8IN32:
+        for i in range(0, len(b) - 3, 4):
+            b[i:i + 4] = b[i:i + 4][::-1]
+    elif mode == ENDIAN_16IN32:
+        for i in range(0, len(b) - 3, 4):
+            b[i:i + 4] = b[i + 2:i + 4] + b[i:i + 2]
+    return bytes(b)
+
+
 def align(v, a):
     return (v + a - 1) // a * a
 
@@ -76,33 +116,6 @@ def tiled_offset_2d(x, y, pitch, bpb_log2):
     offset = macro + ((micro & ~0xF) << 1) + (micro & 0xF) + ((y & 1) << 4)
     return (((offset & ~0x1FF) << 3) + ((y & 16) << 7) + ((offset & 0x1C0) << 2) +
             (((((y & 8) >> 2) + (x >> 3)) & 3) << 6) + (offset & 0x3F))
-
-
-# Xenos endianness (XE_GPU_ENDIAN). The dump records it per texture and it was
-# being PARSED AND THEN IGNORED, which is why Fable II's DXT1 art decoded as
-# psychedelic noise: a DXT1 block opens with two 16-bit colour endpoints, so
-# without the 8in16 swap every colour is byte-reversed. NG2's textures are
-# k_8 / k_8_8_8_8 with no swap needed, so the gap never showed there.
-ENDIAN_NONE, ENDIAN_8IN16, ENDIAN_8IN32, ENDIAN_16IN32 = 0, 1, 2, 3
-
-
-def swap_endian(data, endian):
-    """Undo the guest's byte order. Returns data unchanged for kNone."""
-    if endian == ENDIAN_NONE or not data:
-        return data
-    b = bytearray(data)
-    if endian == ENDIAN_8IN16:
-        b[0:len(b) - len(b) % 2:2], b[1:len(b) - len(b) % 2:2] = (
-            bytes(b[1:len(b) - len(b) % 2:2]), bytes(b[0:len(b) - len(b) % 2:2]))
-    elif endian == ENDIAN_8IN32:
-        n = len(b) - len(b) % 4
-        for i in range(0, n, 4):
-            b[i:i + 4] = b[i:i + 4][::-1]
-    elif endian == ENDIAN_16IN32:
-        n = len(b) - len(b) % 4
-        for i in range(0, n, 4):
-            b[i:i + 4] = b[i + 2:i + 4] + b[i:i + 2]
-    return bytes(b)
 
 
 def untile(data, w, h, bpb, block, pitch_blocks):
@@ -145,14 +158,17 @@ def decode_dxt(data, w, h, fmt):
                 a0, a1 = data[o], data[o + 1]
                 bits = int.from_bytes(data[o + 2:o + 8], "little")
                 tbl = [a0, a1]
-                # The interpolated alphas weight a0 and a1 with coefficients
-                # that must SUM TO THE DIVISOR. Written as (7-i) and (1+i) they
-                # sum to 8, so a0 = a1 = 255 produced 291 and bytes() rejected
-                # it - which is why 61 DXT4_5 textures failed to decode at all.
+                # The interpolation weights must SUM TO the divisor: 6-i and
+                # 1+i sum to 7, 4-i and 1+i sum to 5. Written as 7-i and 5-i
+                # they sum to 8 and 6, which overshoots by a seventh - enough
+                # to push a0=255,a1=188 to 281 and raise "bytes must be in
+                # range(0, 256)". That exception is the only reason this was
+                # found: where the overshoot stayed under 255 it silently
+                # decoded every DXT4/5 texture with slightly wrong alpha.
                 if a0 > a1:
-                    tbl += [((7 - i) * a0 + i * a1) // 7 for i in range(1, 7)]
+                    tbl += [((6 - i) * a0 + (1 + i) * a1) // 7 for i in range(6)]
                 else:
-                    tbl += [((5 - i) * a0 + i * a1) // 5 for i in range(1, 5)] + [0, 255]
+                    tbl += [((4 - i) * a0 + (1 + i) * a1) // 5 for i in range(4)] + [0, 255]
                 alpha = [tbl[(bits >> (3 * i)) & 7] for i in range(16)]
                 co = o + 8
             c0, c1 = struct.unpack_from("<HH", data, co)
@@ -191,9 +207,12 @@ def _bc4_block(data, o):
 def decode_bc45(data, w, h, fmt):
     """k_DXT5A (one channel) and k_DXN (two) to RGBA.
 
-    DXN holds a normal map's X and Y; Z is not stored, so it is rebuilt as
-    sqrt(1 - x^2 - y^2). Leaving blue at zero would look fine in a thumbnail
-    and be wrong for anything that reads it.
+    DXN is BC5: two BC4 blocks, red then green. It stores a normal map's X and
+    Y only, so Z is rebuilt as sqrt(1 - x^2 - y^2). Leaving blue at zero would
+    look plausible in a thumbnail and be wrong for anything that reads it.
+
+    Verified on Fable II's 169 DXN textures: channel means R 126, G 126, B 251,
+    which is where a tangent-space normal map belongs.
     """
     stride = 8 if fmt == FMT_DXT5A else 16
     bw, bh = (w + 3) // 4, (h + 3) // 4
@@ -274,6 +293,34 @@ def decode_plain(data, w, h, fmt):
 DXT_FORMATS = (FMT_DXT1, FMT_DXT2_3, FMT_DXT4_5)
 
 
+TEX_MAGIC = b"NG2T"
+TEX_VERSION = 1
+
+
+def write_tex(path, img):
+    """Write a pack texture as a 16-byte header plus raw RGBA.
+
+    NOT a PNG, and the reason is measured. Decoding PNG in the plugin cost
+    ~16 ms per texture ON THE RENDER THREAD - a full frame's budget each, 12.2
+    seconds across 800 textures, which showed up as an 8-second stall while a
+    scene streamed in. The cost tracked pixel count, not file size, so it was
+    the decode rather than the I/O.
+
+    Raw pixels let the plugin read the file straight into the mapped upload
+    buffer with no decode and no intermediate allocation. It costs disk - about
+    2.3x a PNG - which is the trade being made deliberately.
+
+    Header: magic "NG2T", u32 version, u32 width, u32 height (little-endian),
+    then width*height*4 bytes of RGBA.
+    """
+    img = img.convert("RGBA")
+    w, h = img.size
+    with open(path, "wb") as f:
+        f.write(TEX_MAGIC)
+        f.write(struct.pack("<III", TEX_VERSION, w, h))
+        f.write(img.tobytes())
+
+
 def pack_reason(w, h, fmt):
     """Why a texture is NOT a pack candidate, or None if it is.
 
@@ -296,6 +343,19 @@ def pack_reason(w, h, fmt):
         return "unsupported format"
     if fmt in (FMT_8, FMT_8_8):          # masks, ramps, font coverage, video
         return "single-channel"
+    if fmt in (FMT_DXN, FMT_DXT5A):
+        # NOT COLOUR. DXN is a tangent-space normal map storing X and Y, with Z
+        # rebuilt on read; DXT5A is a single channel. Replacing either with an
+        # RGBA8 image - whose blue channel this tool SYNTHESISED - changes what
+        # the lighting reads, not what the eye reads. Measured on Fable II:
+        # packing 168 of 169 DXN maps gave skin-toned clothing and rainbow hair,
+        # which are shading artefacts, and they appeared at 1x scale where the
+        # pack pixels are identical to the original - so it was the replacement,
+        # not the upscaling. Upscaling a normal map also needs renormalising,
+        # which a generic image filter does not do.
+        return "not colour (normal/single-channel map)"
+    if fmt in (FMT_16_16_FLOAT, FMT_16_16_16_16_FLOAT):
+        return "float format (HDR/data, not art)"
     if w <= 64 or h <= 64:
         return "too small"
     if max(w, h) / float(min(w, h)) >= 8.0:
@@ -371,6 +431,11 @@ def main():
     ap.add_argument("--upscale", action="store_true", help="run the AI upscaler")
     ap.add_argument("--scale", type=int, default=4)
     ap.add_argument("--model", default="RealESRGAN_x4plus")
+    ap.add_argument("--ai", action="store_true",
+                    help="use Real-ESRGAN (run tools/get_upscaler.py first)")
+    ap.add_argument("--ai-strength", type=float, default=0.75,
+                    help="how much model detail to lay over the original, 0..1")
+    ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--include-ui", action="store_true",
                     help="upscale UI/font textures too (usually a bad idea)")
     args = ap.parse_args()
@@ -408,6 +473,8 @@ def main():
     total = len(uniq)
     done = skipped = failed = ui = 0
     skips = {}
+    pending = []   # (id, decoded image) awaiting upscale
+    recovered = 0
     started = time.time()
     for tid, w, h, fmt, tiled, pitch, endian, dim, size in uniq:
         name = "%s_%dx%d_%s" % (tid, w, h, FMT_NAMES.get(fmt, "fmt%d" % fmt))
@@ -422,12 +489,9 @@ def main():
             failed += 1
             continue
         data = open(raw, "rb").read()
-        # Undo the guest byte order - but ONLY for block-compressed formats.
-        # decode_plain already reads multi-byte texels big-endian itself
-        # (struct ">H", and 8_8_8_8 as ARGB), so swapping here as well
-        # double-swaps them. Worse, k_8 is single-byte: an 8in16 swap on it
-        # exchanges ADJACENT PIXELS and turns a clean mask into noise, which
-        # is exactly what a global swap did to 8 of 15 k_8 textures.
+        # ONLY block formats. decode_plain already reads multi-byte texels
+        # big-endian itself, so swapping here too double-swaps them; and k_8
+        # is single-byte, where an 8in16 swap exchanges ADJACENT PIXELS.
         if fmt in (FMT_DXT1, FMT_DXT2_3, FMT_DXT4_5, FMT_DXN, FMT_DXT5A):
             data = swap_endian(data, endian)
 
@@ -460,9 +524,56 @@ def main():
             skips[reason] = skips.get(reason, 0) + 1
             ui += 1
             continue
-        if up:
-            img = up(img)
-        img.save(os.path.join(pack, "%s.png" % tid))
+        pending.append((tid, img))
+
+    # Anything decoded on a PREVIOUS run whose raw .bin is gone.
+    #
+    # The dump folder holds both the guest bytes and the decoded PNGs, and the
+    # two can get out of step - clearing the .bin files (or copying a dump
+    # between machines) leaves the decoded art perfectly usable while the index
+    # describes almost nothing. Recovering from the PNGs means a pack can be
+    # rebuilt at a different scale or strength without replaying the game.
+    have = {tid for tid, _ in pending}
+    by_name = {v: k for k, v in FMT_NAMES.items()}
+    for fn in sorted(os.listdir(dump)):
+        m = DECODED_RE.match(fn)
+        if not m:
+            continue
+        tid, w2, h2 = m.group(1), int(m.group(2)), int(m.group(3))
+        fmt2 = by_name.get(m.group(4))
+        if tid in have or fmt2 is None:
+            continue
+        if pack_reason(w2, h2, fmt2) and not args.include_ui:
+            continue
+        pending.append((tid, Image.open(os.path.join(dump, fn)).convert("RGBA")))
+        recovered += 1
+    if recovered:
+        print("recovered %d textures from previously decoded PNGs" % recovered)
+
+    # Upscale and write. Batched for the AI path, which runs a GPU process.
+    total_pack = len(pending)
+    if args.ai:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import ai_upscale
+        exe = ai_upscale.find_upscaler(args.dir)
+        if not exe:
+            print("FAILED the AI upscaler is not installed - use the Download "
+                  "button, or run tools/get_upscaler.py")
+            return 1
+        print("AI upscaler: %s (detail strength %.2f)" % (exe, args.ai_strength))
+        written = 0
+        for base in range(0, total_pack, ai_upscale.CHUNK):
+            part = pending[base:base + ai_upscale.CHUNK]
+            got = ai_upscale.upscale_many(exe, part, args.scale, gpu=args.gpu)
+            for tid, src in part:
+                write_tex(os.path.join(pack, "%s.tex" % tid),
+                          ai_upscale.blend(got[tid], src, args.ai_strength))
+                written += 1
+                print("PROGRESS %d %d %s" % (written, total_pack, tid), flush=True)
+    else:
+        for i, (tid, img) in enumerate(pending, 1):
+            print("PROGRESS %d %d %s" % (i, total_pack, tid), flush=True)
+            write_tex(os.path.join(pack, "%s.tex" % tid), up(img) if up else img)
 
     took = time.time() - started
     for why, n in sorted(skips.items(), key=lambda kv: -kv[1]):

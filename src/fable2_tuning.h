@@ -121,6 +121,16 @@ struct Fable2Tuning {
     out.push_back({"diag_vs_const_nan_fix", std::to_string(s.nan_constant_repair),
                    "repair NaN in vertex shader constants: 0 off, 1 zero, 2 identity row"});
 
+    // Exact float24 depth. Both halves or neither - converting in the pixel
+    // shader without the matching rounding is a half-applied change.
+    out.push_back({"depth_float24_convert_in_pixel_shader",
+                   s.accurate_depth ? "true" : "false",
+                   "exact float24 depth: costs shader work, buys depth precision"});
+    out.push_back({"depth_float24_round", s.accurate_depth ? "true" : "false",
+                   "the other half of exact float24 depth"});
+    out.push_back({"use_fuzzy_alpha_epsilon", s.fuzzy_alpha ? "true" : "false",
+                   "approximate alpha test - the plugin's fix for alpha flicker"});
+
     // Texture cache limits. 0 means leave the plugin's own defaults alone,
     // rather than restating them as though they were a choice.
     if (s.texture_cache_mb > 0) {
@@ -141,10 +151,13 @@ struct Fable2Tuning {
       out.push_back({"texture_dump_path", s.texture_path + "/dump",
                      "where dumped textures go"});
     }
-    // texture_pack_path is deliberately NOT sent. The plugin DEFINES that cvar
-    // and never reads it - replacement is not implemented - so sending it would
-    // put a value in the tuning file that looks load-bearing and is not. The
-    // setting itself is kept for when the plugin side lands.
+    // Replacement landed in the shared SDK, so this is load-bearing now: the
+    // plugin sizes the resource from the .tex header and uploads it straight
+    // in, skipping the format-conversion compute shader.
+    if (s.texture_pack && !s.texture_path.empty()) {
+      out.push_back({"texture_pack_path", s.texture_path + "/pack",
+                     "upscaled textures to load instead of the game's own"});
+    }
 
     out.push_back({"present_dither", s.present_dither ? "true" : "false",
                    "dither the 10bpc output down to 8bpc"});
