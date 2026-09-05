@@ -604,15 +604,6 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       if (!live) RestartTag();
     }
 
-    RowStart("Use texture pack",
-             "Loads upscaled textures from the \"pack\" subfolder instead of "
-             "the game's own. Fonts, HUD atlases and gradient ramps look WORSE "
-             "upscaled, so the tooling excludes them by default.");
-    {
-      if (ImGui::Checkbox("##texpack", &s.texture_pack)) changed = true;
-      if (!live) RestartTag();
-    }
-
     RowStart("NaN constant repair",
              "A DIAGNOSTIC, and it should stay Off. It substitutes for NaN in "
              "the vertex shader constants before they reach the GPU. That used "

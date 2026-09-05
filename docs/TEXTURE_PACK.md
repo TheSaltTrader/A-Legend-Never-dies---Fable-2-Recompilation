@@ -47,7 +47,31 @@ swap, which is why the gap never showed there.
 A 512x512 skybox that decoded as coloured static now decodes as a pink sunset
 over mountain silhouettes.
 
-Two of 252 still show a dead right edge and are not explained yet.
+## The "dead right edge" is not a bug
+
+Two DXT1 textures decode with a black right quarter. It reproduces from a
+gameplay dump, so it is not partial residency, and it is NOT a decode fault:
+
+* every block's tiled source offset is in range (0 of 16384 out of range), and
+  the banded texture and a clean one of the same size compute identical offsets
+* no block in the region is zero bytes
+* alpha is 255 across the whole image, so it is not 1-bit DXT1 transparency
+  being flattened to black by an RGB conversion
+
+Non-zero blocks whose colour endpoints are black decode to black. The region
+genuinely encodes black - atlas padding or an unused quarter. 2 of 290.
+
+## Replacement is DEFINED but NOT IMPLEMENTED
+
+`texture_pack_path` is a cvar the plugin defines and never reads - zero uses
+outside its own definition. So a "use texture pack" switch would do nothing.
+The menu row was removed rather than shipped greyed out, and the tuning file no
+longer sends the cvar, because a value in there that nothing reads looks
+load-bearing and is not. The setting is kept for when the plugin side lands.
+
+Implementing it means intercepting the texture upload, loading pack/<id>.png,
+and converting to what the pipeline expects - a real GPU-side feature, not a
+wiring job.
 
 ## How the wrongness was originally hidden
 

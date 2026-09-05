@@ -141,10 +141,10 @@ struct Fable2Tuning {
       out.push_back({"texture_dump_path", s.texture_path + "/dump",
                      "where dumped textures go"});
     }
-    if (s.texture_pack && !s.texture_path.empty()) {
-      out.push_back({"texture_pack_path", s.texture_path + "/pack",
-                     "upscaled textures to load instead of the game's own"});
-    }
+    // texture_pack_path is deliberately NOT sent. The plugin DEFINES that cvar
+    // and never reads it - replacement is not implemented - so sending it would
+    // put a value in the tuning file that looks load-bearing and is not. The
+    // setting itself is kept for when the plugin side lands.
 
     out.push_back({"present_dither", s.present_dither ? "true" : "false",
                    "dither the 10bpc output down to 8bpc"});
