@@ -14,6 +14,7 @@ include(generated/rexglue.cmake)
 set(FABLE2_SOURCES
     src/main.cpp
     src/fable2_dlc.cpp
+    src/fable2_saveimport.cpp
     src/fable2_disc.cpp
     src/fable2_menu.cpp
     src/fable2_platform.cpp

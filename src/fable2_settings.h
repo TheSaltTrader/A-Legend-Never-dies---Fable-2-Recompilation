@@ -141,6 +141,10 @@ struct Fable2Settings {
   //
   // texture_cache_mb of 0 means "leave the plugin's own limits alone", so the
   // setting is only sent when it has actually been chosen.
+  // Folder holding Xbox 360 save packages to import at startup.
+  // Imported in OnPostSetup, which is after the ContentManager and
+  // profile exist and before the guest looks for saves.
+  std::string save_import_path;
   bool texture_dump = false;
   bool texture_pack = false;
   std::string texture_path;
@@ -242,6 +246,7 @@ struct Fable2Settings {
         << "cas_sharpness=" << cas_sharpness << "\n"
         << "fsr_sharpness=" << fsr_sharpness << "\n"
         << "nan_constant_repair=" << nan_constant_repair << "\n"
+        << "save_import_path=" << save_import_path << "\n"
         << "texture_dump=" << (texture_dump ? 1 : 0) << "\n"
         << "texture_pack=" << (texture_pack ? 1 : 0) << "\n"
         << "texture_path=" << texture_path << "\n"
@@ -321,6 +326,7 @@ struct Fable2Settings {
     else if (k == "cas_sharpness") cas_sharpness = std::atof(v.c_str());
     else if (k == "fsr_sharpness") fsr_sharpness = std::atof(v.c_str());
     else if (k == "nan_constant_repair") nan_constant_repair = std::atoi(v.c_str());
+    else if (k == "save_import_path") save_import_path = v;
     else if (k == "texture_dump") texture_dump = Truthy(v);
     else if (k == "texture_pack") texture_pack = Truthy(v);
     else if (k == "texture_path") texture_path = v;

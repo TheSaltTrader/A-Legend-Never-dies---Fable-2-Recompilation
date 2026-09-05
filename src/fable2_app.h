@@ -29,6 +29,7 @@
 #include "fable2_disc.h"
 #include "fable2_fptrap.h"
 #include "fable2_dlc.h"
+#include "fable2_saveimport.h"
 #include "fable2_menu.h"
 #include "fable2_platform.h"
 #include "fable2_settings.h"
@@ -228,6 +229,43 @@ class Fable2App : public rex::ReXApp {
     REXLOG_INFO("Cvar dump: {} cvars -> {}", names.size(), path.string());
   }
 
+  // Import whatever the setup screen queued. One bad file does not stop the
+  // rest: a folder of saves is exactly where a stray or corrupt one turns up.
+  void ImportQueuedSaves() {
+    auto packages = fable2::TakeQueuedSaveImports();
+    if (!packages.empty() || !settings_.save_import_path.empty()) {
+      REXLOG_INFO("Save: queue {} entries, folder '{}'", packages.size(),
+                  settings_.save_import_path);
+    }
+    // A queue is only primed by the menu's Scan button. A path that was SAVED
+    // has already been chosen deliberately, so it acts on its own - otherwise
+    // the setting would appear to do nothing until the button is pressed again
+    // every launch. Importing the same save twice overwrites in place, so this
+    // is idempotent rather than accumulating.
+    if (packages.empty() && !settings_.save_import_path.empty()) {
+      packages = fable2::FindSavePackages(settings_.save_import_path);
+      if (!packages.empty()) {
+        REXLOG_INFO("Save: {} package(s) found under '{}'", packages.size(),
+                    settings_.save_import_path);
+      }
+    }
+    if (packages.empty()) {
+      return;
+    }
+    size_t done = 0;
+    for (const auto& package : packages) {
+      std::string message;
+      if (fable2::ImportSave(package, message)) {
+        ++done;
+        REXLOG_INFO("Save: imported {} - {}", package.filename().string(), message);
+      } else {
+        REXLOG_WARN("Save: could not import {} - {}", package.filename().string(),
+                    message);
+      }
+    }
+    REXLOG_INFO("Save: {} of {} imported", done, packages.size());
+  }
+
   void OnPostSetup() override {
     if (const char* dump = std::getenv("FABLE2_DUMP_CVARS"); dump && *dump)
       DumpCvars(dump);
@@ -245,6 +283,12 @@ class Fable2App : public rex::ReXApp {
                 rex::cvar::GetFlagByName("render_target_path_d3d12"),
                 rex::cvar::GetFlagByName("readback_resolve"),
                 rex::cvar::GetFlagByName("gpu_allow_invalid_fetch_constants"));
+
+    // Saves queued on the setup screen. They cannot be imported there: that
+    // screen runs before the runtime is built, so there is no ContentManager
+    // and no signed-in profile to import into. Here both exist and the guest
+    // has not started looking for saves yet.
+    ImportQueuedSaves();
 
     // The window exists by now, so the comfort settings go straight on it.
     fable2::ApplyLiveSettings(settings_, window());

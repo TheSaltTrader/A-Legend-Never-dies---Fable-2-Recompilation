@@ -1,5 +1,7 @@
 #include "fable2_menu.h"
 
+#include "fable2_saveimport.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdarg>
@@ -526,6 +528,37 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(!live);
+    RowStart("Import Xbox 360 saves",
+             "Point this at a folder of Xbox 360 Fable II save packages (or at "
+             "a single one) and they are imported into the profile on the next "
+             "launch, so Continue and Load Game can see them. Packages that are "
+             "not Fable II saves are skipped silently - a save folder usually "
+             "holds other things too.");
+    {
+      char buf[512];
+      std::snprintf(buf, sizeof(buf), "%s", s.save_import_path.c_str());
+      if (ImGui::InputText("##savepath", buf, sizeof(buf))) {
+        s.save_import_path = buf;
+        changed = true;
+      }
+      ImGui::SameLine();
+      // Local to the row: it is a transient result line, not state the
+      // settings own, and it must survive across frames to stay readable.
+      static std::string save_scan_message_;
+      if (ImGui::Button("Scan##savescan")) {
+        const auto found = fable2::FindSavePackages(s.save_import_path);
+        fable2::QueueSaveImports(found);
+        save_scan_message_ = found.empty()
+                                 ? std::string("No Fable II saves found there.")
+                                 : (std::to_string(found.size()) +
+                                    " save(s) queued - they import on next launch.");
+      }
+      if (!save_scan_message_.empty()) {
+        ImGui::TextWrapped("%s", save_scan_message_.c_str());
+      }
+      if (!live) RestartTag();
+    }
+
     RowStart("Texture cache",
              "How much host memory the GPU plugin may hold textures in. "
              "Leave at Default to use the plugin's own limits - raising it "
