@@ -120,14 +120,18 @@ struct Fable2Settings {
   // Repair NaN in the vertex shader float constants before they reach the GPU.
   // 0 off, 1 substitute zero, 2 substitute an identity matrix row.
   //
-  // Fable II's guest math puts NaN into these constants (0 x Inf, from a
-  // reciprocal of a zero-length vector), and a NaN transform makes the whole
-  // 3D scene render as flat blue while the UI keeps drawing on top. 1 renders
-  // the world correctly; 2 avoids the blue slightly better but mangles
-  // geometry, because it guesses that matrices are 4-register aligned.
-  // Neither restores CHARACTERS - a destroyed skinning matrix cannot be
-  // reconstructed by substitution - so this is a workaround, not the fix.
-  int nan_constant_repair = 1;
+  // DEFAULTS TO OFF, because the bug it worked around is fixed. The NaN came
+  // from the codegen localising VMX128 registers v64-v127, so functions handed
+  // a value in one read zero; regenerating with that fixed took NaN in these
+  // constants from 6.28% to 0.79% and the flat-blue frames from 3-in-16 to
+  // none.
+  //
+  // Leaving the repair ON after that fix is actively HARMFUL: with the real
+  // NaN gone, substitution mostly overwrites values that were fine, and the
+  // scene goes black. It stays here as a diagnostic - 1 substitutes zero,
+  // 2 an identity matrix row - and because it is the measurement that proved
+  // the NaN was causal in the first place.
+  int nan_constant_repair = 0;
   bool present_dither = false;
   bool letterbox = true;
 

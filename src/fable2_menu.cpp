@@ -526,21 +526,19 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(!live);
-    RowStart("Fix blue 3D scene",
-             "Repairs NaN in the vertex shader constants before they reach the "
-             "GPU. Fable II's guest code divides by a zero-length vector, and "
-             "the resulting NaN transform makes the whole 3D scene draw as flat "
-             "blue while the UI keeps drawing on top of it. \"Zero\" renders the "
-             "world correctly and is the right choice. \"Identity row\" holds the "
-             "blue off slightly longer but distorts geometry, because it has to "
-             "guess how matrices are laid out. Neither brings CHARACTERS back - "
-             "a destroyed skinning matrix cannot be rebuilt by substitution - so "
-             "this is a workaround for a bug that is still open, and \"Off\" is "
-             "there to see the bug as it really is.");
+    RowStart("NaN constant repair",
+             "A DIAGNOSTIC, and it should stay Off. It substitutes for NaN in "
+             "the vertex shader constants before they reach the GPU. That used "
+             "to be needed: the 3D scene drew as flat blue while the UI kept "
+             "drawing on top. The actual cause was in the recompiler - VMX128 "
+             "registers v64-v127 became zero-initialised locals, so a function "
+             "handed a value in one read zero - and with that fixed the blue is "
+             "gone. Turning this on NOW mostly overwrites good values and takes "
+             "the scene to black. It is kept because it is the measurement that "
+             "proved the NaN was the cause.");
     {
       int repair_index = std::clamp(s.nan_constant_repair, 0, 2);
-      const char* repair_names[] = {"Off (shows the bug)", "Zero (recommended)",
-                                    "Identity row"};
+      const char* repair_names[] = {"Off (recommended)", "Zero", "Identity row"};
       if (ImGui::Combo("##nanrepair", &repair_index, repair_names, 3)) {
         s.nan_constant_repair = repair_index;
         changed = true;
