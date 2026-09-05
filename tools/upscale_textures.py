@@ -145,10 +145,14 @@ def decode_dxt(data, w, h, fmt):
                 a0, a1 = data[o], data[o + 1]
                 bits = int.from_bytes(data[o + 2:o + 8], "little")
                 tbl = [a0, a1]
+                # The interpolated alphas weight a0 and a1 with coefficients
+                # that must SUM TO THE DIVISOR. Written as (7-i) and (1+i) they
+                # sum to 8, so a0 = a1 = 255 produced 291 and bytes() rejected
+                # it - which is why 61 DXT4_5 textures failed to decode at all.
                 if a0 > a1:
-                    tbl += [((7 - i) * a0 + (1 + i) * a1) // 7 for i in range(6)]
+                    tbl += [((7 - i) * a0 + i * a1) // 7 for i in range(1, 7)]
                 else:
-                    tbl += [((5 - i) * a0 + (1 + i) * a1) // 5 for i in range(4)] + [0, 255]
+                    tbl += [((5 - i) * a0 + i * a1) // 5 for i in range(1, 5)] + [0, 255]
                 alpha = [tbl[(bits >> (3 * i)) & 7] for i in range(16)]
                 co = o + 8
             c0, c1 = struct.unpack_from("<HH", data, co)
