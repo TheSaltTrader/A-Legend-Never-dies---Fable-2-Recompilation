@@ -176,7 +176,9 @@ struct Fable2Settings {
   // Real-ESRGAN, off until it is downloaded. Its DETAIL is laid over a
   // plain resize rather than replacing the image, so tone and colour
   // stay the game's.
-  bool texture_ai = false;
+  // ON by default: the upscaler ships with the port, so there is nothing to
+  // opt into. Only the pack build uses it, and that is an explicit button.
+  bool texture_ai = true;
   float texture_ai_strength = 0.75f;
   std::string texture_path;
   int texture_cache_mb = 0;

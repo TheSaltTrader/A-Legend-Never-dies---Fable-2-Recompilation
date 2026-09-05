@@ -1,0 +1,2 @@
+v0.2.5.0
+realesrgan-ncnn-vulkan-20220424-windows.zip

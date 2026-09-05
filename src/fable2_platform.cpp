@@ -1,5 +1,9 @@
 #include "fable2_platform.h"
 
+#include <algorithm>
+
+#include <vector>
+
 #include <windows.h>
 // windows.h first, then the shell headers.
 #include <shlobj.h>
@@ -136,6 +140,89 @@ std::optional<std::filesystem::path> PickFolder(
 }
 
 bool ShiftHeld() { return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0; }
+
+namespace {
+
+BOOL CALLBACK CollectMonitor(HMONITOR handle, HDC, LPRECT, LPARAM param) {
+  auto* out = reinterpret_cast<std::vector<MonitorInfo>*>(param);
+  MONITORINFO info{};
+  info.cbSize = sizeof(info);
+  if (!::GetMonitorInfoW(handle, &info))
+    return TRUE;  // skip this one, keep enumerating
+  MonitorInfo m;
+  // rcWork, not rcMonitor: the taskbar is not somewhere a window can put its
+  // footer, and the footer is exactly what went missing.
+  m.full_width = int(info.rcMonitor.right - info.rcMonitor.left);
+  m.full_height = int(info.rcMonitor.bottom - info.rcMonitor.top);
+  m.width = int(info.rcWork.right - info.rcWork.left);
+  m.height = int(info.rcWork.bottom - info.rcWork.top);
+  m.primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+
+  // Per-monitor DPI, which really does differ per display: 100%, 125% and 150%
+  // across the three on the machine this was written against.
+  // Resolved at runtime rather than linked: GetDpiForMonitor lives in
+  // shcore.dll, which is not in the import libraries this links against, and
+  // adding a library for one call is a worse trade than one GetProcAddress.
+  // Falling back to 96 DPI when it is unavailable is correct - that is what a
+  // machine without per-monitor scaling has.
+  using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+  static const auto get_dpi = [] {
+    HMODULE shcore = ::LoadLibraryW(L"shcore.dll");
+    return shcore ? reinterpret_cast<GetDpiForMonitorFn>(
+                        ::GetProcAddress(shcore, "GetDpiForMonitor"))
+                  : nullptr;
+  }();
+  UINT dpi_x = 96, dpi_y = 96;
+  if (get_dpi != nullptr &&
+      SUCCEEDED(get_dpi(handle, 0 /* MDT_EFFECTIVE_DPI */, &dpi_x, &dpi_y)) &&
+      dpi_x > 0) {
+    m.scale = float(dpi_x) / 96.0f;
+  }
+  out->push_back(m);
+  return TRUE;
+}
+
+}  // namespace
+
+std::vector<MonitorInfo> Monitors() {
+  std::vector<MonitorInfo> found;
+  ::EnumDisplayMonitors(nullptr, nullptr, CollectMonitor,
+                        reinterpret_cast<LPARAM>(&found));
+  // PRIMARY first, then the rest in enumeration order - SDL's convention, and
+  // established by testing rather than assumed. On the three-display machine
+  // this was written against, Windows numbers them 4K=1, 3440=2, primary=3,
+  // while the runtime's own indices were 1=primary, 2=4K, 3=3440. Neither
+  // Windows' numbering nor left-to-right position matches; this does.
+  std::stable_sort(found.begin(), found.end(),
+                   [](const MonitorInfo& a, const MonitorInfo& b) {
+                     return a.primary && !b.primary;
+                   });
+  for (size_t i = 0; i < found.size(); ++i)
+    found[i].index = int(i);
+  return found;
+}
+
+float SystemScale() {
+  for (const auto& m : Monitors())
+    if (m.primary)
+      return m.scale;
+  return 1.0f;
+}
+
+bool MonitorWorkArea(int index, int& width, int& height, float& scale) {
+  const auto all = Monitors();
+  if (all.empty())
+    return false;
+  size_t at = (index >= 0 && size_t(index) < all.size()) ? size_t(index) : 0;
+  if (index < 0 || size_t(index) >= all.size()) {
+    for (size_t i = 0; i < all.size(); ++i)
+      if (all[i].primary) at = i;
+  }
+  width = all[at].width;
+  height = all[at].height;
+  scale = all[at].scale;
+  return width > 0 && height > 0;
+}
 
 std::string FormatBytes(uint64_t bytes) {
   const char* units[] = {"B", "KB", "MB", "GB", "TB"};

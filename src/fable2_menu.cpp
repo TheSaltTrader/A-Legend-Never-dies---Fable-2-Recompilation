@@ -409,7 +409,7 @@ void DrawTexturesSection(Fable2Settings& s, bool& changed) {
              "textures and a replacement never touches those. Prefer one at a "
              "time though: both at once puts a file write AND a read on the GPU "
              "thread for every new texture.");
-    ImGui::BeginDisabled(!have_path || busy);
+    ImGui::BeginDisabled(busy);
     changed |= ImGui::Checkbox("##texdump", &s.texture_dump);
     ImGui::EndDisabled();
 
@@ -422,7 +422,7 @@ void DrawTexturesSection(Fable2Settings& s, bool& changed) {
              "F9 does NOT change this setting. It is a look, not a decision, so "
              "leaving a comparison half-finished cannot quietly turn the pack "
              "off for the next launch.");
-    ImGui::BeginDisabled(!have_path || packed == 0 || busy);
+    ImGui::BeginDisabled(busy);
     if (ImGui::Checkbox("##texuse", &s.texture_pack)) {
       changed = true;
     }
@@ -498,27 +498,22 @@ void DrawTexturesSection(Fable2Settings& s, bool& changed) {
   // The AI upscaler and the download that enables it. Not shipped: 43 MB of
   // third-party binary under its own licence, so whether it is on the machine
   // stays the player's decision.
-  const bool ai_ready = fable2::UpscalerInstalled();
-  ImGui::BeginDisabled(!ai_ready);
+  // The upscaler ships with the port, so there is no download and no disabled
+  // control waiting on one. If it is missing the build simply falls back to a
+  // plain resize, which the tool reports.
   changed |= ImGui::Checkbox("Enhance with AI (Real-ESRGAN)", &s.texture_ai);
-  ImGui::EndDisabled();
-  if (ai_ready) {
-    ImGui::SetNextItemWidth(240.0f);
-    changed |= ImGui::SliderFloat("Detail strength", &s.texture_ai_strength,
-                                  0.0f, 1.0f, "%.2f");
-    if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip(
-          "How much of the model's fine detail is laid over the original.\n"
-          "Tone and colour always stay the game's - only the detail is\n"
-          "borrowed, so a higher value sharpens rather than repaints.");
-    }
-  } else {
-    Muted("The AI upscaler is not installed yet.");
-    Muted("It needs Python, and downloads about 43 MB from GitHub.");
-    if (ImGui::Button("Download AI upscaler (43 MB)")) {
-      tex_started_at_ = ImGui::GetTime();
-      tex_thread_ = fable2::DownloadUpscalerAsync(tex_progress_);
-    }
+  ImGui::SetNextItemWidth(240.0f);
+  changed |= ImGui::SliderFloat("Detail strength", &s.texture_ai_strength,
+                                0.0f, 1.0f, "%.2f");
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "How much of the model's fine detail is laid over the original.\n"
+        "Tone and colour always stay the game's - only the detail is\n"
+        "borrowed, so a higher value sharpens rather than repaints.");
+  }
+  if (!fable2::UpscalerInstalled()) {
+    Muted("The upscaler is missing from tools/upscaler - the build will fall "
+          "back to a plain resize.");
   }
 
   ImGui::BeginDisabled(!have_path || dumped == 0);
@@ -553,7 +548,43 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     RowStart("Fullscreen", "Borderless fullscreen on the current monitor.");
     changed |= ImGui::Checkbox("##fullscreen", &s.fullscreen);
 
-    ImGui::BeginDisabled(!live);
+    ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
+    RowStart("Monitor",
+             "Which display to open on. The size beside each one is the "
+             "display's own resolution.");
+    {
+      // Ordered LEFT TO RIGHT by position, not primary-first: the runtime's
+      // own display indices are positional, and primary-first disagreed with
+      // them for every display that was not the primary.
+      const auto monitors = fable2::Monitors();
+      if (monitors.empty()) {
+        Muted("No displays could be enumerated.");
+      } else {
+        std::vector<std::string> labels;
+        std::vector<const char*> items;
+        labels.reserve(monitors.size());
+        for (const auto& m : monitors) {
+          char buf[64];
+          std::snprintf(buf, sizeof(buf), "%d:  %d x %d%s", m.index + 1,
+                        m.full_width, m.full_height, m.primary ? "   (main)" : "");
+          labels.emplace_back(buf);
+        }
+        for (const auto& label : labels) {
+          items.push_back(label.c_str());
+        }
+        int monitor_index = s.monitor;
+        if (monitor_index < 0 || monitor_index >= int(items.size())) {
+          monitor_index = 0;
+        }
+        if (ImGui::Combo("##monitor", &monitor_index, items.data(),
+                         int(items.size()))) {
+          s.monitor = monitor_index;
+          changed = true;
+        }
+      }
+      if (!live) RestartTag();
+    }
+
     RowStart("Resolution",
              "The guest is told the display is this size, so it is what the "
              "game renders for - not an upscale of a smaller image.");
@@ -674,7 +705,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       }
     }
 
-    ImGui::BeginDisabled(!live);
+    ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
     RowStart("Supersampling",
              "Renders the game's own framebuffer at a multiple of its size and "
              "filters it back down. The sharpest setting here, and by far the "
@@ -704,7 +735,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     if (!live) RestartTag();
     ImGui::EndDisabled();
 
-    ImGui::BeginDisabled(!live);
+    ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
     RowStart("Import Xbox 360 saves",
              "Point this at a folder of Xbox 360 Fable II save packages (or at "
              "a single one) and they are imported into the profile on the next "
@@ -746,6 +777,24 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     {
       if (ImGui::Checkbox("##skipintro", &s.skip_intro)) changed = true;
       if (!live) RestartTag();
+    }
+
+    RowStart("On-screen readouts",
+             "Frame rate, CPU, GPU and video memory in the corner, toggled with "
+             "F8 while playing. Off by default - a number in the corner is a "
+             "tool, not a decoration.\n\n"
+             "Video memory is this process only; other applications on the GPU "
+             "are not counted.");
+    {
+      changed |= ImGui::Checkbox("##hud", &s.hud_enabled);
+      if (s.hud_enabled) {
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("fps##hudfps", &s.hud_fps);
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("GPU##hudgpu", &s.hud_gpu);
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("VRAM##hudvram", &s.hud_vram);
+      }
     }
 
     RowStart("Accurate depth",
@@ -878,7 +927,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       changed = true;
     }
 
-    ImGui::BeginDisabled(!live);
+    ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
     RowStart("Anisotropic filtering",
              "Forces a filtering level on every texture the game samples. "
              "\"Game default\" leaves the title's own sampler settings alone.");
@@ -891,7 +940,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     if (!live) RestartTag();
     ImGui::EndDisabled();
 
-    ImGui::BeginDisabled(!live);
+    ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
     RowStart("Graphics engine",
              "Which graphics API the game renders through. DirectX 12 is the "
              "default because it is measurably better here: on Vulkan the "
@@ -958,7 +1007,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     ImGui::TableSetupColumn("l", ImGuiTableColumnFlags_WidthFixed, kLabelWidth);
     ImGui::TableSetupColumn("c", ImGuiTableColumnFlags_WidthFixed, kControlWidth);
 
-    ImGui::BeginDisabled(!live);
+    ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
 
     RowStart("60 fps",
              "The game picks a frame divider at startup; this picks the one "

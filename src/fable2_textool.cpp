@@ -107,7 +107,10 @@ int CountPacked(const std::filesystem::path& texture_dir) {
 }
 
 std::filesystem::path UpscalerPath() {
-  return ToolsDir() / "realesrgan" / "realesrgan-ncnn-vulkan.exe";
+  // tools/upscaler/, which is where get_upscaler.py puts it. Pointing at
+  // "realesrgan/" instead would leave the AI option disabled with the
+  // executable sitting right there.
+  return ToolsDir() / "upscaler" / "realesrgan-ncnn-vulkan.exe";
 }
 
 bool UpscalerInstalled() {

@@ -368,6 +368,16 @@ class Fable2App : public rex::ReXApp {
     // F8 shows or hides the readouts. A number in the corner is a tool, so it
     // is off until asked for - but reaching it must not need a menu, because
     // what it measures is what the menu being open changes.
+    // Escape quits. Settings are saved on the way out, so a change made in
+    // the overlay and then quit is not lost - which is the whole reason this
+    // goes through the same path as the window's close button rather than
+    // ending the process where it stands.
+    rex::ui::RegisterBind("bind_fable2_quit", "Escape", "Quit the game", [this] {
+      settings_.Save();
+      REXLOG_INFO("Escape: quitting");
+      app_context().QuitFromUIThread();
+    });
+
     rex::ui::RegisterBind(
         "bind_fable2_hud", "F8", "Show or hide the on-screen readouts", [this] {
           settings_.hud_enabled = !settings_.hud_enabled;
