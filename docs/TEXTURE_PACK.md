@@ -5,6 +5,35 @@ present in Fable II's build - the two ports share one SDK source tree - so
 nothing on the plugin side had to change. What was missing was the settings
 that drive them.
 
+## Ids carry a content hash (2026-09-11, ported from NG2)
+
+The plugin's texture id (`TexturePackId` in
+`rexglue-src/src/graphics/d3d12/texture_cache.cpp`) is built from the
+texture's memory page, format, size, pitch and tiling. Nothing in it describes
+the pixels, so when a game streams different textures through the same memory
+two of them share one id and the pack hands whichever was dumped first to
+both. On Ninja Gaiden II that was a shop window drawn as a violet normal map.
+Fable II streams regions the same way, so the same plugin fix applies here:
+
+* pack files are `<id>-<hash>.tex`, hash = CRC-32 (zlib polynomial) of the raw
+  guest bytes; the lookup hashes guest memory at texture creation and only
+  opens a file whose id AND hash match. A collision misses, the original
+  renders, and one log line per id names it (`another texture shares its
+  address`).
+* the dump writes `tex_<id>-<hash>.bin` and a tenth `index.txt` column, so two
+  textures at one address are two files.
+* `tools/upscale_textures.py` migrates an older dump and pack in place at the
+  start of every run (index lines, `.tex`, decoded PNGs, stage lists - a
+  rename from the raw dump, no re-upscale); `--migrate-only` does only that.
+  `fable2tex2` migrated 338 pack files this way. Files whose raw dump is gone
+  keep their old name and are ignored by the game, which says so at index time.
+* the plugin (`rexgpu-xenos.dll`) and its matching `rexruntime.dll` are
+  deployed to both `out/build/win-amd64-Release` and `../RexBlue/win-amd64/bin`
+  (so `tools/build.cmd` re-stages the fixed pair, not the stock one); the
+  previous DLLs are in `dll_backup_20260911_prehash/`.
+
+Full write-up, including how it was pinned: NG2's `docs/TEXTURE_PACK.md`.
+
 ## Status
 
 **Dumping WORKS and is verified. Decoding is NOT correct for this title yet.**

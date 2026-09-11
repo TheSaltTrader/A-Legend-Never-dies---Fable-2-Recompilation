@@ -434,7 +434,8 @@ void DrawTexturesSection(Fable2Settings& s, bool& changed) {
   Muted("%d dumped, %d in the pack.  Press F9 in game to switch the pack on and "
         "off and see the difference.", dumped, packed);
   if (s.texture_dump) {
-    Muted("Dumping takes effect next launch - the GPU reads it at startup.");
+    Muted("Dumping starts as soon as it is ticked - the pack is switched off for "
+          "it and every texture on screen is written out.");
   }
 
   // --- the run -----------------------------------------------------------
@@ -1180,6 +1181,14 @@ void ApplyLiveSettings(const Fable2Settings& s, rex::ui::Window* window) {
   // The pack path, so F9 and the checkbox both take effect without a
   // restart. Empty string means "use the game's own textures", which is
   // how switching it OFF is expressed - the plugin reloads either way.
+  // Dumping, live as well (the plugin's dump cvars are hot-reloadable since the
+  // content-hash change, 2026-09-11). Ticking "dump" turns the pack off, and
+  // that path change drops every texture, so the scene in front of the player
+  // is dumped there and then instead of at the next launch. Set before the
+  // pack path so the reload it triggers already sees dump=on.
+  const bool dump_on = s.texture_dump && !s.texture_path.empty();
+  SetCvar("texture_dump", dump_on ? "true" : "false");
+  SetCvar("texture_dump_path", dump_on ? (s.texture_path + "/dump") : std::string());
   SetCvar("texture_pack_path",
           (s.texture_pack && !s.texture_path.empty()) ? (s.texture_path + "/pack")
                                                      : std::string());

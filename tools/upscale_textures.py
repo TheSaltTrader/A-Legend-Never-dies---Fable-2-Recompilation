@@ -17,6 +17,18 @@ show a percentage and a time estimate:
 Xenos tiling is taken from the SDK's GetTiledOffset2D, and block-compressed
 formats (DXT1/3/5) are decoded here rather than pulled from a library so the
 tool has no dependencies beyond Pillow, which the upscaler needs anyway.
+
+IDS CARRY A CONTENT HASH. The plugin's texture id is built from the texture's
+memory address, format, size and pitch - nothing in it describes the pixels.
+A game that streams its levels reuses memory, so two different textures can
+carry the same id, and a pack keyed on the id alone hands whichever was dumped
+first to both (found on Ninja Gaiden II: a shop window rendered as a violet
+normal map). So every file is named <id>-<hash>, hash = CRC-32 of the raw
+guest bytes, computed by the plugin at dump and at lookup and reproduced here
+with zlib.crc32. A pack made before hashes is migrated in place on the next
+run: the raw dump gives each old file its hash, the file is renamed, nothing
+is re-upscaled. Old files whose raw dump is gone cannot be hashed and are
+left as they are; the game ignores them and says so in its log.
 """
 
 import argparse
@@ -25,6 +37,7 @@ import re
 import struct
 import sys
 import time
+import zlib
 
 # TextureFormat values that matter for this title. Anything else is reported
 # and skipped rather than guessed at - a wrong guess produces a plausible
@@ -57,7 +70,123 @@ except ImportError:      # reported properly in main()
     Image = None
     Image_LANCZOS = None
 
-DECODED_RE = re.compile(r"^([0-9A-Fa-f]{16})_(\d+)x(\d+)_(.+)\.png$")
+# <id>-<hash>_<w>x<h>_<format>.png. Names without the hash are from before
+# content hashes; migrate_pack renames them where the raw dump still exists.
+DECODED_RE = re.compile(r"^([0-9A-Fa-f]{16}-[0-9A-Fa-f]{8})_(\d+)x(\d+)_(.+)\.png$")
+
+
+def content_hash(data):
+    """CRC-32 of the raw guest bytes, exactly as the plugin computes it."""
+    return "%08X" % (zlib.crc32(data) & 0xFFFFFFFF)
+
+
+def migrate_pack(dump, pack):
+    """Bring a dump and pack made before content hashes up to date, in place.
+
+    Runs at the start of every invocation and does nothing when there is
+    nothing to do. Four things carry the old <id>-only names and each is
+    renamed from the same source of truth, the raw guest bytes in the dump:
+
+      dump/index.txt       nine-column lines get the hash as a tenth column
+      pack/<id>.tex        renamed <id>-<hash>.tex (a rename, not a re-upscale)
+      dump/<id>_WxH_F.png  renamed <id>-<hash>_WxH_F.png
+      pack/stages/chNN.txt lines rewritten to <id>-<hash>
+
+    Anything whose raw dump is missing keeps its old name: it cannot be
+    hashed, the game ignores it, and its log line says why.
+    """
+    index = os.path.join(dump, "index.txt")
+    if not os.path.isfile(index):
+        return
+    hashes = {}                       # id -> hash, from tex_<id>.bin
+    unhashable = set()
+
+    def hash_of(tid):
+        if tid in hashes:
+            return hashes[tid]
+        if tid in unhashable:
+            return None
+        raw = os.path.join(dump, "tex_%s.bin" % tid)
+        if not os.path.isfile(raw):
+            unhashable.add(tid)
+            return None
+        with open(raw, "rb") as fh:
+            hashes[tid] = content_hash(fh.read())
+        return hashes[tid]
+
+    # 1. The index. Old lines are rewritten once; the file is replaced
+    #    atomically and the original kept beside it the first time.
+    lines = open(index).read().splitlines()
+    changed = 0
+    out = []
+    for line in lines:
+        p = line.split()
+        if len(p) == 9 and len(p[0]) == 16:
+            h = hash_of(p[0])
+            if h:
+                line = "%s %s" % (line.rstrip(), h)
+                changed += 1
+        out.append(line)
+    if changed:
+        backup = os.path.join(dump, "index.pre-hash.txt")
+        if not os.path.isfile(backup):
+            os.replace(index, backup)
+        else:
+            os.remove(index)
+        tmp = index + ".tmp"
+        with open(tmp, "w") as fh:
+            fh.write("\n".join(out) + "\n")
+        os.replace(tmp, index)
+
+    # 2. Pack files.
+    renamed_tex = 0
+    if os.path.isdir(pack):
+        for fn in os.listdir(pack):
+            if not fn.endswith(".tex") or len(fn) != 20:
+                continue
+            h = hash_of(fn[:16])
+            if h:
+                os.replace(os.path.join(pack, fn), os.path.join(pack, "%s-%s.tex" % (fn[:16], h)))
+                renamed_tex += 1
+
+    # 3. Decoded PNGs.
+    renamed_png = 0
+    for fn in os.listdir(dump):
+        if not fn.endswith(".png") or len(fn) < 18 or fn[16] != "_":
+            continue
+        h = hash_of(fn[:16])
+        if h:
+            os.replace(os.path.join(dump, fn), os.path.join(dump, "%s-%s%s" % (fn[:16], h, fn[16:])))
+            renamed_png += 1
+
+    # 4. Stage lists (which pack files each chapter used, kept by the plugin).
+    stages = os.path.join(pack, "stages")
+    rewritten_stages = 0
+    if os.path.isdir(stages):
+        for fn in os.listdir(stages):
+            path = os.path.join(stages, fn)
+            if not fn.endswith(".txt"):
+                continue
+            rows = open(path).read().split()
+            if not any(len(r) == 16 for r in rows):
+                continue
+            keep = []
+            for r in rows:
+                if len(r) == 16:
+                    h = hash_of(r)
+                    if h:
+                        keep.append("%s-%s" % (r, h))
+                else:
+                    keep.append(r)
+            with open(path, "w") as fh:
+                fh.write("\n".join(sorted(set(keep))) + ("\n" if keep else ""))
+            rewritten_stages += 1
+
+    if changed or renamed_tex or renamed_png or rewritten_stages or unhashable:
+        print("MIGRATED to content hashes: index lines %d, pack files %d, decoded PNGs %d, "
+              "stage lists %d; %d id(s) have no raw dump and keep their old names"
+              % (changed, renamed_tex, renamed_png, rewritten_stages, len(unhashable)),
+              flush=True)
 
 FMT_NAMES = {
     FMT_8: "k_8", FMT_1_5_5_5: "k_1_5_5_5", FMT_5_6_5: "k_5_6_5",
@@ -438,6 +567,10 @@ def main():
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--include-ui", action="store_true",
                     help="upscale UI/font textures too (usually a bad idea)")
+    ap.add_argument("--migrate-only", action="store_true",
+                    help="give pre-hash dump and pack files their content-hash "
+                         "names, then stop (this also happens at the start of "
+                         "every run)")
     args = ap.parse_args()
 
     dump = os.path.join(args.dir, "dump")
@@ -448,14 +581,28 @@ def main():
         return 1
     os.makedirs(pack, exist_ok=True)
 
+    # Migration first, so everything below only ever sees hashed names.
+    migrate_pack(dump, pack)
+    if args.migrate_only:
+        print("DONE migrate-only", flush=True)
+        return 0
+
     entries = []
+    unhashed = 0
     for line in open(index):
         p = line.split()
-        if len(p) >= 9:
-            entries.append((p[0], int(p[1]), int(p[2]), int(p[3]), int(p[4]),
-                            int(p[5]), int(p[6]), int(p[7]), int(p[8])))
+        if len(p) >= 10:
+            # <id>-<hash>: the id says where and what shape, the hash which pixels.
+            entries.append(("%s-%s" % (p[0], p[9]), int(p[1]), int(p[2]), int(p[3]),
+                            int(p[4]), int(p[5]), int(p[6]), int(p[7]), int(p[8])))
+        elif len(p) == 9:
+            unhashed += 1           # raw dump gone: cannot be hashed, so cannot be packed
+    if unhashed:
+        print("NOTE: %d index line(s) have no content hash and no raw dump - skipped"
+              % unhashed, flush=True)
     # The game re-dumps a texture it has seen if the cache evicted it, so the
-    # index can hold duplicates. Keep the first of each id.
+    # index can hold duplicates. Keep the first of each id+hash; two entries
+    # that differ only in the hash are two different textures, and both stay.
     seen, uniq = set(), []
     for e in entries:
         if e[0] not in seen:
@@ -485,6 +632,8 @@ def main():
             skipped += 1
             continue
         raw = os.path.join(dump, "tex_%s.bin" % tid)
+        if not os.path.isfile(raw):
+            raw = os.path.join(dump, "tex_%s.bin" % tid[:16])   # dumped before hashes
         if not os.path.isfile(raw):
             failed += 1
             continue

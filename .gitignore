@@ -20,3 +20,6 @@ fable2_settings.cfg
 fable2.toml
 /rexglue-src/
 /canary/
+
+# DLL backups kept beside the build when the runtime pair is swapped
+dll_backup_*/

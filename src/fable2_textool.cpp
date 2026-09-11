@@ -79,6 +79,30 @@ bool RunCapturing(const std::string& command, ToolProgress& progress,
 
 namespace {
 
+// Pack files the game will actually load: <id>-<hash>.tex (25-character stem).
+// An <id>.tex from before content hashes carries no hash, the plugin ignores
+// it, and counting it would report a pack the game is not showing.
+int CountHashedTex(const std::filesystem::path& dir) {
+  std::error_code ec;
+  if (!std::filesystem::is_directory(dir, ec)) {
+    return 0;
+  }
+  int n = 0;
+  for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
+    if (ec) {
+      break;
+    }
+    if (e.path().extension() != ".tex") {
+      continue;
+    }
+    const std::string stem = e.path().stem().string();
+    if (stem.size() == 25 && stem[16] == '-') {
+      ++n;
+    }
+  }
+  return n;
+}
+
 int CountWithExtension(const std::filesystem::path& dir, const char* ext) {
   std::error_code ec;
   if (!std::filesystem::is_directory(dir, ec)) {
@@ -103,7 +127,7 @@ int CountDumped(const std::filesystem::path& texture_dir) {
 }
 
 int CountPacked(const std::filesystem::path& texture_dir) {
-  return CountWithExtension(texture_dir / "pack", ".tex");
+  return CountHashedTex(texture_dir / "pack");
 }
 
 std::filesystem::path UpscalerPath() {

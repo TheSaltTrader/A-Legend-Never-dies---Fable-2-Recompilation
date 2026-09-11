@@ -3,6 +3,29 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.10 — 2026-09-11
+
+### Texture pack: ids now carry a content hash (ported from NG2)
+
+The GPU plugin's texture id is built from the texture's memory address, format,
+size and pitch, so two different textures that the game streams through the
+same memory share one id and the pack served whichever was dumped first - on
+Ninja Gaiden II a shop window rendered as a violet normal map. Pack files are
+now `<id>-<hash>.tex` with a CRC-32 of the raw guest bytes, the plugin hashes
+guest memory before opening a file, a mismatch falls back to the original and
+is logged once per id, and the dump keeps both textures of a shared address.
+`tools/upscale_textures.py` migrates an existing dump and pack in place
+(`fable2tex2`: 338 files renamed, nothing re-upscaled). The rebuilt
+`rexgpu-xenos.dll` and its matching `rexruntime.dll` are deployed to the build
+folder and to `../RexBlue/win-amd64/bin`; the previous pair is kept in
+`dll_backup_20260911_prehash/`. See `docs/TEXTURE_PACK.md`.
+
+Also: the plugin's dump cvars are now hot-reloadable and `ApplyLiveSettings`
+pushes them, so ticking "Dump while playing" writes the current scene at once
+instead of at the next launch (the settings screen's note said as much and
+was right, until now). The app side of this needs a rebuild of fable2recomp
+to take effect; the plugin side is already deployed.
+
 ## 0.0.9 — 2026-09-04
 
 ### Supersampling now goes to the runtime's real maximum
