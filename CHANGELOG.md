@@ -3,6 +3,24 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.12 — 2026-09-11
+
+### Fixed - quitting with Escape left the process running
+
+Escape saved the settings, logged "Escape: quitting", and then nothing: the
+window stayed, and the process was still alive thirty seconds later. The key
+asked the runtime to quit gracefully, and on this runtime that path never
+comes back - NG2's final notes for the same day say why, and a test seam here
+(`FABLE2_QUIT_AFTER=<seconds>` fires Escape's code from a timer) measured it
+on this title rather than assuming it carried over. The close button never
+showed the problem because the SDK's close path terminates the title and
+hard-exits, in 0.2 seconds in every log this project has.
+
+Escape now releases what the app owns - settings written, a running texture
+build stopped - and asks the window to close, which is exactly the close
+button's path. A three-second watchdog sits behind it in case the request is
+ever swallowed.
+
 ## 0.0.11 — 2026-09-11
 
 Everything the NG2 port learned between 5 and 11 September, brought across.

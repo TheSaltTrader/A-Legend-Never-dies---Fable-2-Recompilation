@@ -354,6 +354,7 @@ class Fable2App : public rex::ReXApp {
     fable2::StartPerfMonitor();
     ImportQueuedSaves();
     MaybeWriteDiagnostics();
+    ArmQuitSeam();
     // Per-region texture warming needs to know which region is loading, and
     // the game says so through the audio bank it opens for it. The path the
     // runtime mounted is the one to enumerate - a command-line root wins over
@@ -398,11 +399,8 @@ class Fable2App : public rex::ReXApp {
     // the overlay and then quit is not lost - which is the whole reason this
     // goes through the same path as the window's close button rather than
     // ending the process where it stands.
-    rex::ui::RegisterBind("bind_fable2_quit", "Escape", "Quit the game", [this] {
-      settings_.Save();
-      REXLOG_INFO("Escape: quitting");
-      app_context().QuitFromUIThread();
-    });
+    rex::ui::RegisterBind("bind_fable2_quit", "Escape", "Quit the game",
+                          [this] { QuitFromEscape(); });
 
     // F8 shows or hides the readouts. A number in the corner is a tool, so it
     // is off until asked for - but reaching it must not need a menu, because
@@ -555,6 +553,60 @@ class Fable2App : public rex::ReXApp {
     });
     REXLOG_INFO("Input: held while the texture cache warms, and while we are "
                 "not the foreground window");
+  }
+
+  // Escape's quit: save, release what we own, then take the close button's
+  // path.
+  //
+  // It used to ask the runtime to quit gracefully (QuitFromUIThread), and
+  // measured on 2026-09-11 that never comes back on this title either:
+  // "Escape: quitting" was the last line the log ever wrote, and the process
+  // was still alive thirty seconds later with nothing left to draw. NG2 hit
+  // the same thing - its notes blame the graceful path waiting on a guest
+  // thread that never reaches the termination check. The close button never
+  // showed it because the SDK's close path terminates the title and hard-exits
+  // ("Title terminated; hard-exiting process.", 0.2 s in every log here). So
+  // Escape now asks the window to close, which is exactly that path, with a
+  // watchdog behind it in case the request itself is ever swallowed.
+  //
+  // Reachable from a test seam as well as the key: FABLE2_QUIT_AFTER=<seconds>
+  // fires this from a timer, so whether the quit really exits is something a
+  // script measures rather than something anyone has to believe.
+  void QuitFromEscape() {
+    settings_.Save();
+    REXLOG_INFO("Escape: quitting");
+    tex_job_.CancelAndJoin();
+    fable2::StopPerfMonitor();
+    StartExitWatchdog();
+    if (auto* w = window()) {
+      w->RequestClose();
+    } else {
+      app_context().QuitFromUIThread();
+    }
+  }
+
+  // Make sure the process actually goes. Our own teardown is done by the time
+  // this starts - the settings are written, the texture run is stopped - so
+  // what remains is the runtime's, and it is not entitled to hang.
+  void StartExitWatchdog() {
+    std::thread([] {
+      std::this_thread::sleep_for(std::chrono::seconds(3));
+      REXLOG_WARN("Shutdown: the runtime did not finish in 3 s; exiting now");
+      std::fflush(nullptr);
+      rex::FlushLogging();
+      std::_Exit(0);
+    }).detach();
+  }
+
+  void ArmQuitSeam() {
+    const int after = EnvInt("FABLE2_QUIT_AFTER", 0);
+    if (after <= 0)
+      return;
+    REXLOG_INFO("Quit seam: Escape's path fires in {} s", after);
+    std::thread([this, after] {
+      std::this_thread::sleep_for(std::chrono::seconds(after));
+      app_context().CallInUIThreadDeferred([this] { QuitFromEscape(); });
+    }).detach();
   }
 
   // The same bundle the settings button writes, from the environment.
