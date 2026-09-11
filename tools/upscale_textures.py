@@ -53,8 +53,12 @@ FMT_DXT1 = 18
 FMT_DXT2_3 = 19
 FMT_DXT4_5 = 20
 FMT_DXN = 49
-FMT_16_16_FLOAT = 6
-FMT_16_16_16_16_FLOAT = 7
+# The Xenos TEXTURE format codes, from the TextureFormat enum in xenos.h. These
+# two were 6 and 7 - the values from the render-target ColorFormat enum - which
+# made pack_reason() call every k_8_8_8_8 texture (code 6) a "float format" and
+# drop it from the pack. Found by porting the rule to C++ against the enum.
+FMT_16_16_FLOAT = 31
+FMT_16_16_16_16_FLOAT = 32
 FMT_DXT5A = 59
 
 # TextureKey.endianness
@@ -554,6 +558,34 @@ def make_upscaler(model_name, scale):
     return esrgan
 
 
+MANIFEST = "pack.txt"
+
+
+def read_manifest(pack):
+    """What the pack was made with, or {} if it never said."""
+    out = {}
+    try:
+        with open(os.path.join(pack, MANIFEST)) as fh:
+            for line in fh:
+                if "=" in line:
+                    k, v = line.strip().split("=", 1)
+                    out[k] = v
+    except OSError:
+        pass
+    return out
+
+
+def write_manifest(pack, scale, upscaler, strength, complete):
+    """The pack's own record of its settings, so the app can tell "the pack
+    matches what is selected" from "the pack needs redoing" without guessing.
+    Written once with complete=0 as the writing starts and again with
+    complete=1 at the end, so a run stopped halfway leaves a pack that says so."""
+    with open(os.path.join(pack, MANIFEST), "w") as fh:
+        fh.write("scale=%d\nupscaler=%s\nstrength=%.2f\ncomplete=%d\nwritten=%s\n"
+                 % (scale, upscaler, strength, 1 if complete else 0,
+                    time.strftime("%Y-%m-%d %H:%M:%S")))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True, help="folder holding dump/ and pack/")
@@ -567,6 +599,9 @@ def main():
     ap.add_argument("--gpu", type=int, default=0)
     ap.add_argument("--include-ui", action="store_true",
                     help="upscale UI/font textures too (usually a bad idea)")
+    ap.add_argument("--only-missing", action="store_true",
+                    help="leave textures already in the pack alone; decode and "
+                         "upscale only the ones that are not there yet")
     ap.add_argument("--migrate-only", action="store_true",
                     help="give pre-hash dump and pack files their content-hash "
                          "names, then stop (this also happens at the start of "
@@ -623,6 +658,38 @@ def main():
     pending = []   # (id, decoded image) awaiting upscale
     recovered = 0
     started = time.time()
+    # A pack made with other settings cannot be topped up: the new textures
+    # would not match the old ones. If the pack's own record disagrees with
+    # what was asked for, every texture is redone, whatever the flag said.
+    upscaler_name = "realesrgan" if args.ai else "lanczos"
+    strength = args.ai_strength if args.ai else 0.0
+    if args.only_missing:
+        m = read_manifest(pack)
+        if m:
+            same = (m.get("scale") == str(args.scale) and m.get("upscaler") == upscaler_name
+                    and abs(float(m.get("strength", "0")) - strength) < 0.005
+                    and m.get("complete") == "1")
+            if not same:
+                print("NOTE: the pack was made at %sx with %s (strength %s, complete=%s); "
+                      "the settings now are %dx with %s (strength %.2f) - redoing every texture"
+                      % (m.get("scale"), m.get("upscaler"), m.get("strength"), m.get("complete"),
+                         args.scale, upscaler_name, strength), flush=True)
+                args.only_missing = False
+    # What is already in the pack, for --only-missing. A pack of thousands
+    # takes half an hour with the AI; the handful dumped since take minutes,
+    # and redoing everything to get them was the only option before this.
+    have_tex = set()
+    if args.only_missing and os.path.isdir(pack):
+        have_tex = {fn[:-4] for fn in os.listdir(pack) if fn.endswith(".tex")}
+    reused = 0
+    # Two steps, each reported as its own PROGRESS bar. Naming them lets the
+    # app restart its bar and its clock at the second rather than showing 100%
+    # and then a bar that starts again from nothing.
+    if args.only_missing:
+        print("PHASE 1/2 Checking %d dumped textures for ones not yet in the pack" % total,
+              flush=True)
+    else:
+        print("PHASE 1/2 Decoding %d dumped textures" % total, flush=True)
     for tid, w, h, fmt, tiled, pitch, endian, dim, size in uniq:
         name = "%s_%dx%d_%s" % (tid, w, h, FMT_NAMES.get(fmt, "fmt%d" % fmt))
         done += 1
@@ -631,6 +698,19 @@ def main():
         if fmt not in FMT_INFO:
             skipped += 1
             continue
+        if args.only_missing:
+            if tid in have_tex:
+                reused += 1                 # in the pack already: leave it alone
+                continue
+            reason = pack_reason(w, h, fmt)
+            if reason and not args.include_ui:
+                skips[reason] = skips.get(reason, 0) + 1
+                ui += 1
+                continue
+            decoded = os.path.join(dump, name + ".png")
+            if os.path.isfile(decoded):     # decoded on an earlier run
+                pending.append((tid, Image.open(decoded).convert("RGBA")))
+                continue
         raw = os.path.join(dump, "tex_%s.bin" % tid)
         if not os.path.isfile(raw):
             raw = os.path.join(dump, "tex_%s.bin" % tid[:16])   # dumped before hashes
@@ -692,6 +772,9 @@ def main():
         fmt2 = by_name.get(m.group(4))
         if tid in have or fmt2 is None:
             continue
+        if args.only_missing and tid in have_tex:
+            reused += 1
+            continue
         if pack_reason(w2, h2, fmt2) and not args.include_ui:
             continue
         pending.append((tid, Image.open(os.path.join(dump, fn)).convert("RGBA")))
@@ -701,7 +784,18 @@ def main():
 
     # Upscale and write. Batched for the AI path, which runs a GPU process.
     total_pack = len(pending)
-    if args.ai:
+    if reused:
+        print("%d textures already in the pack, left as they are" % reused)
+    if args.only_missing and total_pack == 0:
+        print("nothing to do - every texture that can be enhanced is already in the pack")
+    print("PHASE 2/2 Upscaling %d textures with %s at %dx"
+          % (total_pack, "Real-ESRGAN" if args.ai else "Lanczos", args.scale),
+          flush=True)
+    if total_pack:
+        write_manifest(pack, args.scale, upscaler_name, strength, complete=False)
+    if total_pack == 0:
+        pass
+    elif args.ai:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import ai_upscale
         exe = ai_upscale.find_upscaler(args.dir)
@@ -725,8 +819,15 @@ def main():
             write_tex(os.path.join(pack, "%s.tex" % tid), up(img) if up else img)
 
     took = time.time() - started
+    if total_pack or not read_manifest(pack):
+        write_manifest(pack, args.scale, upscaler_name, strength, complete=True)
     for why, n in sorted(skips.items(), key=lambda kv: -kv[1]):
         print("  not packed - %-28s %d" % (why, n))
+    # One line the app (and a person) can read the whole outcome from: how
+    # many textures the tool considers art, how many it wrote this run, how
+    # many it left alone, and how many it never packs by design.
+    print("SUMMARY art=%d written=%d already=%d excluded=%d failed=%d"
+          % (total_pack + reused, total_pack, reused, ui, failed))
     print("DONE decoded=%d skipped_format=%d skipped_ui=%d failed=%d in %.1fs"
           % (done - skipped - failed, skipped, ui, failed, took))
     return 0

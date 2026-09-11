@@ -19,7 +19,7 @@ gitignored.
 | `rexglue codegen` | ✅ **zero analysis errors** |
 | `setjmp` / `longjmp` located | ✅ `0x83000200` / `0x82CA9260` |
 | Native build | ✅ `fable2.exe`, 78 MB, ~3 min |
-| Runs | ⚠️ **boots → menus → character select → intro video → Old Bowerstone**, but **no character has ever rendered in-engine** - see below |
+| Runs | ✅ **boots → menus → character select → intro video → Old Bowerstone**, and since 2026-09-05 **characters render** (Sparrow, Rose, the player in third person) - the `shared_vector_registers` fix, see the changelog |
 | Intro videos | ✅ Bink decodes correctly, no artifacts |
 | Input | ✅ keyboard-to-controller (`--mnk_mode=true`) drives the menus |
 | Freeze at ~3.5 min | ✅ **fixed** - it was the RTV render-target path; ROV runs 8 min clean |
@@ -239,6 +239,98 @@ startup is shown disabled and marked `(restart)` rather than accepted and
 silently ignored. **F4 is the SDK's own cvar browser** and is left alone - the
 menu links to it, because it enumerates the registry and so cannot fall behind
 the build.
+
+### Settings reference
+
+Every row the two screens offer, in the words they use. `tools/lodestone_census.py`
+checks that this list and the settings header agree, so a setting cannot quietly
+go undocumented.
+
+**Keys while playing:** F10 opens these settings; F8 shows or hides the
+on-screen readouts; F9 switches the texture pack on and off without opening a
+menu; Escape quits and saves the settings; F4 is the runtime's own cvar browser.
+
+Display
+- **Fullscreen** - borderless fullscreen on the chosen monitor.
+- **Monitor** - which display to open on, listed with each display's size.
+- **Resolution** - the window size. The game renders 16:9 whatever the window
+  is, and is told a 16:9 display of the window's height, so an ultrawide
+  picture is pillarboxed with Keep aspect ratio on and stretched with it off.
+- **Frame rate** - the refresh rate the guest is told. 60 is what the console
+  ran; above 60 is untested on this title.
+- **V-Sync** - caps presentation to the display.
+- **Keep aspect ratio** - letterbox instead of stretching the image to the window.
+- **Hide the pointer after** - seconds of mouse stillness before the pointer
+  hides; 0 keeps it visible.
+- **Keyboard and mouse** - drives the guest controller from the keyboard
+  (Enter is Start, Space is A, WASD the left stick, arrows the d-pad).
+- **Mouse look** / **Mouse sensitivity** - the mouse drives the right stick,
+  and how far it deflects per unit of movement.
+
+Audio
+- **Mute** - silences the guest's audio.
+- **Audio buffering** - how many frames of audio are queued ahead; fewer is
+  less delay, more risk of crackling.
+
+Enhancements
+- **Quality preset** - sets supersampling, antialiasing and texture filtering
+  together; changing any of them reads Custom.
+- **Supersampling** - renders the game's framebuffer at a multiple of its size
+  (1 to 8) and filters it back down; the cost is the square of the number.
+- **Import Xbox 360 saves** - a folder of Fable II save packages (or one
+  package) imported into the profile at the next launch.
+- **Skip intro videos** - presses A through the boot logos with a synthetic
+  controller; any genuine input disarms it.
+- **On-screen readouts** - FPS, GPU load and video memory in the corner (F8),
+  each switchable.
+- **Accurate depth** - exact float24 depth emulation, for shadow acne and
+  z-fighting, at some shader cost.
+- **Fuzzy alpha test** - the plugin's approximate alpha test, its fix for
+  alpha flicker on NVIDIA cards.
+- **Texture cache** - host memory the GPU may hold textures in; larger means
+  fewer evictions while streaming, not a sharper picture.
+- **NaN constant repair** - a diagnostic that substitutes zero or an identity
+  row for NaN in the vertex shader constants. Off, because the bug it worked
+  around is fixed and left on it turns the scene black.
+- **Upscaling** - the presenter's output filter: bilinear, FSR 1.0 or CAS.
+- **FSR sharpness** / **CAS sharpness** - the sharpening of the filter chosen
+  above; each is only sent while its filter is selected.
+- **Antialiasing** - none, FXAA or FXAA extreme, the post-process the plugin
+  applies to the swap image.
+- **Anisotropic filtering** - leave the game's own samplers alone, or force a level.
+- **Graphics engine** - DirectX 12 or Vulkan; Vulkan needs a plugin built with it.
+- **Black texture fix** - the graduated readback (none / fast / some / full)
+  for the hero and dog turning black at adulthood; `some` is the fix.
+- **Dither the output** - dither the 10 bpc output down to 8 bpc.
+
+Textures
+- **Folder** - where dumped and upscaled textures are kept.
+- **Dump while playing** - writes every texture the game loads, for the pack
+  tool. Dumping and the pack are one or the other, never both.
+- **Use the upscaled textures** - loads the finished pack instead of the game's
+  own textures. F9 switches it during play without changing this setting.
+- **Upscale factor** - 2x, 4x or 8x; 2x is the measured recommendation.
+- **Method** - Lanczos (a plain resize) or Real-ESRGAN AI.
+- **Detail strength** - how much of the model's fine detail is laid over the
+  original; tone and colour always stay the game's.
+- **Process N waiting textures** - decodes and upscales only what is not in the
+  pack yet; **Redo textures already in the pack** rebuilds everything, and is
+  forced when the pack's own record of its settings differs from the ones chosen.
+- **Live cost** - CPU, GPU and video memory bars beside the switches that cause
+  the cost, switchable with the on-screen readouts' menu-bars option.
+
+Community patches (Xenia Canary's patch file for this title; all off by default)
+- **60 fps**, **Render at 1280 wide**, **Disable MSAA**, **30 Hz tick rate**,
+  **Disable texture morphing** - see the section below for what each does and
+  how each address was verified against this disc.
+
+Content and diagnostics
+- The **game folder** is chosen on the **setup screen** (hold Shift at launch
+  to get it back); the ISO installer lives there too.
+- **Copy diagnostics to a file** - this session's log, the settings and what
+  the machine is, in one text file under `diagnostics\` beside the game, with
+  its path on the clipboard. `FABLE2_DIAGNOSTICS=1` writes the same file during
+  startup, for a launch that never reaches a menu.
 
 ### What actually renders, and what never has
 

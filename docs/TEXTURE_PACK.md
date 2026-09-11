@@ -5,6 +5,30 @@ present in Fable II's build - the two ports share one SDK source tree - so
 nothing on the plugin side had to change. What was missing was the settings
 that drive them.
 
+**Status 2026-09-11: dump, decode, pack and replacement all work** (the
+"decoding is not correct" and "replacement is not implemented" sections
+further down are history, kept for the method). The pipeline now also
+processes only what is missing, records what a pack was made with
+(`pack/pack.txt`), reports its two steps as two bars, stops cleanly on Cancel
+(the whole Python process tree lives in a job object), and survives the
+settings menu being closed - see the 0.0.11 changelog.
+
+## Per-region warming (2026-09-11)
+
+The plugin records which pack textures each stage uses (`pack/stages/chNN.txt`,
+one line per id, nothing copied) and reads that stage's files back into the
+page cache when the stage returns, so the first draw needing one is a warm
+read. It is keyed by an integer the app publishes in `texture_pack_chapter`.
+Fable II opens no per-level file, so the id comes from the per-region audio
+bank the game opens - `data\audio\region_specific_<name>.bnk` - through the
+runtime's new file-open observer (`src/fable2_stage.cpp`). The 31 regions are
+numbered alphabetically from the disc, so the numbers mean the same thing on
+every launch. While a stage warms, a blue bar top-left says so and input is
+held; it turns green at 100%. A stage with no list yet behaves exactly as
+before. **Whether the game opens those banks per region rather than all at
+boot has not been observed yet** - every open is logged at debug level as
+`[stage] open #N` for exactly that check.
+
 ## Ids carry a content hash (2026-09-11, ported from NG2)
 
 The plugin's texture id (`TexturePackId` in

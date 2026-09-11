@@ -1,76 +1,85 @@
-// Running the texture tools from the settings screen.
+// Driving the texture-pack tools from the app.
 //
-// The upscaler is a Python script, not library code, and that is deliberate:
-// it decodes formats the plugin never has to, it can be re-run offline against
-// a dump collected weeks ago, and Real-ESRGAN arrives as a separate executable.
-// So the app SPAWNS it and reads its progress rather than reimplementing it.
+// The work itself lives in tools/upscale_textures.py and tools/get_upscaler.py
+// rather than being reimplemented here: decoding the guest's tiled formats and
+// running an upscaler are both jobs with real libraries behind them in Python
+// and none in this process. The app's part is to find an interpreter, run a
+// script without flashing a console over the game, and turn its output into a
+// progress bar.
 //
-// Both scripts already print machine-readable progress - upscale_textures.py
-// emits "PROGRESS done total name" per texture and a final "DONE ..." line -
-// so nothing had to be added to them for this.
-//
-// This mirrors the ISO extractor's shape (ExtractProgress + a worker thread)
-// because the settings screen already knows how to draw that.
+// Ported from the NG2 port on 2026-09-11, replacing an earlier _popen-based
+// version: this one runs the tool in a job object (so Cancel really stops the
+// whole process tree), understands the tool's two steps, and counts the pack
+// the way the tool does.
 
 #pragma once
 
-#include <atomic>
 #include <filesystem>
-#include <mutex>
 #include <string>
 #include <thread>
 
+#include "fable2_disc.h"  // ExtractProgress
+
 namespace fable2 {
 
-struct ToolProgress {
-  std::atomic<uint64_t> done{0};
-  std::atomic<uint64_t> total{0};
-  std::atomic<bool> running{false};
-  std::atomic<bool> complete{false};
-  std::atomic<bool> failed{false};
-  std::atomic<bool> cancel{false};
-
-  std::mutex text_mutex;
-  std::string current;   // what it is working on right now
-  std::string summary;   // the tool's own last word, shown when it finishes
-
-  void SetCurrent(const std::string& s) {
-    std::lock_guard lock(text_mutex);
-    current = s;
-  }
-  std::string Current() {
-    std::lock_guard lock(text_mutex);
-    return current;
-  }
-  void SetSummary(const std::string& s) {
-    std::lock_guard lock(text_mutex);
-    summary = s;
-  }
-  std::string Summary() {
-    std::lock_guard lock(text_mutex);
-    return summary;
-  }
+// What is needed to run the texture scripts, and what was found.
+struct TextureTools {
+  std::string python;  // the interpreter to use, empty if none was found
 };
 
-// How many textures are on disk. Shown beside the switches so the state
-// is visible without opening a file manager - "0 in the pack" is the
-// answer to most of why the pack appears to do nothing.
-int CountDumped(const std::filesystem::path& texture_dir);
-int CountPacked(const std::filesystem::path& texture_dir);
+TextureTools FindTextureTools();
 
-// Is the Real-ESRGAN executable present? The AI option stays disabled until it
-// is, so the control is never present-but-dead.
-bool UpscalerInstalled();
+// How many textures have been dumped, and how many are in the finished pack.
+// Both walk the folders rather than trusting a flag, so deleting files by hand
+// is noticed.
+int CountDumpedTextures(const std::filesystem::path& texture_dir);
+int CountPackedTextures(const std::filesystem::path& texture_dir);
 
-// Where it lives, for showing in the UI.
-std::filesystem::path UpscalerPath();
+// The pack counted the way the tool counts it. "7,778 dumped, 5,907 in the
+// pack" read as 1,871 textures missing; they were HUD, fonts, normal maps and
+// video frames the tool never packs by design. So the dump is classified here
+// with the same rule the tool uses (pack_reason in tools/upscale_textures.py)
+// and the numbers shown are the ones that can be enhanced: how many there are,
+// how many are in the pack, how many are still waiting.
+struct PackCensus {
+  int dumped = 0;      // unique textures with a raw dump or a decoded PNG
+  int candidates = 0;  // of those, the ones the tool packs - art, not HUD or video
+  int packed = 0;      // candidates present in the pack
+  int waiting = 0;     // candidates not yet in the pack
+  int excluded = 0;    // dumped but never packed, by design
+  int tex_files = 0;   // .tex files in the pack, whatever they belong to
 
-// Fetch Real-ESRGAN (~43 MB). Off by default and not shipped with the port.
-std::thread DownloadUpscalerAsync(ToolProgress& progress);
+  // What the pack was made with, from pack/pack.txt (written by the tool).
+  // The menu compares these with the settings it shows: a pack made with
+  // other settings needs every texture redone, not just the missing ones.
+  bool manifest = false;
+  int pack_scale = 0;
+  std::string pack_upscaler;   // "lanczos" or "realesrgan"
+  float pack_strength = 0.0f;
+  bool pack_complete = true;   // false = the last run was stopped halfway
+};
+PackCensus CountPack(const std::filesystem::path& texture_dir);
 
-// Build the pack from an existing dump. `scale` is 1, 2 or 4; `ai` uses
-// Real-ESRGAN with `ai_strength` of its detail laid over a plain resize.
-std::thread BuildPackAsync(const std::filesystem::path& texture_dir, int scale,
-                           bool ai, float ai_strength, ToolProgress& progress);
+// Whether the Real-ESRGAN executable is available: a per-folder copy under
+// <texture_dir>/upscaler (what get_upscaler.py fetches) or the one bundled
+// beside the tools. This port ships it, so the bundled copy is the normal
+// case and the per-folder one is an override - the same order the Python
+// side looks in (ai_upscale.find_upscaler).
+bool UpscalerInstalled(const std::filesystem::path& texture_dir);
+
+// Fetches it from the official Real-ESRGAN releases into <texture_dir>/
+// upscaler, for an install whose bundled copy is missing.
+std::thread DownloadUpscalerAsync(const TextureTools& tools,
+                                  const std::filesystem::path& texture_dir,
+                                  ExtractProgress& progress);
+
+// Turns the dump into a pack. Returns a joinable thread; the caller owns it and
+// must join before `progress` dies. With `only_missing` the textures already
+// in the pack are left alone and only the rest are decoded and upscaled.
+std::thread UpscaleTexturesAsync(const TextureTools& tools,
+                                 const std::filesystem::path& texture_dir,
+                                 bool upscale, int scale, bool ai,
+                                 float ai_strength, bool only_missing,
+                                 ExtractProgress& progress);
 
 }  // namespace fable2

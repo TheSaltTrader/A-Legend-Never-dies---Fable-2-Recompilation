@@ -224,6 +224,15 @@ bool MonitorWorkArea(int index, int& width, int& height, float& scale) {
   return width > 0 && height > 0;
 }
 
+bool ThisProcessIsForeground() {
+  HWND foreground = ::GetForegroundWindow();
+  if (foreground == nullptr)
+    return false;
+  DWORD pid = 0;
+  ::GetWindowThreadProcessId(foreground, &pid);
+  return pid == ::GetCurrentProcessId();
+}
+
 std::string FormatBytes(uint64_t bytes) {
   const char* units[] = {"B", "KB", "MB", "GB", "TB"};
   double value = static_cast<double>(bytes);

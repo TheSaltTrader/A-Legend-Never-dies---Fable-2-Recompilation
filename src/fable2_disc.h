@@ -64,10 +64,26 @@ struct ExtractProgress {
   std::atomic<bool> failed{false};
   std::atomic<bool> cancel{false};
 
+  // Steps of a run that has more than one ("PHASE <i>/<n> <label>" from a
+  // script). Each step's bar restarts from zero, so whoever draws it needs to
+  // know a restart is a new step rather than a failure, and to time each step
+  // by itself. 0 when the run has no steps.
+  std::atomic<int> phase{0};
+  std::atomic<int> phases{0};
+
   std::mutex text_mutex;
   std::string current_file;
   std::string error;
+  std::string phase_label;
 
+  void SetPhaseLabel(const std::string& l) {
+    std::lock_guard lock(text_mutex);
+    phase_label = l;
+  }
+  std::string PhaseLabel() {
+    std::lock_guard lock(text_mutex);
+    return phase_label;
+  }
   void SetCurrentFile(const std::string& f) {
     std::lock_guard lock(text_mutex);
     current_file = f;
@@ -93,6 +109,9 @@ struct ExtractProgress {
     complete = false;
     failed = false;
     cancel = false;
+    phase = 0;
+    phases = 0;
+    SetPhaseLabel({});
     SetCurrentFile({});
     SetError({});
   }

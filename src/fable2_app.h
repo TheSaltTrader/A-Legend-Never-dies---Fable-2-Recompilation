@@ -35,6 +35,9 @@
 #include "fable2_autoskip.h"
 #include "fable2_hwdetect.h"
 #include "fable2_perf.h"
+#include "fable2_texnotify.h"
+#include "fable2_diagnostics.h"
+#include "fable2_stage.h"
 #include "fable2_menu.h"
 #include "fable2_platform.h"
 #include "fable2_settings.h"
@@ -165,7 +168,7 @@ class Fable2App : public rex::ReXApp {
             resume(paths);
           });
         },
-        [this] { ToggleAdvancedSettings(); });
+        [this] { ToggleAdvancedSettings(); }, &tex_job_);
     return std::nullopt;
   }
 
@@ -347,8 +350,19 @@ class Fable2App : public rex::ReXApp {
     // and no signed-in profile to import into. Here both exist and the guest
     // has not started looking for saves yet.
     UseOneGuestUser();
+    GateInputToForeground();
     fable2::StartPerfMonitor();
     ImportQueuedSaves();
+    MaybeWriteDiagnostics();
+    // Per-region texture warming needs to know which region is loading, and
+    // the game says so through the audio bank it opens for it. The path the
+    // runtime mounted is the one to enumerate - a command-line root wins over
+    // the settings file.
+    {
+      const std::string mounted = REXCVAR_GET(game_data_root);
+      fable2::InstallStageObserver(mounted.empty() ? settings_.ResolvedGamePath()
+                                                   : std::filesystem::path(mounted));
+    }
 
     // The window exists by now, so the comfort settings go straight on it.
     fable2::ApplyLiveSettings(settings_, window());
@@ -365,9 +379,21 @@ class Fable2App : public rex::ReXApp {
   // it, because the two answer different questions. F4 enumerates the registry
   // and so cannot fall behind the build; this one explains what matters.
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
-    // F8 shows or hides the readouts. A number in the corner is a tool, so it
-    // is off until asked for - but reaching it must not need a menu, because
-    // what it measures is what the menu being open changes.
+    // The window title is the SDK's by default - "fable2 [rexglue-v0.10.0]" -
+    // which names the SDK's version and never changes. Put the port's own
+    // version where it is visible without opening anything.
+    if (auto* w = window()) {
+      w->SetTitle(std::string("Fable II  -  v") + FABLE2_VERSION);
+    }
+
+    // Overlays that live for the whole run and draw nothing until asked: the
+    // F9 indicator, the texture-cache warming bar, and the F8 readouts (with
+    // the sampler behind them, which the menu's own cost bars also need).
+    tex_notify_ = std::make_unique<fable2::TextureNotifyOverlay>(drawer);
+    warm_overlay_ = std::make_unique<fable2::WarmOverlay>(drawer);
+    fable2::SetHudSettings(&settings_);
+    perf_hud_ = std::make_unique<fable2::PerfHudOverlay>(drawer);
+
     // Escape quits. Settings are saved on the way out, so a change made in
     // the overlay and then quit is not lost - which is the whole reason this
     // goes through the same path as the window's close button rather than
@@ -378,11 +404,16 @@ class Fable2App : public rex::ReXApp {
       app_context().QuitFromUIThread();
     });
 
+    // F8 shows or hides the readouts. A number in the corner is a tool, so it
+    // is off until asked for - but reaching it must not need a menu, because
+    // what it measures is what the menu being open changes. Which of the
+    // three are shown stays as chosen; this only switches them on and off.
     rex::ui::RegisterBind(
         "bind_fable2_hud", "F8", "Show or hide the on-screen readouts", [this] {
           settings_.hud_enabled = !settings_.hud_enabled;
           REXLOG_INFO("F8: on-screen readouts {}",
                       settings_.hud_enabled ? "on" : "off");
+          settings_.Save();
         });
 
     // F9 switches the texture pack during play. This is the only practical way
@@ -397,6 +428,7 @@ class Fable2App : public rex::ReXApp {
           settings_.texture_pack = !settings_.texture_pack;
           REXLOG_INFO("F9: texture pack {}", settings_.texture_pack ? "ON" : "OFF");
           fable2::ApplyLiveSettings(settings_, window());
+          fable2::NotifyTexturePack(settings_.texture_pack);
           // Deliberately NOT saved: a half-finished comparison must not become
           // the stored preference. The checkbox is the decision.
         });
@@ -409,7 +441,8 @@ class Fable2App : public rex::ReXApp {
             return;
           }
           overlay_ = std::make_unique<fable2::SettingsOverlay>(
-              drawer, &settings_, window(), [this] { ToggleAdvancedSettings(); });
+              drawer, &settings_, window(), [this] { ToggleAdvancedSettings(); },
+              &tex_job_);
         });
   }
 
@@ -433,12 +466,19 @@ class Fable2App : public rex::ReXApp {
 
   void OnShutdown() override {
     fable2::FPTrap::Report();
+    // A texture run still going is stopped here, not left to the destructor:
+    // it owns a process tree writing into the pack, and the job object kills
+    // that tree the moment the run is cancelled.
+    tex_job_.CancelAndJoin();
     // The dialogs hold a raw pointer to the drawer, which the SDK tears down
     // after this hook. Drop them first.
     StopUiPump();
     setup_screen_.reset();
     overlay_.reset();
     advanced_.reset();
+    tex_notify_.reset();
+    warm_overlay_.reset();
+    perf_hud_.reset();
     rex::ui::UnregisterBind("bind_fable2_settings");
   }
 
@@ -454,18 +494,84 @@ class Fable2App : public rex::ReXApp {
         imgui_drawer(), rex::filesystem::GetExecutableFolder() / "fable2.toml");
   }
 
-  // What the title is told the display is. This is separate from the host
-  // window: video_mode_* is what actually changes the rendered resolution and
-  // the rate the game targets.
+  // What the title is told the display is: a 16:9 display, whatever shape
+  // the window is.
+  //
+  // Two things went wrong before this. The guest mode was a separate setting
+  // that could be pointed at the window's own shape; and the runtime treats a
+  // video mode equal to its default of 1280x720 as "not configured" and
+  // substitutes the window size for it. Either way, on a 3840x1600 window the
+  // guest reported a 2.4:1 display, the 16:9 frame "matched" it, and the
+  // presenter - which pillarboxes only when the guest's display aspect
+  // differs from the window's - never added the bars. "Keep aspect ratio"
+  // was on and doing nothing. Measured here at a 2400x1000 window: the
+  // character-select cards stretched edge to edge. Fixed on the NG2 port first
+  // (its v1.0.1); this is the same fix.
+  //
+  // The largest 16:9 box that fits the window: a 16:9 window is told its own
+  // size, an ultrawide is told a display of its own height.
   void ApplyDisplaySettings() {
-    REXCVAR_SET(video_mode_width, settings_.video_width);
-    REXCVAR_SET(video_mode_height, settings_.video_height);
+    int guest_w = settings_.window_width;
+    int guest_h = settings_.window_height;
+    if (guest_w * 9 > guest_h * 16)
+      guest_w = guest_h * 16 / 9;
+    else if (guest_w * 9 < guest_h * 16)
+      guest_h = guest_w * 9 / 16;
+    guest_w &= ~1;
+    guest_h &= ~1;
+    REXCVAR_SET(video_mode_width, guest_w);
+    REXCVAR_SET(video_mode_height, guest_h);
+    // Ask the runtime to take the value as set even when it equals the
+    // default. By name, so a runtime without the option simply ignores it.
+    if (rex::cvar::GetFlagInfo("video_mode_explicit"))
+      rex::cvar::SetFlagByName("video_mode_explicit", "true");
     REXCVAR_SET(video_mode_refresh_rate, double(settings_.fps));
-    REXLOG_INFO("Display: window {}x{}, guest {}x{} @ {} Hz, fullscreen={}, "
-                "scale={}x",
+    REXLOG_INFO("Display: window {}x{}, guest display {}x{} @ {} Hz, "
+                "fullscreen={}, scale={}x",
                 settings_.window_width, settings_.window_height,
-                settings_.video_width, settings_.video_height, settings_.fps,
-                settings_.fullscreen, settings_.resolution_scale);
+                REXCVAR_GET(video_mode_width), REXCVAR_GET(video_mode_height),
+                settings_.fps, settings_.fullscreen, settings_.resolution_scale);
+  }
+
+  // Input is held while a stage's textures are still being read, and while
+  // we are not the foreground window.
+  //
+  // Held at the INPUT layer rather than by drawing a modal, because the
+  // screen underneath is the game's own loading screen and covering it would
+  // replace something informative with something less so. Pressing on through
+  // the warming would land the player in the region exactly when the disk is
+  // busiest - which is the stutter the warming exists to remove.
+  void GateInputToForeground() {
+    auto* runtime_ptr = runtime();
+    auto* input = runtime_ptr ? dynamic_cast<rex::input::InputSystem*>(
+                                    runtime_ptr->input_system())
+                              : nullptr;
+    if (input == nullptr)
+      return;
+    input->SetActiveCallback([] {
+      if (fable2::GetWarmState().warming)
+        return false;
+      return fable2::ThisProcessIsForeground();
+    });
+    REXLOG_INFO("Input: held while the texture cache warms, and while we are "
+                "not the foreground window");
+  }
+
+  // The same bundle the settings button writes, from the environment.
+  //
+  // The button is in a menu, and the reports worth having most are from people
+  // whose game never reaches one. This runs during startup instead, so a
+  // launch that dies later still leaves something to send.
+  void MaybeWriteDiagnostics() {
+    const char* want = std::getenv("FABLE2_DIAGNOSTICS");
+    if (!want || !*want || *want == '0')
+      return;
+    const auto result = fable2::WriteDiagnostics(
+        Fable2Settings::Path(), rex::filesystem::GetExecutableFolder() / "logs");
+    if (result.ok)
+      REXLOG_INFO("Diagnostics: FABLE2_DIAGNOSTICS wrote {}", result.file.string());
+    else
+      REXLOG_ERROR("Diagnostics: {}", result.error);
   }
 
   // Everything the GPU plugin owns, through the cvar config loader so the
@@ -545,6 +651,12 @@ class Fable2App : public rex::ReXApp {
   std::unique_ptr<fable2::SetupScreen> setup_screen_;
   std::unique_ptr<fable2::SettingsOverlay> overlay_;
   std::unique_ptr<rex::ui::SettingsDialog> advanced_;
+  std::unique_ptr<fable2::TextureNotifyOverlay> tex_notify_;
+  std::unique_ptr<fable2::WarmOverlay> warm_overlay_;
+  std::unique_ptr<fable2::PerfHudOverlay> perf_hud_;
+  // The texture dump/upscale run, owned here for the life of the process so
+  // closing a settings screen never cancels it. See TextureJob.
+  fable2::TextureJob tex_job_;
   std::thread ui_pump_thread_;
   std::atomic<bool> ui_pump_stop_{false};
   std::atomic<bool> ui_pump_pending_{false};

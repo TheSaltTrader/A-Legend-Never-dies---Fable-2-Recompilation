@@ -3,6 +3,129 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.11 — 2026-09-11
+
+Everything the NG2 port learned between 5 and 11 September, brought across.
+Each item names where it came from; NG2's own changelog (v1.0.0 to v1.0.6)
+carries the full story of each.
+
+### Fixed - the whole picture stretched on any window that was not 16:9
+
+Pick an ultrawide size and the game filled it edge to edge - HUD, menus and
+all - with "Keep aspect ratio" on and doing nothing. Measured on the 6th at a
+2400x1000 window: the character-select cards stretched wall to wall.
+
+Two things were wrong. The guest was told the display was the window's size,
+and the runtime treats a video mode equal to its default of 1280x720 as "not
+configured" and substitutes the window size for it - so at any non-16:9
+window the guest reported the window's own shape, the 16:9 frame "matched" it,
+and the presenter, which pillarboxes only when the two differ, never added the
+bars. The guest is now told the largest 16:9 box that fits the window, the
+runtime's new `video_mode_explicit` option makes it take that value as set,
+and the separate video-size settings that could be pointed at the window's
+shape are gone. Verified: the same 2400x1000 window now shows the picture
+pillarboxed, and the log reads `guest display 1776x1000`.
+
+### Fixed - the spin-wait hint was translated to nothing
+
+`db16cyc` is Xenon's spin-wait hint. The codegen tool this project was
+generating with predated NG2's fix and emitted nothing for it, in six of the
+recompiled files here. Rebuilt the tool from the shared SDK source, forced a
+regeneration (codegen's stamp does not depend on the tool, so it reported
+"554 unchanged" until the stamp was deleted), and the six now emit the
+`PAUSE`-plus-yield the runtime provides. A correctness fix, not a visible one.
+
+### Fixed - the cursor never hid
+
+"Hide the pointer after" set a delay and left the window's cursor mode at
+"always visible", so the delay was dead configuration. The mode now follows
+the delay. (NG2 v1.0.5.)
+
+### Changed - the texture pipeline, in full (NG2 v1.0.1, v1.0.2, v1.0.5)
+
+- **Cancel cancels.** The tool is a tree - the Python launcher, the
+  interpreter, the upscaler - and stopping the first left the rest running.
+  The tree now lives in a Windows job object; Cancel terminates it within a
+  moment, and so does quitting the game.
+- **The run belongs to the app, not the menu.** Closing the settings menu used
+  to destroy the run with it. It now lives for the life of the process; the
+  menu shows its progress whenever it is open.
+- **Two steps, two bars.** Decoding every dump and upscaling the art are
+  reported as "Step 1 of 2" and "Step 2 of 2", each timed by itself, instead
+  of one bar reaching 100% and starting again with a wrong estimate.
+- **Only what is missing.** "Process N waiting textures" leaves the pack's
+  existing textures alone; "Redo textures already in the pack" rebuilds
+  everything, and is forced when the pack's own record (`pack/pack.txt`) says
+  it was made with other settings or stopped halfway.
+- **Honest counts.** The menu classifies the dump the way the tool does and
+  reports what can be enhanced, what is in the pack and what is waiting -
+  HUD, fonts, normal maps and video frames are never packed and are no longer
+  counted as missing. Counted off the UI thread, at most every five seconds:
+  on NG2 the per-frame folder walk produced a 2.3 s frame and a driver reset.
+- **The AI upscaler ran at the wrong scale.** Real-ESRGAN x4plus is a 4x
+  network; asked for 2x it produced shifted, mostly black tiles. It now runs
+  at its own 4x and the result is resized to the scale asked for.
+- **Dumping and the pack are one or the other.** Together they put a file
+  write and a read on the GPU thread for every texture and starve the command
+  stream. The menu cannot select both, and a settings file that has both
+  loads with the pack off. **A file that had both on before this release
+  will come up with dumping on and the pack off.**
+- **Every k_8_8_8_8 texture was being dropped from the pack.** The tool's two
+  float-format codes were 6 and 7 - the values from the render-target enum,
+  not the texture enum - so `pack_reason()` called every k_8_8_8_8 texture
+  (code 6) a "float format" and skipped it. Now 31 and 32, from `xenos.h`.
+  Found by porting the rule to C++ against the enum.
+
+### Added - per-region texture warming (NG2 v1.0.0 "warmed per stage")
+
+The plugin records which pack textures each stage uses and pre-reads them
+when the stage returns, so a region's second visit does not stutter on cold
+reads. NG2 learns its stage from the chapter file the game opens; Fable II
+opens no per-level file, so the runtime gained a file-open observer
+(`SetFileOpenObserver`, `patches/rexglue-file-open-observer.patch`) and the
+app maps the per-region audio bank the game opens to a stable region number
+(`src/fable2_stage.cpp`). A blue bar top-left shows the warming and input is
+held until it is done. **Not yet observed in play**: whether the game opens
+those banks per region is what the first region change with this build will
+show - every open is logged at debug as `[stage] open #N`.
+
+### Added - overlays that the settings already promised
+
+The F8 readouts (FPS, GPU, video memory) had switches and a key and nothing
+that drew them; the F9 pack toggle changed the picture with no indication of
+which set was on screen. Both now draw (`src/fable2_texnotify.cpp`, from NG2
+v0.5.4), and the window title carries the port's version.
+
+### Added - one button for a bug report (NG2 v1.0.0)
+
+"Copy diagnostics to a file", on both settings screens, gathers this
+session's log, the settings and what the machine is into one text file under
+`diagnostics\`, copies its path and opens the folder. `FABLE2_DIAGNOSTICS=1`
+writes the same file during startup. It looks at `--log_file` first, so a
+scripted run does not bundle an unrelated log.
+
+### Added - a Lodestone census (NG2 v1.0.0)
+
+`tools/lodestone_census.py` takes its subjects from the artefact: every field
+in `fable2_settings.h`, every cvar that mirrors one, every emission in
+`fable2_tuning.h`, every tool the C++ looks up. Each must be reachable,
+documented in the README's new settings reference, round-trip through save
+and load, and be delivered under its own condition - or be declared in
+`tools/settings-ledger.json` with a reason. Green on first passing run after
+the README reference was written. `tools/sweep_rowstart.py` is the companion
+that catches a `RowStart` outside a table, which took NG2's process down.
+
+### Also
+
+- Input is held while we are not the foreground window (NG2), and the d-pad
+  is on the plain arrow keys.
+- The runtime pair is the SDK's 2026-09-11 build: stuck-wait watchdog (tag
+  `[watchdog]`, was `[ng2]`), audio underrun credit, ring-buffer epoch,
+  `video_mode_explicit`, content-hash pack, file-open observer. The installed
+  SDK's import library and headers were refreshed to match; the previous pair
+  is in `dll_backup_20260911_preobserver/`.
+- README: the status table no longer says no character has ever rendered.
+
 ## 0.0.10 — 2026-09-11
 
 ### Texture pack: ids now carry a content hash (ported from NG2)

@@ -1,0 +1,84 @@
+diff --git a/include/rex/kernel/xboxkrnl/io.h b/include/rex/kernel/xboxkrnl/io.h
+new file mode 100644
+index 0000000..9bb0d9e
+--- /dev/null
++++ b/include/rex/kernel/xboxkrnl/io.h
+@@ -0,0 +1,25 @@
++// Observing the guest's file opens.
++//
++// A title announces what it is doing through the files it opens - a chapter's
++// story data, a region's audio bank - and a port that wants to act on "a stage
++// is loading" can read that event here instead of reverse-engineering the
++// loader. The NG2 port did this with a midasm hook on its own file wrapper;
++// this is the same event, one level down, available to every title.
++
++#pragma once
++
++#include <functional>
++#include <string>
++
++namespace rex::kernel::xboxkrnl {
++
++// Called for every NtCreateFile / NtOpenFile the guest makes, with the
++// translated path (for example "game:\data\audio\atmos_bowerstone_market.bnk")
++// and whether the open succeeded. It runs on the guest thread that made the
++// open, after the kernel has finished with it: keep it cheap, and do not call
++// back into the kernel from it. One observer at a time; an empty function
++// clears it.
++using FileOpenObserver = std::function<void(const std::string& path, bool opened)>;
++void SetFileOpenObserver(FileOpenObserver observer);
++
++}  // namespace rex::kernel::xboxkrnl
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+index 3f1a852..353eb45 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_io.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+@@ -12,7 +12,10 @@
+ // Disable warnings about unused parameters for kernel functions
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
++#include <mutex>
++
+ #include <rex/filesystem/device.h>
++#include <rex/kernel/xboxkrnl/io.h>
+ #include <rex/kernel/xboxkrnl/private.h>
+ #include <rex/logging.h>
+ #include <rex/memory.h>
+@@ -100,6 +103,29 @@ static bool IsValidPath(const std::string_view s, bool is_pattern) {
+   return true;
+ }
+ 
++// The file-open observer (io.h). Held under its own lock and COPIED out before
++// being called, so an app may replace it from any thread while opens are in
++// flight, and so the lock is never held across the callback.
++namespace {
++std::mutex g_file_open_observer_mutex;
++FileOpenObserver g_file_open_observer;
++
++void NotifyFileOpenObserver(const std::string& path, bool opened) {
++  FileOpenObserver observer;
++  {
++    std::lock_guard<std::mutex> lock(g_file_open_observer_mutex);
++    observer = g_file_open_observer;
++  }
++  if (observer)
++    observer(path, opened);
++}
++}  // namespace
++
++void SetFileOpenObserver(FileOpenObserver observer) {
++  std::lock_guard<std::mutex> lock(g_file_open_observer_mutex);
++  g_file_open_observer = std::move(observer);
++}
++
+ u32 NtCreateFile_entry(mapped_u32 handle_out, u32 desired_access,
+                        ppc_ptr_t<X_OBJECT_ATTRIBUTES> object_attrs,
+                        ppc_ptr_t<X_IO_STATUS_BLOCK> io_status_block, mapped_u64 allocation_size_ptr,
+@@ -173,6 +199,7 @@ u32 NtCreateFile_entry(mapped_u32 handle_out, u32 desired_access,
+   } else {
+     REXKRNL_IMPORT_RESULT("NtCreateFile", "{:#x} handle={:#x}", result, handle);
+   }
++  NotifyFileOpenObserver(target_path, XSUCCEEDED(result));
+   return result;
+ }
+ 

@@ -1,11 +1,15 @@
 #include "fable2_menu.h"
 
 #include "fable2_textool.h"
+#include "fable2_diagnostics.h"
+#include "fable2_perf.h"
 
 #include "fable2_saveimport.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cmath>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
@@ -194,6 +198,9 @@ struct PageOptions {
   // False in the in-game overlay: the window and the guest video mode were
   // created during startup and cannot be rebuilt underneath a running game.
   bool restart_bound_editable = true;
+  // The App's texture run, borrowed by whichever screen is drawing the
+  // Textures section. Null hides the section's controls.
+  TextureJob* tex_job = nullptr;
 };
 
 // Marks a row that will not take effect until the next launch. Drawn after the
@@ -366,26 +373,101 @@ std::vector<std::string> UpscaleValues(const std::string& current) {
 // plugin at all).
 // The texture pack: extract, enlarge, load back. Laid out like the NG2 port's
 // so the two read the same.
-void DrawTexturesSection(Fable2Settings& s, bool& changed) {
-  // Worker state for the pack build. Function-local because the sections
-  // here are free functions, and because exactly one build can be running.
-  static fable2::ToolProgress tex_progress_;
-  static std::thread tex_thread_;
-  static double tex_started_at_ = 0.0;
-
+void DrawTexturesSection(Fable2Settings& s, const PageOptions& opts, bool& changed) {
   SectionHeader("Textures",
-                "Extract the game's textures, enlarge them, and load the "
-                "results back in. Dumping costs a file write the first time "
-                "each texture is seen; leave it off once a pack is made.");
+                "Extract the game's textures, enlarge them with an AI "
+                "upscaler, and load the results back in. Dumping costs a file "
+                "write the first time each texture is seen; leave it off once "
+                "a pack is made.");
+
+  // The run is the App's (see TextureJob): both screens borrow it, so a build
+  // started here keeps going when this screen closes.
+  fable2::TextureJob* job = opts.tex_job;
+  if (job == nullptr) {
+    Muted("The texture tools are not available on this screen.");
+    return;
+  }
+  if (!job->tools_probed) {
+    job->tools = fable2::FindTextureTools();
+    job->tools_probed = true;
+  }
 
   const bool have_path = !s.texture_path.empty();
   const std::filesystem::path dir =
       have_path ? std::filesystem::path(s.texture_path) : std::filesystem::path();
-  const int dumped = have_path ? fable2::CountDumped(dir) : 0;
-  const int packed = have_path ? fable2::CountPacked(dir) : 0;
-  const bool busy = tex_progress_.running.load();
+  // Counted OFF the UI thread, and not every frame.
+  //
+  // These walk the dump and pack folders. That is fine while a pack is a few
+  // hundred files and fatal once it is not: on the NG2 port, at 10,669 dumped
+  // and 4,125 packed, this scanned ~14,800 directory entries EVERY FRAME the
+  // section was open, produced a 2,318 ms frame during a video, and the GPU
+  // driver reset for the missed deadline. The counts are advisory: a value a
+  // few seconds stale is worth a great deal more than a stalled frame.
+  //
+  // The numbers are the ones that matter to the player: textures that CAN be
+  // enhanced, how many of those are in the pack, how many are waiting. Not
+  // "files dumped" - that count included the HUD, fonts, normal maps and video
+  // frames the tool never packs, and read as hundreds of textures missing when
+  // nothing was.
+  struct TextureCounts {
+    std::atomic<int> dumped{0};      // enhanceable textures in the dump
+    std::atomic<int> packed{0};      // of those, in the pack
+    std::atomic<int> waiting{0};     // of those, not yet in the pack
+    std::atomic<int> excluded{0};    // dumped but never packed, by design
+    std::atomic<int> tex_files{0};   // .tex files in the pack
+    // What the pack says it was made with (pack/pack.txt). 0 = no record.
+    std::atomic<int> manifest{0};
+    std::atomic<int> pack_scale{0};
+    std::atomic<int> pack_upscaler{0};        // 1 Lanczos, 2 Real-ESRGAN
+    std::atomic<int> pack_strength_x100{0};
+    std::atomic<bool> pack_complete{true};
+    std::atomic<bool> counting{false};
+    std::atomic<bool> have{false};
+    double last = -1.0e9;
+    std::string path;
+  };
+  static TextureCounts counts;
+  if (have_path) {
+    const std::string dir_str = dir.string();
+    const double now = ImGui::GetTime();
+    // Re-scan on a path change, otherwise at most every few seconds - and
+    // again once a run finishes, so the button's count is not stale.
+    const bool stale = (counts.path != dir_str) || (now - counts.last > 5.0);
+    if (stale && !counts.counting.exchange(true)) {
+      counts.path = dir_str;
+      counts.last = now;
+      std::thread([dir_str] {
+        const fable2::PackCensus c = fable2::CountPack(std::filesystem::path(dir_str));
+        counts.dumped.store(c.candidates);
+        counts.packed.store(c.packed);
+        counts.waiting.store(c.waiting);
+        counts.excluded.store(c.excluded);
+        counts.tex_files.store(c.tex_files);
+        counts.manifest.store(c.manifest ? 1 : 0);
+        counts.pack_scale.store(c.pack_scale);
+        counts.pack_upscaler.store(c.pack_upscaler == "realesrgan" ? 2
+                                   : c.pack_upscaler == "lanczos" ? 1 : 0);
+        counts.pack_strength_x100.store(int(c.pack_strength * 100.0f + 0.5f));
+        counts.pack_complete.store(c.pack_complete);
+        counts.have.store(true);
+        counts.counting.store(false);
+      }).detach();
+    }
+  }
+  const int dumped = have_path ? counts.dumped.load() : 0;
+  const int packed = have_path ? counts.tex_files.load() : 0;
+  const int in_pack = have_path ? counts.packed.load() : 0;
+  const int waiting = have_path ? counts.waiting.load() : 0;
+  const int excluded = have_path ? counts.excluded.load() : 0;
+  const bool have_manifest = have_path && counts.manifest.load() != 0;
+  const int pack_scale = counts.pack_scale.load();
+  const int pack_upscaler = counts.pack_upscaler.load();
+  const float pack_strength = float(counts.pack_strength_x100.load()) / 100.0f;
+  const bool pack_complete = counts.pack_complete.load();
+  const bool busy = job->progress.running.load();
 
   {
+    TightRows tight;
     ImGui::BeginTable("texrows", 2, ImGuiTableFlags_SizingStretchProp);
 
     RowStart("Folder",
@@ -394,100 +476,200 @@ void DrawTexturesSection(Fable2Settings& s, bool& changed) {
     {
       char buf[512];
       std::snprintf(buf, sizeof(buf), "%s", s.texture_path.c_str());
-      ImGui::SetNextItemWidth(-1.0f);
+      // Leave room for a Browse button on the same line. Typing a path still
+      // works - the field is the fallback for a path pasted from elsewhere -
+      // but a picker is what most people expect, and every other folder on
+      // the setup screen already has one.
+      const float browse_w = 96.0f;
+      ImGui::SetNextItemWidth(-(browse_w + ImGui::GetStyle().ItemSpacing.x));
       if (ImGui::InputText("##texpath", buf, sizeof(buf))) {
         s.texture_path = buf;
         changed = true;
       }
+      ImGui::SameLine();
+      if (ImGui::Button("Browse...##tex", ImVec2(browse_w, 0.0f))) {
+        const std::filesystem::path start =
+            s.texture_path.empty() ? std::filesystem::path()
+                                   : std::filesystem::path(s.texture_path);
+        if (auto picked = PickFolder("Select a folder for textures", start)) {
+          s.texture_path = picked->string();
+          changed = true;
+        }
+      }
     }
 
     RowStart("Dump while playing",
-             "Writes every texture the game loads. Play the areas you care "
+             "Writes every texture the game loads. Play the regions you care "
              "about with this on - a run that only reaches the menu collects "
              "video frames and little else.\n\n"
-             "It composes with the pack, since the dump reads the GAME's "
-             "textures and a replacement never touches those. Prefer one at a "
-             "time though: both at once puts a file write AND a read on the GPU "
-             "thread for every new texture.");
-    ImGui::BeginDisabled(busy);
-    changed |= ImGui::Checkbox("##texdump", &s.texture_dump);
-    ImGui::EndDisabled();
-
-    RowStart("Use the upscaled textures",
-             "Loads the finished pack instead of the game's own. Nothing "
-             "happens until a pack has been made.\n\n"
-             "F9 toggles this during play without opening this screen, which is "
-             "the only practical way to compare - the difference is in detail "
-             "the eye loses while a menu is in the way.\n\n"
-             "F9 does NOT change this setting. It is a look, not a decision, so "
-             "leaving a comparison half-finished cannot quietly turn the pack "
-             "off for the next launch.");
-    ImGui::BeginDisabled(busy);
-    if (ImGui::Checkbox("##texuse", &s.texture_pack)) {
+             "Dumping and the pack are one or the other, never both: together "
+             "they put a file write AND a file read on the GPU thread for every "
+             "new texture, which starves the command stream.");
+    // One or the other, never both.
+    //
+    // Dumping writes a file and stats a folder on the GPU thread for every
+    // texture the decoder creates; the pack reads one for every texture it
+    // replaces. Together they put the disk in the middle of the render thread
+    // and starve the command stream - measured on the NG2 port, and previously
+    // misdiagnosed there as a video-mode fault. Making them mutually exclusive
+    // is the difference between a documented warning nobody reads and a state
+    // that cannot happen. Clamp() enforces the same rule on a loaded file.
+    ImGui::BeginDisabled(!have_path || s.texture_pack);
+    if (ImGui::Checkbox("##texdump", &s.texture_dump)) {
+      if (s.texture_dump)
+        s.texture_pack = false;
       changed = true;
     }
     ImGui::EndDisabled();
+    if (s.texture_pack)
+      Muted("Turn the pack off first - dumping and loading together stall the "
+            "command stream.");
+
+    RowStart("Use the upscaled textures",
+             "Loads the finished pack instead of the game's own textures. "
+             "Nothing happens until a pack has been made.\n\n"
+             "F9 toggles this during play, without opening this screen - which "
+             "is the only practical way to compare the pack against the "
+             "original, since the difference is in detail the eye loses while a "
+             "menu is in the way.\n\n"
+             "F9 does NOT change this setting. It is a look, not a decision, so "
+             "leaving a comparison half-finished cannot quietly turn the pack "
+             "off for the next launch. This checkbox is what persists.");
+    ImGui::BeginDisabled(!have_path || packed == 0 || s.texture_dump);
+    if (ImGui::Checkbox("##texuse", &s.texture_pack)) {
+      if (s.texture_pack)
+        s.texture_dump = false;
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    if (s.texture_dump)
+      Muted("Turn dumping off first - see above.");
+    else if (have_path && packed == 0)
+      Muted("No pack yet. Dump some textures and press Process textures.");
 
     ImGui::EndTable();
   }
 
-  Muted("%d dumped, %d in the pack.  Press F9 in game to switch the pack on and "
-        "off and see the difference.", dumped, packed);
-  if (s.texture_dump) {
+  // Say the shortcut in the panel itself, not only in a tooltip: a key nobody
+  // is told about is a key nobody presses.
+  if (have_path && counts.have.load()) {
+    if (dumped == 0)
+      Muted("No textures dumped yet.");
+    else if (waiting == 0)
+      Muted("%d textures can be enhanced - all %d are in the pack.  Press F9 in "
+            "game to switch the pack on and off and see the difference.",
+            dumped, in_pack);
+    else
+      Muted("%d textures can be enhanced: %d in the pack, %d waiting to be "
+            "processed.", dumped, in_pack, waiting);
+    if (excluded > 0)
+      Muted("(%d more were dumped but are never enhanced - HUD, fonts, normal "
+            "maps, video frames and other non-art - so they are not counted.)",
+            excluded);
+  }
+  // Whether the enhanced textures are in use RIGHT NOW, from the renderer
+  // itself rather than from the checkbox: the checkbox is what persists, F9
+  // is what is live, and the two can differ mid-comparison. The counters are
+  // the plugin's own, read across the DLL boundary by name.
+  if (have_path && packed > 0) {
+    const bool live = !rex::cvar::Query<std::string>("texture_pack_path").empty();
+    const int32_t replaced = rex::cvar::Query<int32_t>("texture_pack_replaced");
+    // Deliberately NOT a live count. The plugin's replaced/original counters
+    // are per-scene - they count only the textures resident for what is on
+    // screen this frame - so a number here ticks constantly and, worse, reads
+    // as "only 57 textures were ever enhanced" when the pack holds thousands.
+    // The stable, true figure is the census line above. All that is worth
+    // saying live is whether the pack is actually reaching the screen.
+    if (!live)
+      Muted("Enhanced textures: OFF - the game is showing its original textures.  "
+            "Tick 'Use the upscaled textures' or press F9.");
+    else if (replaced > 0)
+      Muted("Enhanced textures: ON and in use - the pack is replacing textures "
+            "on screen now.  F9 switches.");
+    else
+      Muted("Enhanced textures: ON - nothing on this screen is in the pack yet, "
+            "so it looks unchanged here.  F9 switches.");
+  }
+  if (s.texture_dump)
     Muted("Dumping starts as soon as it is ticked - the pack is switched off for "
           "it and every texture on screen is written out.");
-  }
 
   // --- the run -----------------------------------------------------------
   if (busy) {
-    const double done = double(tex_progress_.done.load());
-    const double total = double(tex_progress_.total.load());
+    // The run has steps - decode everything, then upscale the art - and the
+    // script reports each as its own bar. A new step restarts the bar AND the
+    // clock: with one clock the estimate for the upscaling step included the
+    // whole of the decoding step's time and quoted 228 minutes for a
+    // 26-minute job, right after showing 100%.
+    const int phase = job->progress.phase.load();
+    const int phases = job->progress.phases.load();
+    if (phase != job->phase_seen) {
+      job->phase_seen = phase;
+      job->started_at = ImGui::GetTime();
+    }
+
+    const double done = double(job->progress.files_done.load());
+    const double total = double(job->progress.files_total.load());
     float fraction = total > 0.0 ? float(done / total) : 0.0f;
     fraction = fraction < 0.0f ? 0.0f : (fraction > 1.0f ? 1.0f : fraction);
 
-    // Time remaining from the rate so far, and only once enough is done to
-    // mean anything: an estimate off the first file is a guess with a number
-    // on it, which is worse than no number.
-    char overlay[96];
-    const double elapsed = ImGui::GetTime() - tex_started_at_;
+    char step[40] = "";
+    if (phases > 0)
+      std::snprintf(step, sizeof(step), "Step %d of %d  -  ", phase, phases);
+
+    // Time remaining, from the rate so far in THIS step. Shown only once there
+    // is enough done to mean anything - an estimate off the first file is a
+    // guess with a number on it, which is worse than no number.
+    char overlay[128];
+    const double elapsed = ImGui::GetTime() - job->started_at;
     if (done >= 3.0 && elapsed > 1.0 && total > done) {
       const double remain = (elapsed / done) * (total - done);
-      if (remain >= 90.0) {
-        std::snprintf(overlay, sizeof(overlay), "%.0f%%  -  about %.0f min left",
-                      fraction * 100.0f, remain / 60.0);
-      } else {
-        std::snprintf(overlay, sizeof(overlay), "%.0f%%  -  about %.0f s left",
-                      fraction * 100.0f, remain);
-      }
+      if (remain >= 90.0)
+        std::snprintf(overlay, sizeof(overlay), "%s%.0f%%  -  about %.0f min left",
+                      step, fraction * 100.0f, remain / 60.0);
+      else
+        std::snprintf(overlay, sizeof(overlay), "%s%.0f%%  -  about %.0f s left",
+                      step, fraction * 100.0f, remain);
     } else {
-      std::snprintf(overlay, sizeof(overlay), "%.0f%%", fraction * 100.0f);
+      std::snprintf(overlay, sizeof(overlay), "%s%.0f%%", step, fraction * 100.0f);
     }
     ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), overlay);
-    Muted("%s", tex_progress_.Current().c_str());
-    if (ImGui::Button("Cancel")) {
-      tex_progress_.cancel = true;
+    const std::string phase_label = job->progress.PhaseLabel();
+    if (!phase_label.empty())
+      Muted("%s", phase_label.c_str());
+    Muted("%s", job->progress.CurrentFile().c_str());
+    // The runner polls this and kills the whole process tree - the Python
+    // launcher, the interpreter and the upscaler - within a moment.
+    if (job->progress.cancel.load()) {
+      Muted("Stopping...");
+    } else if (ImGui::Button("Cancel")) {
+      job->progress.cancel = true;
     }
     return;
   }
 
-  if (tex_thread_.joinable()) {
-    tex_thread_.join();
+  if (job->thread.joinable()) {
+    job->thread.join();
+    counts.last = -1.0e9;  // the pack just changed: count it again now
   }
 
-  // How far to enlarge. The cost beside 4x and 8x is measured, not a hedge:
-  // replacements are uncompressed, so a 4x pack of this size came to about
-  // 6 GB against a 4 GB maximum soft cache and thrashed.
+  // How far to enlarge. The warning next to 4x and 8x is the measured cost,
+  // not a hedge: replacements are uncompressed, so a 4x pack of this size
+  // came to 5.9 GB against a 4 GB maximum cache and thrashed hard enough to
+  // produce two-second hitches.
   static const int kScales[] = {2, 4, 8};
   static const char* const kScaleNames[] = {
       "2x  (about 1.5 GB - recommended)",
       "4x  (about 6 GB - needs the 8 GB cache, may still hitch)",
       "8x  (about 24 GB - for future hardware)"};
   int scale_index = 0;
-  for (int i = 0; i < IM_ARRAYSIZE(kScales); ++i) {
-    if (kScales[i] == s.texture_scale) {
-      scale_index = i;
-    }
-  }
+  for (int i = 0; i < IM_ARRAYSIZE(kScales); ++i)
+    if (kScales[i] == s.texture_scale) scale_index = i;
+  // Plain labels, NOT RowStart: this is outside the table that ended above,
+  // and RowStart calls ImGui::TableNextRow, which dereferences the current
+  // table without checking. Called with no table open it reads through a
+  // null pointer and takes the process with it - which is exactly what it
+  // did on the NG2 port, as an access violation in rexruntime.
   ImGui::TextUnformatted("Upscale");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(330.0f);
@@ -496,32 +678,70 @@ void DrawTexturesSection(Fable2Settings& s, bool& changed) {
     changed = true;
   }
 
-  // The AI upscaler and the download that enables it. Not shipped: 43 MB of
-  // third-party binary under its own licence, so whether it is on the machine
-  // stays the player's decision.
-  // The upscaler ships with the port, so there is no download and no disabled
-  // control waiting on one. If it is missing the build simply falls back to a
-  // plain resize, which the tool reports.
-  // The method, chosen rather than implied. Both ship with the port, so this
-  // is a real choice and not a gate on a download - and naming Lanczos makes
-  // it visible, where "AI off" reads as though there were no method at all.
+  // Live cost, beside the switches that cause it.
   //
-  // Measured on four 512x512 textures: the AI output differs from the plain
-  // resize and carries 13-32%% more high-frequency detail, at roughly ten
-  // times the cost. That is why Lanczos stays first-class rather than a
-  // fallback.
+  // The texture pack's price is video memory and the copies that go with it,
+  // and until this was here the only way to find that out was to play until
+  // it stuttered. Toggling the pack with F9 while watching these shows the
+  // difference immediately, which is the whole reason they sit in THIS
+  // section rather than on a diagnostics page.
+  if (s.hud_menu_bars) {
+    const fable2::PerfSample p = fable2::GetPerfSample();
+    ImGui::TextUnformatted("Live cost");
+    ImGui::SameLine(140.0f);
+    ImGui::SetNextItemWidth(150.0f);
+    char cpu_text[32];
+    std::snprintf(cpu_text, sizeof(cpu_text), "CPU %.0f%%", p.cpu_percent);
+    ImGui::ProgressBar(p.cpu_percent / 100.0f, ImVec2(150.0f, 0.0f), cpu_text);
+    ImGui::SameLine();
+    char gpu_text[32];
+    if (p.gpu_valid)
+      std::snprintf(gpu_text, sizeof(gpu_text), "GPU %.0f%%", p.gpu_percent);
+    else
+      std::snprintf(gpu_text, sizeof(gpu_text), "GPU n/a");
+    ImGui::ProgressBar(p.gpu_valid ? p.gpu_percent / 100.0f : 0.0f,
+                       ImVec2(150.0f, 0.0f), gpu_text);
+    if (p.vram_valid) {
+      ImGui::TextUnformatted("Video memory");
+      ImGui::SameLine(140.0f);
+      char vram_text[64];
+      std::snprintf(vram_text, sizeof(vram_text), "%.1f / %.1f GB",
+                    p.vram_mb / 1024.0f, p.vram_total_mb / 1024.0f);
+      ImGui::ProgressBar(p.vram_total_mb > 0.0f ? p.vram_mb / p.vram_total_mb : 0.0f,
+                         ImVec2(306.0f, 0.0f), vram_text);
+      Muted("This process only - other applications on the GPU are not counted.");
+    }
+    ImGui::Spacing();
+  }
+
+  // The method, chosen rather than implied. Naming Lanczos makes it visible,
+  // where "AI off" reads as though there were no method at all - unticking
+  // the old box did not disable enhancement, it selected Lanczos, which is a
+  // perfectly good result.
+  //
+  // Measured on four 512x512 textures: the AI output carries 13-32% more
+  // high-frequency detail than the plain resize, at roughly ten times the
+  // cost. That is why Lanczos stays first-class rather than a fallback.
+  //
+  // This port ships the upscaler under tools/upscaler, so the AI entry is
+  // normally live; a per-folder copy (Download) is the fallback for an
+  // install that lost it.
+  const bool ai_ready = fable2::UpscalerInstalled(dir);
+  ImGui::TextUnformatted("Method");
+  HelpMarker("Lanczos is a high-quality resample and needs nothing extra. "
+             "Real-ESRGAN is a trained model that adds detail, and needs a "
+             "Vulkan-capable GPU and the upscaler executable.");
+  ImGui::SameLine();
   static const char* const kMethodNames[] = {
       "Lanczos  (fast, plain resize)",
       "Real-ESRGAN AI  (slower, adds detail)"};
   int method = s.texture_ai ? 1 : 0;
-  ImGui::TextUnformatted("Method");
-  ImGui::SameLine();
   ImGui::SetNextItemWidth(330.0f);
   if (ImGui::Combo("##texmethod", &method, kMethodNames, 2)) {
     s.texture_ai = (method == 1);
     changed = true;
   }
-  if (s.texture_ai) {
+  if (s.texture_ai && ai_ready) {
     ImGui::SetNextItemWidth(240.0f);
     changed |= ImGui::SliderFloat("Detail strength", &s.texture_ai_strength,
                                   0.0f, 1.0f, "%.2f");
@@ -534,28 +754,152 @@ void DrawTexturesSection(Fable2Settings& s, bool& changed) {
           "and denoises hard, which on a smoke texture cost 40%% of its\n"
           "brightness.");
     }
-    if (!fable2::UpscalerInstalled()) {
-      Muted("The upscaler is missing from tools/upscaler - the build will fall "
-            "back to Lanczos.");
+  } else if (s.texture_ai && !ai_ready) {
+    Muted("The upscaler is missing from tools/upscaler, so a run would fall back "
+          "to Lanczos. Download a copy into the texture folder instead:");
+    const bool downloading = job->progress.running.load();
+    ImGui::BeginDisabled(downloading || job->tools.python.empty() || !have_path);
+    if (ImGui::Button("Download AI upscaler (43 MB)")) {
+      job->started_at = ImGui::GetTime();
+      job->phase_seen = 0;
+      job->thread = fable2::DownloadUpscalerAsync(job->tools, dir, job->progress);
     }
+    ImGui::EndDisabled();
+    if (job->tools.python.empty())
+      Muted("Python is needed to download it.");
+    else if (!have_path)
+      Muted("Set a texture folder first.");
+  }
+  ImGui::Spacing();
+
+  // What the pack was made with, against what is selected now. A pack made
+  // with other settings cannot be topped up - the new textures would not
+  // match the old - so a difference forces a full run, and is said here
+  // rather than discovered after half an hour.
+  const bool want_ai = s.texture_ai && ai_ready;
+  const int want_upscaler = want_ai ? 2 : 1;
+  const bool settings_differ =
+      have_manifest &&
+      (pack_scale != s.texture_scale || pack_upscaler != want_upscaler ||
+       (want_ai && std::fabs(pack_strength - s.texture_ai_strength) > 0.005f));
+  const bool must_redo =
+      packed > 0 && (!have_manifest || settings_differ || !pack_complete);
+  if (have_manifest) {
+    char made[80];
+    if (pack_upscaler == 2)
+      std::snprintf(made, sizeof(made), "%dx, Real-ESRGAN, detail %.2f",
+                    pack_scale, pack_strength);
+    else
+      std::snprintf(made, sizeof(made), "%dx, Lanczos", pack_scale);
+    if (!pack_complete)
+      Muted("The pack's last run was stopped halfway (%s) - the next run redoes "
+            "every texture.", made);
+    else if (settings_differ)
+      Muted("The pack was made at %s, which differs from the settings above - "
+            "the next run redoes every texture.", made);
+    else
+      Muted("The pack was made at %s - matches the settings above.", made);
+  } else if (packed > 0) {
+    Muted("The pack does not say what it was made with (made before 0.0.11) - "
+          "the next run redoes every texture and records it.");
   }
 
-  ImGui::BeginDisabled(!have_path || dumped == 0);
-  if (ImGui::Button(s.texture_ai ? "Build pack (AI)" : "Build pack (Lanczos)")) {
-    tex_started_at_ = ImGui::GetTime();
-    tex_thread_ = fable2::BuildPackAsync(dir, s.texture_scale, s.texture_ai,
-                                         s.texture_ai_strength, tex_progress_);
+  // Only what is missing, unless asked - or forced - to redo. A pack of
+  // thousands takes half an hour with the AI; the textures dumped since take
+  // minutes, and redoing everything to get them was the only option before.
+  bool redo_box = must_redo || job->redo_all;
+  ImGui::BeginDisabled(must_redo);
+  if (ImGui::Checkbox("Redo textures already in the pack", &redo_box) && !must_redo)
+    job->redo_all = redo_box;
+  ImGui::EndDisabled();
+  HelpMarker("Off: only textures not yet in the pack are processed, which is "
+             "quick. On: every texture is done again - use it after changing "
+             "the upscale factor, the upscaler or the detail strength. Ticked "
+             "and greyed means the pack no longer matches the settings, so the "
+             "full run is required.");
+  const bool redo = must_redo || job->redo_all;
+
+  const bool nothing_to_do = !redo && waiting == 0;
+  const bool can_run =
+      have_path && dumped > 0 && !job->tools.python.empty() && !nothing_to_do;
+  // The button says how much work it is: "Process 128 waiting textures" is
+  // a different decision from "Process all 5,907 textures".
+  char run_label[80];
+  if (redo)
+    std::snprintf(run_label, sizeof(run_label), "Process all %d textures##texrun", dumped);
+  else
+    std::snprintf(run_label, sizeof(run_label), "Process %d waiting texture%s##texrun",
+                  waiting, waiting == 1 ? "" : "s");
+  // Exactly what the run will do, stated before the button is pressed.
+  if (can_run) {
+    char detail[40] = "";
+    if (want_ai)
+      std::snprintf(detail, sizeof(detail), ", detail %.2f", s.texture_ai_strength);
+    Muted("Will process %s at %dx with %s%s.",
+          redo ? "every texture that can be enhanced" : "only the waiting textures",
+          s.texture_scale, want_ai ? "Real-ESRGAN" : "Lanczos", detail);
+  }
+  ImGui::BeginDisabled(!can_run);
+  if (ImGui::Button(run_label)) {
+    job->started_at = ImGui::GetTime();
+    job->phase_seen = 0;
+    job->thread = fable2::UpscaleTexturesAsync(job->tools, dir, /*upscale=*/true,
+                                               s.texture_scale, want_ai,
+                                               s.texture_ai_strength,
+                                               /*only_missing=*/!redo,
+                                               job->progress);
   }
   ImGui::EndDisabled();
-  if (!have_path) {
+
+  // Say what is missing rather than leaving a dead button. A greyed control
+  // with no reason reads as a broken app.
+  if (!have_path)
     Muted("Set a folder first.");
-  } else if (dumped == 0) {
-    Muted("Nothing dumped yet - turn on \"Dump while playing\" and play a little.");
+  else if (dumped == 0)
+    Muted("Nothing dumped yet - turn dumping on and play.");
+  else if (job->tools.python.empty())
+    Muted("Python was not found, and the upscaler needs it.");
+  else if (nothing_to_do)
+    Muted("Nothing is waiting - every texture that can be enhanced is in the "
+          "pack. Tick Redo to rebuild it.");
+
+  if (job->progress.failed.load())
+    Muted("%s", job->progress.Error().c_str());
+  else if (job->progress.complete.load())
+    Muted("Finished. Tick 'Use the upscaled textures' or press F9 to see it.");
+}
+
+// "Copy diagnostics to a file": the log, the settings and what the machine is,
+// in one text file, with its path on the clipboard and the folder opened. A
+// report needs three files from two folders, and asking for that is asking
+// for a report with none of them.
+void DrawDiagnosticsButton() {
+  SectionHeader("Diagnostics",
+                "For a bug report: this session's log, the settings, and what "
+                "the machine is, in one text file. It contains no game data.");
+  // Held across frames so the result stays readable after the click.
+  static std::string status;
+  static bool status_ok = false;
+  if (ImGui::Button("Copy diagnostics to a file")) {
+    const auto result = fable2::WriteDiagnostics(
+        Fable2Settings::Path(), rex::filesystem::GetExecutableFolder() / "logs");
+    status_ok = result.ok;
+    if (result.ok) {
+      const bool copied = fable2::CopyToClipboard(result.file.string());
+      fable2::RevealInExplorer(result.file);
+      status = result.file.filename().string();
+      status += copied ? " - written, path copied, folder opened"
+                       : " - written, folder opened";
+    } else {
+      status = result.error;
+    }
   }
-  const std::string summary = tex_progress_.Summary();
-  if (!summary.empty()) {
-    Muted("%s", summary.c_str());
+  if (!status.empty()) {
+    ImGui::SameLine();
+    ImGui::TextColored(status_ok ? kGood : kBad, "%s", status.c_str());
   }
+  Muted("Written to diagnostics\\ beside the game. Have a look before you post "
+        "it - it names your folders.");
 }
 
 bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
@@ -610,8 +954,10 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     }
 
     RowStart("Resolution",
-             "The guest is told the display is this size, so it is what the "
-             "game renders for - not an upscale of a smaller image.");
+             "The window size. The game renders 16:9 whatever the window is, "
+             "and is told a 16:9 display of the window's height - so an "
+             "ultrawide picture is pillarboxed with Keep aspect ratio on, and "
+             "stretched with it off.");
     int res_index = ResolutionIndex(s);
     if (ImGui::Combo("##resolution", &res_index, kResolutionNames,
                      IM_ARRAYSIZE(kResolutionNames))) {
@@ -1020,7 +1366,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
   // from Xenia Canary's patch file for this title, and every address was
   // checked against our own image - the disassembly is in
   // config/hooks/patches.toml.
-  DrawTexturesSection(s, changed);
+  DrawTexturesSection(s, opts, changed);
 
   SectionHeader("Community patches",
                 "From Xenia Canary's patch file for Fable II (Margen67, Guy). "
@@ -1203,13 +1549,19 @@ void ApplyLiveSettings(const Fable2Settings& s, rex::ui::Window* window) {
   // restart-bound in the overlay instead.
   if (window != nullptr) {
     window->SetFullscreen(s.fullscreen);
-    // 0 means never hide, which the window spells as a zero delay meaning
-    // "immediately" - so the two have to be told apart here.
-    window->SetCursorAutoHideDelayMs(
-        s.cursor_hide_seconds > 0
-            ? static_cast<uint32_t>(s.cursor_hide_seconds) * 1000u
-            : 0u);
-    window->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
+    // The window hides the pointer only while its visibility is in the
+    // auto-hide MODE; setting the delay and leaving the mode at "always
+    // visible" made the delay dead configuration - the pointer never hid.
+    // So the mode is switched with the delay: auto-hidden when a delay is
+    // chosen, plain visible for 0 (which the window would otherwise read
+    // as a zero delay meaning "immediately").
+    if (s.cursor_hide_seconds > 0) {
+      window->SetCursorAutoHideDelayMs(
+          static_cast<uint32_t>(s.cursor_hide_seconds) * 1000u);
+      window->SetCursorVisibility(rex::ui::Window::CursorVisibility::kAutoHidden);
+    } else {
+      window->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
+    }
   }
 }
 
@@ -1217,11 +1569,12 @@ void ApplyLiveSettings(const Fable2Settings& s, rex::ui::Window* window) {
 
 SetupScreen::SetupScreen(rex::ui::ImGuiDrawer* drawer, Fable2Settings* settings,
                          std::function<void(bool)> on_done,
-                         std::function<void()> on_advanced)
+                         std::function<void()> on_advanced, TextureJob* tex_job)
     : ImGuiDialog(drawer),
       settings_(settings),
       on_done_(std::move(on_done)),
-      on_advanced_(std::move(on_advanced)) {
+      on_advanced_(std::move(on_advanced)),
+      tex_job_(tex_job) {
   install_dest_ = settings_->ResolvedGamePath();
 
   // Test seam, matching the NG2_* overrides the app already reads: preselect
@@ -1303,7 +1656,11 @@ void SetupScreen::OnDraw(ImGuiIO& io) {
   if (ImGui::BeginTable("layout", 2, ImGuiTableFlags_SizingStretchSame)) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    DrawSettings(*settings_, PageOptions{});
+    {
+      PageOptions setup_opts;
+      setup_opts.tex_job = tex_job_;
+      DrawSettings(*settings_, setup_opts);
+    }
 
     ImGui::TableSetColumnIndex(1);
     DrawContent();
@@ -1471,6 +1828,8 @@ void SetupScreen::DrawAbout() {
         "data/levels.bnk and the expansions' code is in the executable - so "
         "there is nothing to install. For a package that genuinely is not on "
         "the disc, pass --dlc_root <folder> or run tools/install_dlc.cmd.");
+
+  DrawDiagnosticsButton();
 }
 
 void SetupScreen::DrawFooter(float column_width) {
@@ -1535,13 +1894,20 @@ void SetupScreen::DrawFooter(float column_width) {
 
 SettingsOverlay::SettingsOverlay(rex::ui::ImGuiDrawer* drawer,
                                  Fable2Settings* settings, rex::ui::Window* window,
-                                 std::function<void()> on_advanced)
+                                 std::function<void()> on_advanced,
+                                 TextureJob* tex_job)
     : ImGuiDialog(drawer),
       settings_(settings),
       window_(window),
-      on_advanced_(std::move(on_advanced)) {}
+      on_advanced_(std::move(on_advanced)),
+      tex_job_(tex_job) {}
 
-SettingsOverlay::~SettingsOverlay() = default;
+SettingsOverlay::~SettingsOverlay() {
+  // Deliberately does NOT touch the texture run: it is owned by the App
+  // (tex_job_), not by this overlay, so closing the settings menu leaves an
+  // upscale running. Only an explicit Cancel or the app exiting stops it -
+  // which is the whole point of moving it out of here.
+}
 
 void SettingsOverlay::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowSize(ImVec2(680, 620), ImGuiCond_FirstUseEver);
@@ -1556,6 +1922,7 @@ void SettingsOverlay::OnDraw(ImGuiIO& io) {
 
   PageOptions opts;
   opts.restart_bound_editable = false;
+  opts.tex_job = tex_job_;
 
   bool changed = false;
   ImGui::BeginChild("body", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.2f));
@@ -1566,6 +1933,7 @@ void SettingsOverlay::OnDraw(ImGuiIO& io) {
   ImGui::Spacing();
   Muted("The game folder is chosen on the setup screen, which runs before the "
         "game is loaded. Hold Shift while launching to get it back.");
+  DrawDiagnosticsButton();
   ImGui::EndChild();
 
   if (changed) {

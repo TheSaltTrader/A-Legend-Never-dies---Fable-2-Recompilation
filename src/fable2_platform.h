@@ -56,6 +56,11 @@ struct MonitorInfo {
 // indices for every display that was not the primary. Empty if they cannot be
 // enumerated, in which case nothing should be clamped - refusing to guess beats
 // clamping to a number that came from nowhere.
+// Whether this process owns the foreground window. Input is held while it
+// does not, so an alt-tabbed game does not keep reading the keyboard the
+// player is now typing into something else with.
+bool ThisProcessIsForeground();
+
 std::vector<MonitorInfo> Monitors();
 
 // The scaling Windows will ACTUALLY apply to this process's windows.

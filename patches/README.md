@@ -13,6 +13,7 @@ thing. These files exist so that is recoverable.
 |---|---|
 | `rexglue-fidelityfx-spatial-only.patch` | unlocks the committed FSR/CAS present effects (`src/ui/CMakeLists.txt`) |
 | `rexglue-canary-gpu-ports.patch` | the running port of Canary's post-fork GPU work; see `docs/CANARY-PORTED.md` for which commits are in it |
+| `rexglue-file-open-observer.patch` | `rex::kernel::xboxkrnl::SetFileOpenObserver` (`include/rex/kernel/xboxkrnl/io.h`): every guest NtCreateFile reported to the app, which is how per-region texture warming learns which region is loading (2026-09-11). The same tree also carries the NG2 port's runtime work - the stuck-wait watchdog (its log tag is `[watchdog]`, renamed from `[ng2]` here), the audio underrun credit, the ring-buffer epoch, `video_mode_explicit`, the content-hash texture pack - which the NG2 project's own notes track |
 | `build_vulkan.cmd` | the build script itself (untracked upstream, so not in the patch) |
 
 Apply the FidelityFX patch first; they touch different files and do not

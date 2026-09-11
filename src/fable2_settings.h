@@ -39,10 +39,12 @@ struct Fable2Settings {
   bool fullscreen = false;
   int monitor = 0;                 // 0..16, 0 = default
 
-  // What the title is told the display is. This, not the window size, is what
-  // changes the rendered resolution and the rate the game targets.
-  int video_width = 1280;          // cvar range 640..4095
-  int video_height = 720;          // cvar range 480..4095
+  // What the title is told the display is used to be two more fields here.
+  // It is now derived: the largest 16:9 box inside the window, computed in
+  // ApplyDisplaySettings. A separate setting could be pointed at the window's
+  // own shape, and then the presenter had no aspect difference to pillarbox -
+  // the whole picture stretched on any ultrawide, with "Keep aspect ratio" on
+  // and doing nothing. The game renders 16:9 whatever it is told.
   int fps = 60;                    // video_mode_refresh_rate, 24..240
 
   bool vsync = true;
@@ -267,8 +269,6 @@ struct Fable2Settings {
         << "window_height=" << window_height << "\n"
         << "fullscreen=" << (fullscreen ? 1 : 0) << "\n"
         << "monitor=" << monitor << "\n"
-        << "video_width=" << video_width << "\n"
-        << "video_height=" << video_height << "\n"
         << "fps=" << fps << "\n"
         << "vsync=" << (vsync ? 1 : 0) << "\n"
         << "gpu_backend=" << gpu_backend << "\n"
@@ -322,8 +322,6 @@ struct Fable2Settings {
     window_width = std::clamp(window_width, 640, 7680);
     window_height = std::clamp(window_height, 480, 4320);
     monitor = std::clamp(monitor, 0, 16);
-    video_width = std::clamp(video_width, 640, 4095);
-    video_height = std::clamp(video_height, 480, 4095);
     fps = std::clamp(fps, 24, 240);
     resolution_scale = std::clamp(resolution_scale, 1, 8);
     nan_constant_repair = std::clamp(nan_constant_repair, 0, 2);
@@ -351,6 +349,11 @@ struct Fable2Settings {
       readback = "none";
     if (gpu_backend != "vulkan" && gpu_backend != "d3d12")
       gpu_backend = "d3d12";
+    // Dumping and loading together put the disk on the GPU thread and starve
+    // the command stream. The menu makes the pair impossible to select; this
+    // makes it impossible to arrive with, from an older config or a hand edit.
+    if (texture_dump && texture_pack)
+      texture_pack = false;
   }
 
  private:
@@ -363,8 +366,8 @@ struct Fable2Settings {
     else if (k == "window_height") window_height = std::atoi(v.c_str());
     else if (k == "fullscreen") fullscreen = Truthy(v);
     else if (k == "monitor") monitor = std::atoi(v.c_str());
-    else if (k == "video_width") video_width = std::atoi(v.c_str());
-    else if (k == "video_height") video_height = std::atoi(v.c_str());
+    // video_width / video_height from older files are read and dropped: the
+    // guest display is derived from the window now (see the Display block).
     else if (k == "fps") fps = std::atoi(v.c_str());
     else if (k == "vsync") vsync = Truthy(v);
     else if (k == "gpu_backend") gpu_backend = v;

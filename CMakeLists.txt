@@ -22,6 +22,9 @@ set(FABLE2_SOURCES
     src/fable2_disc.cpp
     src/fable2_menu.cpp
     src/fable2_platform.cpp
+    src/fable2_texnotify.cpp
+    src/fable2_diagnostics.cpp
+    src/fable2_stage.cpp
     src/patch_hooks.cpp
 )
 
@@ -30,6 +33,13 @@ if(WIN32)
 else()
     add_executable(fable2 ${FABLE2_SOURCES})
 endif()
+
+# The port's own version, from the VERSION file, baked in so the window title
+# and the diagnostics bundle name the build they came from. The SDK's own
+# title string names the SDK version, which never changes between our builds.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" FABLE2_VERSION_TEXT)
+string(STRIP "${FABLE2_VERSION_TEXT}" FABLE2_VERSION_TEXT)
+target_compile_definitions(fable2 PRIVATE FABLE2_VERSION="${FABLE2_VERSION_TEXT}")
 
 # GPU_PLUGINS stages the SDK's Xenos emulation plugin (rexgpu-xenos.dll) next
 # to the executable. It is runtime-loaded, never linked.

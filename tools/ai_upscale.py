@@ -37,6 +37,17 @@ MODELS = ("realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3-
 CHUNK = 40          # textures per invocation
 RETRIES = 2
 
+# The scale each model actually produces. The x4plus models are 4x networks
+# and nothing else: asked for "-s 2" the ncnn tool still runs the 4x network
+# and then assembles its tiles into a 2x canvas, which comes out as the picture
+# shifted, repeated and mostly black (measured on NG2: a starburst texture came
+# back with a maximum value of 26 out of 255). So the model is always run at
+# its own scale and the result resized down to what was asked for - which is
+# what Real-ESRGAN's own reference script does for an "outscale" below the
+# model's. The animevideov3 family ships separate x2/x3/x4 networks and is not
+# listed.
+NATIVE_SCALE = {"realesrgan-x4plus": 4, "realesrgan-x4plus-anime": 4}
+
 
 def find_upscaler(root):
     """The upscaler executable, or None.
@@ -94,6 +105,7 @@ def upscale_many(exe, images, scale, model=MODEL_DEFAULT, gpu=0, log=print):
     """
     out = {}
     todo = list(images)
+    native = NATIVE_SCALE.get(model, scale)
     for start in range(0, len(todo), CHUNK):
         chunk = todo[start:start + CHUNK]
         remaining = {k: im for k, im in chunk}
@@ -101,7 +113,7 @@ def upscale_many(exe, images, scale, model=MODEL_DEFAULT, gpu=0, log=print):
         for attempt in range(RETRIES + 1):
             if not remaining:
                 break
-            tmp = tempfile.mkdtemp(prefix="ng2ai_")
+            tmp = tempfile.mkdtemp(prefix="fable2ai_")
             in_dir, out_dir = os.path.join(tmp, "in"), os.path.join(tmp, "out")
             os.makedirs(in_dir); os.makedirs(out_dir)
             order = {}
@@ -110,7 +122,7 @@ def upscale_many(exe, images, scale, model=MODEL_DEFAULT, gpu=0, log=print):
                 order[name] = k
                 im.convert("RGBA").save(os.path.join(in_dir, name))
 
-            _run(exe, in_dir, out_dir, model, scale, gpu)
+            _run(exe, in_dir, out_dir, model, native, gpu)
 
             still = {}
             for name, k in order.items():
@@ -122,7 +134,10 @@ def upscale_many(exe, images, scale, model=MODEL_DEFAULT, gpu=0, log=print):
                         res.load()
                         src = remaining[k]
                         want = (src.width * scale, src.height * scale)
-                        ok = res.size == want and not _looks_blank(res)
+                        got = (src.width * native, src.height * native)
+                        ok = res.size == got and not _looks_blank(res)
+                        if ok and native != scale:
+                            res = res.resize(want, Image.Resampling.LANCZOS)
                         if ok:
                             out[k] = res.convert("RGBA")
                     except Exception:                             # noqa: BLE001

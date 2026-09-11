@@ -204,6 +204,16 @@ struct Fable2Tuning {
     out.push_back({"mnk_sensitivity", ToString(s.mouse_sensitivity),
                    "mouse sensitivity, 0.01-10"});
 
+    // The d-pad on plain arrow keys. The runtime binds it to Shift+Arrow,
+    // which is awkward to press and, measured on the NG2 port, does not reach
+    // the game at all - a bare Shift+Down does not move a menu cursor while
+    // the unmodified left-stick keys do. The arrow keys are free: the left
+    // stick is on WASD.
+    out.push_back({"keybind_dpad_up", "Up", "plain arrows, not Shift+Arrow"});
+    out.push_back({"keybind_dpad_down", "Down", "plain arrows"});
+    out.push_back({"keybind_dpad_left", "Left", "plain arrows"});
+    out.push_back({"keybind_dpad_right", "Right", "plain arrows"});
+
     if (!mappings_file.empty()) {
       // The runtime resolves this against the working directory, so a shortcut
       // that starts the game from anywhere else silently loses every
