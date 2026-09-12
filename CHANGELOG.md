@@ -3,6 +3,91 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.14 — 2026-09-12
+
+### Fixed - 0.0.13's upload guard skipped every pack texture of an odd width
+
+The fit check added in 0.0.13 demanded rows x pitch bytes of upload buffer.
+D3D12 sizes the buffer as (rows - 1) x pitch plus one row of pixels - the
+last row is not padded - so every replacement whose width is not a multiple
+of 64 (432, 368, 288 wide, five in the first minute of play) was rejected and
+logged as "does not fit" although it fit exactly. The bound is now what the
+read writes. Plugin rebuilt and deployed.
+
+### Fixed - a pack texture was re-read and re-uploaded whenever the game touched it
+
+The cache re-loads a texture whenever the game writes its guest memory. For a
+pack replacement that re-read the .tex file and re-uploaded it, 1.3 ms of
+render-thread time each, although the resource already held exactly those
+pixels. Measured in play: about five re-uploads a frame, 9300 in one session.
+A pack texture is now uploaded once per resource; later loads return at
+once. A new `[texpack] re-uploads in N s: ...` line names the ids uploaded
+most often, every five seconds, so the next churn has a name.
+
+### Answered - "no way to play at 60 fps locked?"
+
+Measured tonight, standing still in Bowerstone Old Town after a scripted
+New Game, GPU shared with another job at 55-60% load:
+
+| supersampling | pack | game fps (`[swap]`) |
+|---|---|---|
+| 2x | off | 60.0 steady, p50 16.6 ms |
+| 2x | on | 60.0 steady, p50 16.6 ms |
+| 3x | on | 42-55, p50 17-24 ms, uneven |
+
+Your session ran at 3x (the change to 2x you made mid-session takes effect
+at the next launch), with the pack on and while moving: 38. At 2x it holds
+60 with the pack on. Whether it holds while moving through a crowd was not
+measured - the scripted pad cannot walk. The two guest threads that sit at
+100% of a core are not the limit: the in-process profiler (below) shows the
+GameThread in the game's own sleep-and-poll frame wait (`KeDelayExecutionThread`
+from `sub_82CBD098`, 60-80% of its samples) and the 3D Engine thread in an
+eight-instruction spin at `sub_82B9BF90` (85-91%) or waiting on a mutex -
+both waiting for the frame, neither computing. So the frame at 3x is the GPU's,
+and no codegen or compiler flag changes that. The remaining recompiled-code
+cost is real but hidden behind the wait; the profiler will show it the day the
+GPU is not the limit.
+
+### Added - a sampling profiler for the guest threads
+
+`FABLE2_PROFILE=1` (or a list of thread names) samples the named guest
+threads a thousand times a second from inside the process - suspend, read
+the context, unwind with the OS's tables, resume - and every ten seconds logs
+where the on-CPU samples landed: by module, the hottest leaf addresses, and
+the hottest recompiled functions, named `sub_XXXXXXXX` through the codegen's
+own guest-to-host table, so no PDB is needed. Samples where the thread had
+not run since the last look are counted as blocked, not attributed. Nothing
+allocates, logs or locks while a thread is suspended. Why in-process: the
+runtime raises first-chance guest access violations constantly, so anything
+attached as a debugger changes what it measures - the F9 crash never
+reproduced under cdb or procdump - and the recompiled functions have no
+symbols an external profiler could show.
+
+### Added - a scripted pad for test runs
+
+`FABLE2_PAD_SCRIPT="autoskip:20,30:right,32:a,..."` presses buttons on the
+intro skipper's synthetic pad at the given seconds after boot, read by the
+game exactly like a controller. Keystrokes through the window depend on focus
+and on what the guest polls at that instant, which cost a night of runs that
+landed on the wrong screen. `autoskip:N` keeps the skipper's A/Start
+hammering until N seconds and stops it after, because it otherwise presses
+A on the main menu too. The New Game path needs a d-pad press on the
+character cards before A; Continue cannot be scripted here because the
+imported saves do not load ("created with a more up-to-date version" /
+"corrupted") - the play so far has all been New Game.
+
+### Noted
+
+- The build is a shared source tree with the NG2 port. Tonight the NG2
+  session edited the same plugin file and rebuilt it while this one was
+  measuring; the Fable 2 copies (`RexBlue\win-amd64\bin` and the build
+  folder) are the build from this session's edits alone. The exact edits are
+  in `patches\scripts\` because a diff of the shared file is never one
+  project's change.
+- Two Edge processes were burning a core each in the kernel with no user
+  time during the evening's measurements, 5.6 million system calls a second
+  machine-wide. Not the game, but not nothing.
+
 ## 0.0.13 — 2026-09-11
 
 ### Fixed - F9 while textures were loading killed the game

@@ -26,6 +26,7 @@ set(FABLE2_SOURCES
     src/fable2_diagnostics.cpp
     src/fable2_stage.cpp
     src/fable2_crashdump.cpp
+    src/fable2_profiler.cpp
     src/patch_hooks.cpp
 )
 

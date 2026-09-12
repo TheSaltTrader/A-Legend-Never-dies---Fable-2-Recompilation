@@ -39,6 +39,7 @@
 #include "fable2_diagnostics.h"
 #include "fable2_stage.h"
 #include "fable2_crashdump.h"
+#include "fable2_profiler.h"
 #include "fable2_menu.h"
 #include "fable2_platform.h"
 #include "fable2_settings.h"
@@ -360,6 +361,7 @@ class Fable2App : public rex::ReXApp {
     MaybeWriteDiagnostics();
     ArmQuitSeam();
     ArmTexpackStressSeam();
+    fable2::StartProfiler();  // FABLE2_PROFILE=1: sample the guest threads
     // Per-region texture warming needs to know which region is loading, and
     // the game says so through the audio bank it opens for it. The path the
     // runtime mounted is the one to enumerate - a command-line root wins over
@@ -487,6 +489,7 @@ class Fable2App : public rex::ReXApp {
   }
 
   void OnShutdown() override {
+    fable2::StopProfiler();  // before any guest thread it samples can go away
     fable2::FPTrap::Report();
     // A texture run still going is stopped here, not left to the destructor:
     // it owns a process tree writing into the pack, and the job object kills

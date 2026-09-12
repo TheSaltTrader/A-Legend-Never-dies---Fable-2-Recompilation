@@ -120,13 +120,24 @@ def hwnd_for_pid(pid):
 def focus(hwnd):
     """Bring the window forward and confirm it. A keystroke sent to the wrong
     foreground window is silent and looks exactly like the game ignoring it."""
-    try:
-        win32gui.ShowWindow(hwnd, 9)          # SW_RESTORE
-        win32gui.SetForegroundWindow(hwnd)
-    except Exception:
-        pass
-    time.sleep(0.3)
-    return win32gui.GetForegroundWindow() == hwnd
+    # Retried: the first press of a run landed with the window not yet
+    # foreground twice in a row (2026-09-12), once around the fullscreen
+    # switch, and a schedule that depends on that press is then off by one
+    # screen. A tap of ALT first is the documented way past the foreground
+    # lock when this process has not received input recently.
+    for attempt in range(6):
+        try:
+            if attempt:
+                ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)        # ALT down
+                ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)        # ALT up
+            win32gui.ShowWindow(hwnd, 9)          # SW_RESTORE
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+        time.sleep(0.3)
+        if win32gui.GetForegroundWindow() == hwnd:
+            return True
+    return False
 
 
 def main():

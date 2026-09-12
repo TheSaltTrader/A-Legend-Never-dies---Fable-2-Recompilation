@@ -38,6 +38,15 @@ than overrunning if it ever does not. Verified with `FABLE2_TEXPACK_STRESS`
 2 of 5 runs at the main menu and on the first switch of a game load; the fixed
 one survived 4 of 4 at the menu and the load run.
 
+**0.0.14 (2026-09-12):** the fit check's first cut demanded rows x pitch of
+upload buffer, but D3D12 does not pad the last row, so every replacement
+whose width is not a multiple of 64 was "skipped" although it fit - bounded
+correctly now. And a pack texture is uploaded ONCE per resource: the cache
+re-loads a texture whenever the game writes its guest memory, and each such
+re-load used to re-read the file and re-upload it (1.3 ms each, ~5 a frame in
+play). A `[texpack] re-uploads in N s` line names the most re-uploaded ids
+every five seconds. The plugin edit scripts are in `patches/scripts/`.
+
 ## Per-region warming (2026-09-11)
 
 The plugin records which pack textures each stage uses (`pack/stages/chNN.txt`,

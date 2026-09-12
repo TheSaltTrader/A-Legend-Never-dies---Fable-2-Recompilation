@@ -9,6 +9,11 @@
 
 #include <rex/logging.h>
 
+#include <cstdlib>
+#include <string>
+#include <utility>
+#include <vector>
+
 namespace fable2 {
 
 // The SDK keeps these in rex:: and rex::input::; pulled in here so the driver
@@ -89,9 +94,66 @@ bool RealPadActive() {
 constexpr rex::input::DeviceId kSkipDevice =
     static_cast<rex::input::DeviceId>(0x4E473253);  // 'NG2S'
 
+// FABLE2_PAD_SCRIPT="autoskip:20,40:b,41:down,42:a": presses on the synthetic
+// pad at the given seconds after boot, 200 ms each, for scripted runs. Keys
+// sent through the window depend on focus and on what the guest is polling
+// at that instant; this is read by the guest exactly like a controller. An
+// "autoskip:N" entry keeps the intro skipper's A/Start hammering until N s
+// and nothing after - it would otherwise press A on the main menu too.
+struct PadScript {
+  std::vector<std::pair<double, uint16_t>> presses;
+  double autoskip_until = 0.0;  // 0 = the skipper is left alone
+  bool present = false;
+  std::vector<bool> logged;
+};
+
+uint16_t ButtonMask(const std::string& name) {
+  if (name == "a") return 0x1000;
+  if (name == "b") return 0x2000;
+  if (name == "x") return 0x4000;
+  if (name == "y") return 0x8000;
+  if (name == "start") return 0x0010;
+  if (name == "back") return 0x0020;
+  if (name == "up") return 0x0001;
+  if (name == "down") return 0x0002;
+  if (name == "left") return 0x0004;
+  if (name == "right") return 0x0008;
+  if (name == "lb") return 0x0100;
+  if (name == "rb") return 0x0200;
+  return 0;
+}
+
+PadScript ReadPadScript() {
+  PadScript ps;
+  const char* env = std::getenv("FABLE2_PAD_SCRIPT");
+  if (!env || !*env) return ps;
+  ps.present = true;
+  std::string all = env;
+  size_t start = 0;
+  while (start < all.size()) {
+    size_t comma = all.find(',', start);
+    if (comma == std::string::npos) comma = all.size();
+    std::string item = all.substr(start, comma - start);
+    start = comma + 1;
+    const size_t colon = item.find(':');
+    if (colon == std::string::npos) continue;
+    const std::string k = item.substr(0, colon), v = item.substr(colon + 1);
+    if (k == "autoskip") {
+      ps.autoskip_until = std::atof(v.c_str());
+    } else {
+      const uint16_t mask = ButtonMask(v);
+      if (mask) ps.presses.emplace_back(std::atof(k.c_str()), mask);
+    }
+  }
+  ps.logged.assign(ps.presses.size(), false);
+  REXLOG_INFO("[padscript] {} scripted press(es); intro skipper until {:.0f} s", ps.presses.size(),
+              ps.autoskip_until);
+  return ps;
+}
+
 class AutoSkipDriver final : public rex::input::InputDriver {
  public:
-  AutoSkipDriver() : InputDriver(nullptr, 0) {}
+  AutoSkipDriver() : InputDriver(nullptr, 0), script_(ReadPadScript()) {}
   ~AutoSkipDriver() override = default;
 
   X_STATUS Setup() override { return X_STATUS_SUCCESS; }
@@ -118,6 +180,24 @@ class AutoSkipDriver final : public rex::input::InputDriver {
     // synthetic ones within a frame rather than within a sampling interval.
     if (RealPadActive())
       NoteRealInput();
+    if (script_.present) {
+      const double now = Now();
+      uint16_t buttons = 0;
+      if (now < script_.autoskip_until && std::fmod(now, kPressPeriod) < kPressHold)
+        buttons |= kButtonA | kButtonStart;
+      for (size_t i = 0; i < script_.presses.size(); ++i) {
+        const auto& [at, mask] = script_.presses[i];
+        if (now >= at && now < at + 0.2) {
+          buttons |= mask;
+          if (!script_.logged[i]) {
+            script_.logged[i] = true;
+            REXLOG_INFO("[padscript] {:.1f} s: buttons {:#06x}", now, mask);
+          }
+        }
+      }
+      out_state->gamepad.buttons = buttons;
+      return X_ERROR_SUCCESS;
+    }
     if (!AutoSkipActive())
       return X_ERROR_SUCCESS;
     const double phase = std::fmod(Now(), kPressPeriod);
@@ -134,7 +214,7 @@ class AutoSkipDriver final : public rex::input::InputDriver {
       std::memset(out_caps, 0, sizeof(*out_caps));
       out_caps->type = 0x01;
       out_caps->sub_type = 0x01;
-      out_caps->gamepad.buttons = kButtonA | kButtonStart;
+      out_caps->gamepad.buttons = script_.present ? 0xFFFF : (kButtonA | kButtonStart);
     }
     return X_ERROR_SUCCESS;
   }
@@ -150,6 +230,7 @@ class AutoSkipDriver final : public rex::input::InputDriver {
 
  private:
   uint32_t packet_ = 0;
+  PadScript script_;
 };
 
 }  // namespace

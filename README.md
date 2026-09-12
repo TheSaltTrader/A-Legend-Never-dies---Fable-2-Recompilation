@@ -334,6 +334,13 @@ Content and diagnostics
   the machine is, in one text file under `diagnostics\` beside the game, with
   its path on the clipboard. `FABLE2_DIAGNOSTICS=1` writes the same file during
   startup, for a launch that never reaches a menu.
+- **Profiling and scripted runs** (environment variables, for development):
+  `FABLE2_PROFILE=1` samples the game's own threads from inside the process
+  and logs, every ten seconds, the hottest recompiled functions by name;
+  `FABLE2_PAD_SCRIPT="autoskip:20,30:right,32:a"` presses buttons on a
+  synthetic controller at the given seconds after boot; `FABLE2_TEXPACK_STRESS`
+  and `FABLE2_QUIT_AFTER` are the crash and quit reproductions. See the
+  changelog for 0.0.13 and 0.0.14.
 
 ### What actually renders, and what never has
 
