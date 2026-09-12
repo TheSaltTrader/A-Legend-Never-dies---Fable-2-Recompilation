@@ -13,6 +13,31 @@ processes only what is missing, records what a pack was made with
 (the whole Python process tree lives in a job object), and survives the
 settings menu being closed - see the 0.0.11 changelog.
 
+## Switching the pack while a scene loads (fixed 2026-09-11)
+
+F9 and the settings checkbox change the pack path live, and the plugin
+answers by dropping every texture at the end of the frame. Between the change
+and that drop, a texture created BEFORE the switch could still be uploaded
+AFTER it - and the plugin decided "pack or not" separately at creation (which
+sizes the D3D12 resource), at upload and at view creation, each time with a
+fresh lookup. A switch in that window made the upload read a 4x replacement's
+rows into an upload buffer sized for the game's own texture: a heap overrun on
+the GPU thread, seen as an access violation in `memcpy` under
+`std::istream::read` (minidump `fable2-20260911-234810.dmp`), and on other
+runs as the fast-fail exit `0xC0000409` a corrupted heap ends in. The player's
+report was exactly this: F9 while textures were still loading.
+
+The decision is now taken once, at creation, and stored on the texture
+(`D3D12Texture::SetTexpackReplacement`); the upload and the view read it from
+there and never look the pack up again. A texture created for the pack uploads
+the file it was sized for even if the pack was switched off a frame ago, and
+the end-of-frame drop recreates it with the new answer. The upload also checks
+that the resource fits the replacement before reading, and logs a skip rather
+than overrunning if it ever does not. Verified with `FABLE2_TEXPACK_STRESS`
+(20 switches 300 ms apart with the settings menu open): the old plugin died in
+2 of 5 runs at the main menu and on the first switch of a game load; the fixed
+one survived 4 of 4 at the menu and the load run.
+
 ## Per-region warming (2026-09-11)
 
 The plugin records which pack textures each stage uses (`pack/stages/chNN.txt`,

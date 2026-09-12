@@ -8,8 +8,10 @@
 #include <psapi.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -267,6 +269,62 @@ PerfSample GetPerfSample() {
   return g_latest;
 }
 
-void PerfFrameTick() { g_frames.fetch_add(1, std::memory_order_relaxed); }
+// Report the frame rate every few seconds - and, more usefully, how EVENLY
+// the frames arrive. Ported from the NG2 port's diagnostics.
+//
+// The average alone is close to useless for the thing people actually notice.
+// A second holding 59 frames at 16.7 ms and one frame at 200 ms still reports
+// "60 fps", and that single frame is exactly the hitch being complained
+// about. So: steady_clock per presented frame, and every 5 s the median, the
+// 99th percentile, the worst frame, and how many frames took more than twice
+// the median. "High fps but laggy" is answered by p99 and hitches, not by
+// the average.
+namespace {
+void ReportFrameRate() {
+  using clock = std::chrono::steady_clock;
+  static clock::time_point last_frame_at = clock::now();
+  static clock::time_point window_start = last_frame_at;
+  // Fixed capacity: this runs per frame and must not allocate. 5 s at 300 fps.
+  static float ms[1536] = {};
+  static size_t count = 0;
+
+  const auto now = clock::now();
+  const float dt = std::chrono::duration<float, std::milli>(now - last_frame_at).count();
+  last_frame_at = now;
+  if (count < 1536)
+    ms[count++] = dt;
+
+  if (std::chrono::duration<double>(now - window_start).count() < 5.0)
+    return;
+  const double secs = std::chrono::duration<double>(now - window_start).count();
+  window_start = now;
+  if (count < 2) {
+    count = 0;
+    return;
+  }
+
+  static float sorted[1536];
+  std::memcpy(sorted, ms, count * sizeof(float));
+  std::sort(sorted, sorted + count);
+  const float p50 = sorted[count / 2];
+  const float p99 = sorted[(count * 99) / 100];
+  const float worst = sorted[count - 1];
+  int hitches = 0;
+  for (size_t i = 0; i < count; ++i)
+    if (ms[i] > p50 * 2.0f) ++hitches;
+
+  REXLOG_INFO("[perf] {:.1f} fps ({} frames in {:.1f}s)  frame ms: p50 {:.1f}  "
+              "p99 {:.1f}  worst {:.1f}  hitches {}",
+              double(count) / secs, count, secs, p50, p99, worst, hitches);
+  count = 0;
+}
+}  // namespace
+
+void PerfFrameTick() {
+  g_frames.fetch_add(1, std::memory_order_relaxed);
+  // Only ever called from the UI paint, once per presented frame, so the
+  // statistics need no lock.
+  ReportFrameRate();
+}
 
 }  // namespace fable2

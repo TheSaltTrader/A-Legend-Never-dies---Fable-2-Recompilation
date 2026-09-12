@@ -25,6 +25,7 @@ set(FABLE2_SOURCES
     src/fable2_texnotify.cpp
     src/fable2_diagnostics.cpp
     src/fable2_stage.cpp
+    src/fable2_crashdump.cpp
     src/patch_hooks.cpp
 )
 

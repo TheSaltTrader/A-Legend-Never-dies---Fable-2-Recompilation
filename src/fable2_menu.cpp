@@ -468,7 +468,21 @@ void DrawTexturesSection(Fable2Settings& s, const PageOptions& opts, bool& chang
 
   {
     TightRows tight;
-    ImGui::BeginTable("texrows", 2, ImGuiTableFlags_SizingStretchProp);
+    // GUARDED. BeginTable returns false when its window is collapsed or not
+    // visible this frame - which a fullscreen re-apply from ApplyLiveSettings
+    // (every F9) can produce - and a RowStart after that calls
+    // ImGui::TableNextRow on a null table. That was the 2026-09-11 crash, in a
+    // minidump: rexruntime!ImGui::TableNextRow+0x1f reading address 0x237,
+    // called from this section with the settings menu open. NG2's sweep for
+    // RowStart-outside-a-table could not see it: lexically this call sits
+    // inside the table; only at run time is there no table.
+    if (!ImGui::BeginTable("texrows", 2, ImGuiTableFlags_SizingStretchProp)) {
+      static bool said = false;
+      if (!said) {
+        said = true;
+        REXLOG_INFO("Textures section: table not visible this frame - rows skipped");
+      }
+    } else {
 
     RowStart("Folder",
              "Where dumped and upscaled textures are kept. Needs room: the raw "
@@ -548,6 +562,7 @@ void DrawTexturesSection(Fable2Settings& s, const PageOptions& opts, bool& chang
       Muted("No pack yet. Dump some textures and press Process textures.");
 
     ImGui::EndTable();
+    }
   }
 
   // Say the shortcut in the panel itself, not only in a tooltip: a key nobody
@@ -1153,6 +1168,10 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
              "Frame rate, CPU, GPU and video memory in the corner, toggled with "
              "F8 while playing. Off by default - a number in the corner is a "
              "tool, not a decoration.\n\n"
+             "FPS is the GAME's own rate - frames it finished - with the host's "
+             "present rate beside it, smaller. The two differ: the window "
+             "repaints far more often than the game draws, and the big number "
+             "is the one that says whether the game is keeping up.\n\n"
              "Video memory is this process only; other applications on the GPU "
              "are not counted.");
     {
@@ -1917,48 +1936,56 @@ void SettingsOverlay::OnDraw(ImGuiIO& io) {
   // after it, the window keeps the SDK's 13px bitmap face and the title reads
   // as a different application from its own contents.
   PushMenuFont(Fonts().body, Fonts().body_size);
-  ImGui::Begin("Fable II - Settings", nullptr,
-               ImGuiWindowFlags_NoSavedSettings);
+  // Begin's result matters: false means the window is collapsed or not
+  // visible this frame, and everything drawn into it is skipped - so a table
+  // begun inside it never opens, and a RowStart would read a null table. End
+  // is still owed either way.
+  const bool visible = ImGui::Begin("Fable II - Settings", nullptr,
+                                    ImGuiWindowFlags_NoSavedSettings);
+  if (visible) {
+    PageOptions opts;
+    opts.restart_bound_editable = false;
+    opts.tex_job = tex_job_;
 
-  PageOptions opts;
-  opts.restart_bound_editable = false;
-  opts.tex_job = tex_job_;
+    bool changed = false;
+    // Same rule for the child: draw its contents only when it is open;
+    // EndChild is owed regardless.
+    if (ImGui::BeginChild("body", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.2f))) {
+      changed |= DrawSettings(*settings_, opts);
 
-  bool changed = false;
-  ImGui::BeginChild("body", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2.2f));
-  changed |= DrawSettings(*settings_, opts);
+      SectionHeader("Content");
+      PathField("##gamepath", settings_->ResolvedGamePath().string());
+      ImGui::Spacing();
+      Muted("The game folder is chosen on the setup screen, which runs before the "
+            "game is loaded. Hold Shift while launching to get it back.");
+      DrawDiagnosticsButton();
+    }
+    ImGui::EndChild();
 
-  SectionHeader("Content");
-  PathField("##gamepath", settings_->ResolvedGamePath().string());
-  ImGui::Spacing();
-  Muted("The game folder is chosen on the setup screen, which runs before the "
-        "game is loaded. Hold Shift while launching to get it back.");
-  DrawDiagnosticsButton();
-  ImGui::EndChild();
+    if (changed) {
+      // Everything the presenter re-reads takes effect on the next paint. The
+      // rest is written to disk and waits for the next launch, which is what
+      // the greyed rows above are telling the player.
+      ApplyLiveSettings(*settings_, window_);
+    }
 
-  if (changed) {
-    // Everything the presenter re-reads takes effect on the next paint. The
-    // rest is written to disk and waits for the next launch, which is what the
-    // greyed rows above are telling the player.
-    ApplyLiveSettings(*settings_, window_);
-  }
+    ImGui::Separator();
+    Muted("Greyed settings are fixed for this session - the window and the "
+          "guest video mode are built during startup.");
 
-  ImGui::Separator();
-  Muted("Greyed settings are fixed for this session - the window and the "
-        "guest video mode are built during startup.");
-
-  if (on_advanced_ && ImGui::Button("Advanced settings...")) {
-    on_advanced_();
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Save")) {
-    settings_->Clamp();
-    settings_->Save();
-    status_ = "Saved to fable2_settings.cfg";
-  }
-  if (!status_.empty()) {
+    if (on_advanced_ && ImGui::Button("Advanced settings...")) {
+      on_advanced_();
+    }
     ImGui::SameLine();
-    ImGui::TextColored(kGood, "%s", status_.c_str());
+    if (ImGui::Button("Save")) {
+      settings_->Clamp();
+      settings_->Save();
+      status_ = "Saved to fable2_settings.cfg";
+    }
+    if (!status_.empty()) {
+      ImGui::SameLine();
+      ImGui::TextColored(kGood, "%s", status_.c_str());
+    }
   }
 
   ImGui::End();

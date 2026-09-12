@@ -129,12 +129,26 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
     const ImVec4 label(0.72f, 0.78f, 0.74f, 1.0f);
 
     if (s->hud_fps) {
-      // Against 60, which is what the port targets with the 60 fps patch on
-      // (30 without it - the colour is a hint, not a verdict).
-      const ImVec4 c = p.fps >= 57.0f ? good : (p.fps >= 28.0f ? warn : bad);
+      // The GAME's frame rate: swaps the guest completed, published by the GPU
+      // plugin each second. The host presents 170-200 times a second on this
+      // machine whether or not the game drew anything new, and a counter that
+      // showed that while the game ran at 30 was read as "high fps but
+      // laggy" (2026-09-11). Judged against 60, which is what the port targets
+      // with the 60 fps patch on (30 without it - the colour is a hint, not a
+      // verdict). The host rate stays beside it, smaller, because it is what
+      // the V-Sync and frame-rate settings actually govern.
+      const int32_t guest_x10 = REXCVAR_QUERY(int32_t, guest_fps_x10);
+      const float game_fps = float(guest_x10) / 10.0f;
+      const ImVec4 c = game_fps >= 57.0f ? good : (game_fps >= 28.0f ? warn : bad);
       ImGui::TextColored(label, "FPS");
       ImGui::SameLine();
-      ImGui::TextColored(c, "%5.1f", p.fps);
+      if (guest_x10 > 0) {
+        ImGui::TextColored(c, "%5.1f", game_fps);
+      } else {
+        ImGui::TextColored(label, "  n/a");  // no swap in the last second
+      }
+      ImGui::SameLine();
+      ImGui::TextColored(label, " host %.0f", p.fps);
     }
     if (s->hud_gpu) {
       ImGui::TextColored(label, "GPU");

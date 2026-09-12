@@ -36,6 +36,13 @@ def main():
             depth = 0
         if "ImGui::BeginTable(" in stripped:
             depth += 1
+            # A BeginTable whose result is ignored is the run-time half of the
+            # same crash: it returns false when its window is collapsed or not
+            # visible this frame, and the rows drawn after it then hit a null
+            # table. The lexical check above cannot see that; this can.
+            if not re.search(r"\b(if|while)\s*\(\s*!?\s*ImGui::BeginTable\(|=\s*ImGui::BeginTable\(",
+                             stripped):
+                problems.append((lineno, func, "BeginTable result ignored: " + stripped[:50]))
         if "ImGui::EndTable(" in stripped:
             depth = max(0, depth - 1)
         if re.search(r"\bRowStart\(", stripped) and not stripped.startswith("void RowStart"):

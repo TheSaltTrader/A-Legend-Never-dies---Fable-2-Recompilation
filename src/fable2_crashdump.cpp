@@ -1,0 +1,201 @@
+#include "fable2_crashdump.h"
+
+#include <windows.h>
+#include <dbghelp.h>
+
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <exception>
+#include <filesystem>
+#include <stdexcept>
+#include <string>
+
+#include <rex/filesystem.h>
+#include <rex/logging.h>
+
+namespace fable2 {
+namespace {
+
+std::atomic<bool> g_installed{false};
+// Fixed at install time: a crash handler must not allocate or walk the
+// filesystem while the heap may be the thing that broke.
+wchar_t g_dump_dir[MAX_PATH] = {};
+
+void LogStack(int skip) {
+  void* frames[62];
+  const USHORT n = CaptureStackBackTrace(static_cast<DWORD>(skip), 62, frames, nullptr);
+  HANDLE proc = GetCurrentProcess();
+  static std::atomic<bool> sym_ready{false};
+  if (!sym_ready.exchange(true)) {
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
+    SymInitialize(proc, nullptr, TRUE);
+  }
+  for (USHORT i = 0; i < n; ++i) {
+    const DWORD64 addr = reinterpret_cast<DWORD64>(frames[i]);
+    HMODULE mod = nullptr;
+    char modpath[MAX_PATH] = "?";
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       static_cast<LPCSTR>(frames[i]), &mod);
+    if (mod)
+      GetModuleFileNameA(mod, modpath, MAX_PATH);
+    const char* base = modpath;
+    for (const char* c = modpath; *c; ++c)
+      if (*c == '\\' || *c == '/')
+        base = c + 1;
+    const DWORD64 off = mod ? addr - reinterpret_cast<DWORD64>(mod) : addr;
+    alignas(SYMBOL_INFO) char buf[sizeof(SYMBOL_INFO) + 256] = {};
+    auto* sym = reinterpret_cast<SYMBOL_INFO*>(buf);
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym->MaxNameLen = 255;
+    DWORD64 disp = 0;
+    if (SymFromAddr(proc, addr, &disp, sym)) {
+      REXLOG_CRITICAL("  #{:02} {}+{:#x} {}+{:#x}", i, base, off, sym->Name, disp);
+    } else {
+      REXLOG_CRITICAL("  #{:02} {}+{:#x}", i, base, off);
+    }
+  }
+}
+
+// If a C++ exception is in flight (terminate after a throw through a noexcept
+// frame, or out of a thread function), say what it was.
+void DescribeCurrentException() {
+  const std::exception_ptr e = std::current_exception();
+  if (!e) {
+    REXLOG_CRITICAL("  no C++ exception in flight");
+    return;
+  }
+  try {
+    std::rethrow_exception(e);
+  } catch (const std::exception& ex) {
+    REXLOG_CRITICAL("  C++ exception in flight: {}", ex.what());
+  } catch (...) {
+    REXLOG_CRITICAL("  C++ exception in flight: (not a std::exception)");
+  }
+}
+
+LONG WINAPI WriteDumpAndDie(EXCEPTION_POINTERS* exception);
+
+// abort() - which is what std::terminate, a failed assert and a CRT invalid
+// parameter all come to - ends the process with a fast-fail (0xC0000409) that
+// bypasses the unhandled-exception filter: no dump, no log line, the exit code
+// the only trace. The SIGABRT handler runs first, on the aborting thread, and
+// is process-wide because every module here shares the one ucrtbase.
+void OnAbort(int) {
+  static std::atomic<bool> once{false};
+  if (once.exchange(true))
+    return;
+  REXLOG_CRITICAL("ABORT: abort() called on thread {} - stack follows", GetCurrentThreadId());
+  DescribeCurrentException();
+  LogStack(1);
+  WriteDumpAndDie(nullptr);
+  rex::FlushLogging();
+}
+
+void OnTerminate() {
+  REXLOG_CRITICAL("TERMINATE: std::terminate on thread {}", GetCurrentThreadId());
+  DescribeCurrentException();
+  LogStack(1);
+  rex::FlushLogging();
+  std::abort();
+}
+
+void OnInvalidParameter(const wchar_t* expr, const wchar_t* fn, const wchar_t* file,
+                        unsigned line, uintptr_t) {
+  char e[256] = "?", f[256] = "?", fl[256] = "?";
+  if (expr) WideCharToMultiByte(CP_UTF8, 0, expr, -1, e, sizeof(e), nullptr, nullptr);
+  if (fn) WideCharToMultiByte(CP_UTF8, 0, fn, -1, f, sizeof(f), nullptr, nullptr);
+  if (file) WideCharToMultiByte(CP_UTF8, 0, file, -1, fl, sizeof(fl), nullptr, nullptr);
+  REXLOG_CRITICAL("INVALID PARAMETER: '{}' in {} ({}:{}) on thread {}", e, f, fl, line,
+                  GetCurrentThreadId());
+  LogStack(1);
+  rex::FlushLogging();
+  std::abort();
+}
+
+void OnPureCall() {
+  REXLOG_CRITICAL("PURE VIRTUAL CALL on thread {}", GetCurrentThreadId());
+  LogStack(1);
+  rex::FlushLogging();
+  std::abort();
+}
+
+LONG WINAPI WriteDumpAndDie(EXCEPTION_POINTERS* exception) {
+  // One dump per process. A second fault while writing the first (possible,
+  // since the heap may be corrupt) must not recurse into this.
+  static std::atomic<bool> writing{false};
+  if (writing.exchange(true))
+    return EXCEPTION_EXECUTE_HANDLER;
+
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  wchar_t path[MAX_PATH];
+  _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s\\fable2-%04d%02d%02d-%02d%02d%02d.dmp",
+               g_dump_dir, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+  HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file != INVALID_HANDLE_VALUE) {
+    MINIDUMP_EXCEPTION_INFORMATION info{};
+    info.ThreadId = GetCurrentThreadId();
+    info.ExceptionPointers = exception;
+    info.ClientPointers = FALSE;
+    // Enough to see every thread's stack and the memory those stacks point
+    // at, without the full address space (guest memory alone is gigabytes).
+    const auto type = static_cast<MINIDUMP_TYPE>(
+        MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithThreadInfo |
+        MiniDumpWithHandleData | MiniDumpWithUnloadedModules);
+    const BOOL ok = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file, type,
+                                      exception ? &info : nullptr, nullptr, nullptr);
+    CloseHandle(file);
+    char narrow[MAX_PATH * 3];
+    WideCharToMultiByte(CP_UTF8, 0, path, -1, narrow, sizeof(narrow), nullptr, nullptr);
+    const DWORD code = exception && exception->ExceptionRecord
+                           ? exception->ExceptionRecord->ExceptionCode
+                           : 0;
+    const void* at = exception && exception->ExceptionRecord
+                         ? exception->ExceptionRecord->ExceptionAddress
+                         : nullptr;
+    if (ok) {
+      REXLOG_CRITICAL("CRASH: exception {:#010x} at {} on thread {} - minidump written to {}",
+                      code, at, GetCurrentThreadId(), narrow);
+    } else {
+      REXLOG_CRITICAL("CRASH: exception {:#010x} at {} on thread {} - minidump FAILED ({})",
+                      code, at, GetCurrentThreadId(), GetLastError());
+    }
+  } else {
+    REXLOG_CRITICAL("CRASH: could not create the minidump file ({})", GetLastError());
+  }
+  rex::FlushLogging();
+  // Let the process die the normal way: Windows Error Reporting still gets
+  // its record, and the return code says "crash" rather than "quit".
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
+}  // namespace
+
+void InstallCrashDumps() {
+  if (g_installed.exchange(true))
+    return;
+  const std::filesystem::path dir = rex::filesystem::GetExecutableFolder() / "crashdumps";
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  wcsncpy_s(g_dump_dir, dir.wstring().c_str(), _TRUNCATE);
+  SetUnhandledExceptionFilter(&WriteDumpAndDie);
+  std::signal(SIGABRT, &OnAbort);
+  std::set_terminate(&OnTerminate);  // this thread; other threads reach OnAbort
+  _set_invalid_parameter_handler(&OnInvalidParameter);
+  _set_purecall_handler(&OnPureCall);
+  // No "Abort/Retry/Ignore" box from a failed assert in a WIN32 app: it would
+  // hang a game nobody is watching. Report and fall through to abort instead.
+  _set_error_mode(_OUT_TO_STDERR);
+  _set_abort_behavior(0, _WRITE_ABORT_MSG);
+  REXLOG_INFO("Crash dumps: a minidump goes to {} if the process faults or aborts",
+              dir.string());
+}
+
+}  // namespace fable2

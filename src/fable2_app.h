@@ -38,6 +38,7 @@
 #include "fable2_texnotify.h"
 #include "fable2_diagnostics.h"
 #include "fable2_stage.h"
+#include "fable2_crashdump.h"
 #include "fable2_menu.h"
 #include "fable2_platform.h"
 #include "fable2_settings.h"
@@ -89,6 +90,9 @@ class Fable2App : public rex::ReXApp {
   // fullscreen has no such second chance, and on ng2recomp came back windowed
   // every launch until this was moved here.
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    // First thing, before anything that could fault: a crash from here on
+    // leaves a minidump under crashdumps\ instead of a log that just stops.
+    fable2::InstallCrashDumps();
     settings_.Load();
     // Choose the memory-hungry settings from the card, ONCE. The latch is
     // what makes it safe: a value the player edits afterwards is never
@@ -355,6 +359,7 @@ class Fable2App : public rex::ReXApp {
     ImportQueuedSaves();
     MaybeWriteDiagnostics();
     ArmQuitSeam();
+    ArmTexpackStressSeam();
     // Per-region texture warming needs to know which region is loading, and
     // the game says so through the audio bank it opens for it. The path the
     // runtime mounted is the one to enumerate - a command-line root wins over
@@ -423,6 +428,25 @@ class Fable2App : public rex::ReXApp {
             REXLOG_WARN("F9: no texture folder is set - nothing to switch to");
             return;
           }
+          // One switch at a time. Each press makes the plugin drop and reload
+          // every texture, which takes a second or two of render-thread work;
+          // a second press inside that window rewrote the pack-path setting
+          // while the render thread was reading it for every reload, and the
+          // game died (2026-09-11, two presses 1.03 s apart, nothing logged
+          // after). The setting is a plain string the plugin reads by
+          // reference, so the rule has to be here: no second switch until the
+          // first has settled, and none while a region's cache is warming.
+          static double last_switch = -1000.0;
+          const double now = ImGui::GetTime();
+          if (now - last_switch < 3.0) {
+            REXLOG_INFO("F9: ignored - the last switch is still reloading textures");
+            return;
+          }
+          if (fable2::GetWarmState().warming) {
+            REXLOG_INFO("F9: ignored - wait for the texture cache to finish loading");
+            return;
+          }
+          last_switch = now;
           settings_.texture_pack = !settings_.texture_pack;
           REXLOG_INFO("F9: texture pack {}", settings_.texture_pack ? "ON" : "OFF");
           fable2::ApplyLiveSettings(settings_, window());
@@ -606,6 +630,46 @@ class Fable2App : public rex::ReXApp {
     std::thread([this, after] {
       std::this_thread::sleep_for(std::chrono::seconds(after));
       app_context().CallInUIThreadDeferred([this] { QuitFromEscape(); });
+    }).detach();
+  }
+
+  // FABLE2_TEXPACK_STRESS=<seconds>: from then on, switch the texture pack
+  // on and off twenty times, 300 ms apart, from the UI thread - the same
+  // work F9 does, WITHOUT F9's debounce. This is the reproduction of the
+  // 2026-09-11 crash (two presses one second apart during a reload): with
+  // the plugin reading the pack path by reference it dies within a few
+  // switches; with the locked copy it must survive all twenty.
+  void ArmTexpackStressSeam() {
+    const int after = EnvInt("FABLE2_TEXPACK_STRESS", 0);
+    if (after <= 0)
+      return;
+    REXLOG_INFO("Texpack stress seam: 20 switches start in {} s", after);
+    std::thread([this, after] {
+      std::this_thread::sleep_for(std::chrono::seconds(after));
+      // With the settings menu OPEN, as the player had it: that is where the
+      // 2026-09-11 crash lived (a table the menu begins was not visible for
+      // one frame after a switch re-applied fullscreen, and a row was drawn
+      // into it anyway).
+      app_context().CallInUIThreadDeferred([this] {
+        if (!overlay_) {
+          overlay_ = std::make_unique<fable2::SettingsOverlay>(
+              imgui_drawer(), &settings_, window(), [this] { ToggleAdvancedSettings(); },
+              &tex_job_);
+          REXLOG_INFO("Texpack stress: settings menu opened");
+        }
+      });
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      for (int i = 0; i < 20; ++i) {
+        app_context().CallInUIThreadDeferred([this, i] {
+          settings_.texture_pack = !settings_.texture_pack;
+          REXLOG_INFO("Texpack stress: switch {} -> {}", i + 1,
+                      settings_.texture_pack ? "ON" : "OFF");
+          fable2::ApplyLiveSettings(settings_, window());
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      }
+      app_context().CallInUIThreadDeferred(
+          [] { REXLOG_INFO("Texpack stress: all 20 switches survived"); });
     }).detach();
   }
 

@@ -3,6 +3,96 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.13 — 2026-09-11
+
+### Fixed - F9 while textures were loading killed the game
+
+Reported from play: F9 while textures were still loading, and the game was
+gone. Reproduced, dumped and fixed. The root cause is in the GPU plugin's
+pack code, and it is a race with the scene loader, not with F9's timing:
+
+The plugin decided "pack or not" for a texture THREE times with three fresh
+lookups - at creation (which sizes the D3D12 resource), at upload and at view
+creation. F9 changes the pack path live and the plugin drops every texture at
+the END of the frame, so a texture created before the press could be uploaded
+after it, and the upload's lookup then answered differently from the
+creation's. With the pack switched ON mid-load, the upload read a 4x
+replacement's rows into an upload buffer sized for the game's own texture: a
+heap overrun on the GPU thread. The minidump (`fable2-20260911-234810.dmp`)
+shows it exactly - an access violation in `memcpy` under
+`std::istream::read`, called from the plugin's texture upload, on the frame
+after "switch 1 -> ON" - and the other deaths seen in the same stress, exit
+code `0xC0000409` with no dump, are the fast-fail a corrupted heap ends in
+when the overrun lands on a neighbour instead of an unmapped page.
+
+The decision is now taken once, at creation, and stored on the texture; the
+upload and the view read it from there (`D3D12Texture::SetTexpackReplacement`
+in `rexglue-src`, plugin rebuilt and deployed). The upload also checks that
+the resource fits the replacement before reading, and logs a skip rather than
+overrunning if it ever does not. Measured with the stress seam
+(`FABLE2_TEXPACK_STRESS=<seconds>`: settings menu opened, then 20 switches
+300 ms apart): the old plugin died in 2 of 5 runs at the main menu and on the
+first switch of a game load; the fixed one survived 4 of 4 at the menu plus
+the load run. Under a debugger it never died at all - the race needs the
+loader's timing.
+
+Two smaller things were fixed on the way and are kept. The plugin read the
+pack path by unlocked reference on the render thread while the app's thread
+reassigned it (the registry's locked copy, `rex::cvar::Query<std::string>`,
+is used at all seven sites now). And the settings menu's Textures table drew
+rows into a table whose `BeginTable` had returned false - the first crash dump
+of the session, `ImGui::TableNextRow` on a null table - so every `BeginTable`,
+`Begin` and `BeginChild` result in the menu is honoured, and
+`tools/sweep_rowstart.py` flags an ignored one. On the app side F9 refuses a
+second switch within three seconds of the first, and any switch while a
+region's texture cache is warming, and says so in the log.
+
+### Added - crash dumps, and a stack for aborts
+
+`crashdumps/fable2-<timestamp>.dmp` next to the executable on any unhandled
+exception, with a `CRASH:` line in the log naming it; and since a fast-fail
+abort (`std::terminate`, a failed assert, a CRT invalid parameter) bypasses
+that filter entirely, the process now also logs `ABORT:` with the aborting
+thread's stack, the C++ exception in flight if any, and writes a dump from the
+abort handler. The user-visible exit code alone was what made the
+`0xC0000409` deaths above impossible to read until then.
+
+### Changed - the FPS readout shows the game's frame rate
+
+The F8 counter measured host presents: 170-200 a second on this machine,
+whatever the game did. The plugin now publishes the game's own rate from its
+swaps (`guest_fps_x10`, once a second) and the counter shows that, with the
+host rate beside it, smaller. "FPS 60.0  host 202" reads as it should; the
+old "FPS 202" over a game running at 30 was the "high fps but laggy" report
+in one number.
+
+### Added - frame-time statistics in the log
+
+"High fps but laggy" cannot be judged from an average. Every five seconds
+the log now carries `[perf] N fps  frame ms: p50 / p99 / worst / hitches`
+(a hitch is a frame more than twice the median), measured per presented
+frame with a steady clock. Ported from NG2's diagnostics.
+
+### Noted - the lag, and what to try first
+
+What the log measured this session: the game itself holds 60 at the main menu
+(`[swap] 60.0 guest fps, p50 16.6 ms`) and drops to a locked 30 in stretches
+(`p50 33.4 ms, p99 35.9`), while the host presents 170-200 frames a second
+throughout - which is the number the old counter showed. A locked 30 with the
+60 fps patch on is the game halving its rate because a frame took longer than
+16 ms, and on this configuration the frame is expensive: Supersampling 3x
+(1280x720 rendered at 3840x2160), FSR, FXAA extreme, the 4x texture pack, and
+- as the settings file stands - **texture dumping ON**, which writes every
+texture it first sees to disk from the render thread. The GPU was also
+carrying 12.5 GB and 56% load from other work with the game closed. So, in
+order: turn texture dumping off unless a dump is wanted; Supersampling 2x;
+V-Sync off (applies live; the 144 Hz panel's variable refresh takes over);
+then Frame rate 144. The new counter and the `[swap]` line say whether the
+game holds 60 after each change. Separately, each texture the pack replaces
+costs the render thread about 4 ms the first time a region is visited (2.6 ms
+of it the file read); the per-region warming from 0.0.11 is what removes that
+on later visits, and this session confirmed the region signal fires.
+
 ## 0.0.12 — 2026-09-11
 
 ### Fixed - quitting with Escape left the process running

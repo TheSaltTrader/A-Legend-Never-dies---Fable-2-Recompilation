@@ -282,7 +282,10 @@ Enhancements
 - **Skip intro videos** - presses A through the boot logos with a synthetic
   controller; any genuine input disarms it.
 - **On-screen readouts** - FPS, GPU load and video memory in the corner (F8),
-  each switchable.
+  each switchable. FPS is the game's own frame rate (frames it finished), with
+  the host's present rate beside it, smaller; the window repaints far more
+  often than the game draws, and only the first number says whether the game
+  is keeping up.
 - **Accurate depth** - exact float24 depth emulation, for shadow acne and
   z-fighting, at some shader cost.
 - **Fuzzy alpha test** - the plugin's approximate alpha test, its fix for
