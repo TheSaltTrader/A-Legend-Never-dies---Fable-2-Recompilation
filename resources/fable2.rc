@@ -1,0 +1,4 @@
+// The executable's icon: what Explorer, the desktop and the taskbar show for
+// fable2.exe. Drawn by tools/make_icon.py - no game assets. Resource id 1 is
+// also what the app loads at runtime to stamp the window (fable2_platform).
+1 ICON "fable2.ico"

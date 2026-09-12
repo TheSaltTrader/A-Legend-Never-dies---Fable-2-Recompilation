@@ -3,6 +3,89 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.16 — 2026-09-12
+
+### Fixed - pressing Y in the intro killed the game
+
+An abort with `Call to invalid or unregistered function at guest address
+0x82DDC4D8`: a 28-byte helper the analyzer had absorbed into the function
+before it, reached through a function-pointer table when Y was pressed.
+Registered in `config/functions.toml` with `tools/add_function.py`, as the
+others were; the codegen stamp had to be deleted for the codegen to notice.
+
+### Changed - importing Xbox 360 saves: once, into a free slot, version-adjusted
+
+Every launch re-imported every package in the save folder into the slot
+named like the package - always Hero000 - so the slot the player had been
+saving into was overwritten at the next launch, and a second package
+replaced the first. Now each package is imported once (a manifest beside the
+slots remembers which package went where), into the package's own slot if it
+is free and otherwise the first free one, and a package already imported is
+left alone. The setup screen offers the same folder pick as the settings, so
+a save can be in place before the first launch, and the settings row gained
+a Browse button.
+
+The version number is adjusted on import. A save from a console carries the
+title update's number (393219) and this build's game refuses it as "created
+with a more up-to-date version"; the importer rewrites it to this build's
+(805699586), which gets the save past that screen. It does not get it
+loaded: see below.
+
+### Found - the console save loads only under the title update
+
+With the number adjusted, the save's Bowerstone Market began to load and the
+game died two seconds later in a recursive object walk, reading offset 0x10
+of a null pointer (`sub_82BF5470`, four levels of `sub_82BF59A0` /
+`sub_82BF4C50` above it) - a serialised index into a table this build does
+not have an entry for. The game folder that shipped this port is the disc
+(version 26); the console that made the save had the disc's one title
+update. That update exists and applies: media ID 716F0A0D, base version
+0x1A, "Fable II v1" on xboxunity, 3 MB (`default.xexp` + `data/tu1_data.bnk`),
+and the runtime confirms `XEX patch applied successfully: base version
+0.0.0.26, new version 0.0.1.26` when the patch sits beside `default.xex` in
+the game folder - the recompiler loads the executable through the same
+runtime, so it would compile the patched game the same way. The patched
+image differs from the disc's in 5166 of 5656 pages, i.e. the whole
+executable moves: every guest address this port carries (471 registered
+functions, 24 hook sites, setjmp/longjmp, the shared vector registers) has
+to be re-derived for it. The tools that derived them exist; the work is a
+regeneration and a re-verification, not a re-port from nothing. The disc's
+patch is kept under `assets/tu1/` (not in the repository). A title update
+for another disc (media ID 04BF96A1, version 5 to 0x405) was tried and does
+not apply here; the check is the SHA-1 of the executable's signature
+against the patch's source digest.
+
+### Added - the crash log names the recompiled functions
+
+The crash filter and the abort handler now log the stack with recompiled
+frames as `sub_<guest address>+offset`, through the codegen's own table, and
+the fault address the same way. `FABLE2_TRACE_OPEN=<substring>` logs the
+named stack of every guest file open whose path contains the text - which is
+how the version-file reader (`sub_822F27C0`) was found after a static search
+for the string found only asserts. `FABLE2_DUMP_IMAGE=<file>` writes the
+guest image as the runtime has it, title update applied, for the analysis
+tools that decode the .xex themselves.
+
+### Changed - the plugin drops every texture when dumping is switched on
+
+NG2's finding: dumping switched on mid-stage wrote only what loaded
+afterwards, because the dump runs per texture load. NG2 made dumping
+restart-required. The pack path already had the better answer in the same
+block of the plugin - a change drops every texture at the end of the frame -
+so the dump settings get the same treatment, and the scene in front of the
+player is written out from where they stand. NG2's other v1.0.13 change,
+matching pack textures by the bytes in memory at load ("resolve-at-load"),
+is in the shared plugin and on by default; this port runs it, and it removes
+the last reason a streamed texture would show at its original resolution.
+
+### Added - an icon
+
+Drawn by `tools/make_icon.py` (a guild-seal disc with a gold "II"; no game
+assets), linked into the executable from `resources/fable2.rc` for Explorer
+and the desktop, stamped on the window at creation for the title bar, the
+taskbar and Alt-Tab, and an AppUserModelID set before any window so the
+taskbar groups and pins it as itself.
+
 ## 0.0.15 — 2026-09-12
 
 ### Fixed - the frame rate: 17 to 45 fps in town, now a locked 60

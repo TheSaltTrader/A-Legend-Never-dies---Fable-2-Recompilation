@@ -7,8 +7,12 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <functional>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace fable2 {
@@ -20,6 +24,107 @@ constexpr uint32_t kTitleId = 0x4D5307F1;
 // is what read this project's packages correctly in the first place.
 constexpr size_t kContentTypeOffset = 0x344;
 constexpr size_t kTitleIdOffset = 0x360;
+
+// The SaveInfo VersionNumber this build's game writes into its own saves
+// (every save the port made on 2026-09-04 carries it). A console save with
+// TU4 carries 393219 (0x00060003) and is refused as "more up-to-date".
+constexpr uint32_t kGameSaveVersion = 805699586u;
+constexpr int kSlotCount = 6;
+
+// Size plus a hash of the first 64 KB: the STFS header, which holds the
+// content id and the display name, changes whenever the package does.
+std::string PackageFingerprint(const std::filesystem::path& package) {
+  std::error_code ec;
+  const uint64_t size = std::filesystem::file_size(package, ec);
+  std::ifstream in(package, std::ios::binary);
+  std::string head(64 * 1024, '\0');
+  in.read(head.data(), std::streamsize(head.size()));
+  head.resize(size_t(in.gcount()));
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%llu-%016llx", (unsigned long long)size,
+                (unsigned long long)std::hash<std::string>{}(head));
+  return buf;
+}
+
+// A slot "holds" a save when the game could load it: the world and the hero.
+bool SlotHolds(const std::filesystem::path& slot_dir) {
+  std::error_code ec;
+  return std::filesystem::is_regular_file(slot_dir / "mainsave.bin", ec) &&
+         std::filesystem::is_regular_file(slot_dir / "herosave.bin", ec);
+}
+
+std::filesystem::path ManifestPath(const std::filesystem::path& saves_dir) {
+  return saves_dir / "imported_saves.txt";
+}
+
+// "<fingerprint> <slot> <package name>" per line.
+std::string ManifestLookup(const std::filesystem::path& saves_dir,
+                           const std::string& fingerprint) {
+  std::ifstream in(ManifestPath(saves_dir));
+  std::string line;
+  while (std::getline(in, line)) {
+    const size_t sp = line.find(' ');
+    if (sp == std::string::npos) continue;
+    if (line.substr(0, sp) != fingerprint) continue;
+    const size_t sp2 = line.find(' ', sp + 1);
+    return line.substr(sp + 1, sp2 == std::string::npos ? std::string::npos : sp2 - sp - 1);
+  }
+  return {};
+}
+
+void ManifestRecord(const std::filesystem::path& saves_dir, const std::string& fingerprint,
+                    const std::string& slot, const std::string& package_name) {
+  std::ofstream out(ManifestPath(saves_dir), std::ios::app);
+  out << fingerprint << ' ' << slot << ' ' << package_name << '\n';
+}
+
+// The package's own slot name if it is free, else the first free HeroNNN.
+// A slot that holds no loadable save (missing, or a leftover of an aborted
+// save - the "corrupted" card) counts as free.
+std::string FreeSlot(const std::filesystem::path& saves_dir, const std::string& preferred) {
+  std::error_code ec;
+  if (!SlotHolds(saves_dir / preferred)) return preferred;
+  for (int i = 0; i < kSlotCount; ++i) {
+    char slot[16];
+    std::snprintf(slot, sizeof(slot), "Hero%03d", i);
+    if (!SlotHolds(saves_dir / slot)) return slot;
+  }
+  return {};
+}
+
+// chaptersave.bin: a 4-byte big-endian length, then XML. If its VersionNumber
+// is newer than this build's, rewrite it. Returns true when the file changed;
+// `note` says what happened either way.
+bool AdjustSaveVersion(const std::filesystem::path& chaptersave, std::string& note) {
+  std::ifstream in(chaptersave, std::ios::binary);
+  if (!in) { note = "no chaptersave.bin"; return false; }
+  std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  if (bytes.size() < 8) { note = "chaptersave.bin too short"; return false; }
+  const uint32_t len = (uint8_t(bytes[0]) << 24) | (uint8_t(bytes[1]) << 16) |
+                       (uint8_t(bytes[2]) << 8) | uint8_t(bytes[3]);
+  if (4 + size_t(len) > bytes.size()) { note = "chaptersave.bin length is wrong"; return false; }
+  std::string xml = bytes.substr(4, len);
+  const std::string open = "<VersionNumber type=\"uint\">";
+  const size_t a = xml.find(open);
+  const size_t b = a == std::string::npos ? a : xml.find("</VersionNumber>", a);
+  if (a == std::string::npos || b == std::string::npos) { note = "no VersionNumber"; return false; }
+  const std::string value = xml.substr(a + open.size(), b - a - open.size());
+  const unsigned long long have = std::strtoull(value.c_str(), nullptr, 10);
+  if (have == kGameSaveVersion) { note = "save version matches this build"; return false; }
+  xml.replace(a + open.size(), value.size(), std::to_string(kGameSaveVersion));
+  std::string out;
+  out.push_back(char((xml.size() >> 24) & 0xFF));
+  out.push_back(char((xml.size() >> 16) & 0xFF));
+  out.push_back(char((xml.size() >> 8) & 0xFF));
+  out.push_back(char(xml.size() & 0xFF));
+  out += xml;
+  out += bytes.substr(4 + len);
+  std::ofstream o(chaptersave, std::ios::binary | std::ios::trunc);
+  o.write(out.data(), std::streamsize(out.size()));
+  note = "save version " + value + " -> " + std::to_string(kGameSaveVersion) +
+         " (this build's) so the game accepts it";
+  return true;
+}
 constexpr size_t kNameOffset = 0x411;   // display name, e.g. "Hero 1"
 constexpr size_t kTitleNameOffset = 0x1691;  // title name, e.g. "Fable II"
 constexpr size_t kNameSlot = 256;  // 128 UTF-16 characters
@@ -227,6 +332,11 @@ bool ImportSave(const std::filesystem::path& package, std::string& message) {
   // Extract. This always lands in the downloadable-content slot - XUID 0,
   // content type 00000002 - because that is what InstallContent is for. The
   // move below is what turns it into a save.
+  // The fingerprint is taken from the package itself, now; the manifest
+  // and the slot choice need the profile's save folder, known only after
+  // the content manager has answered once, below.
+  const std::string fingerprint = PackageFingerprint(package);
+
   const auto rc = content->InstallContent(package);
   if (static_cast<uint32_t>(rc) != 0) {
     char buf[128];
@@ -277,6 +387,36 @@ bool ImportSave(const std::filesystem::path& package, std::string& message) {
     return false;
   }
 
+  // The slot folders are siblings of dest (dest is <saves>/<name>). Once per
+  // package: the manifest beside them remembers what was imported where, so
+  // a launch does not overwrite the slot the player has since been saving
+  // into, and a second package does not replace the first.
+  const auto saves_dir = dest.parent_path();
+  {
+    const std::string already = ManifestLookup(saves_dir, fingerprint);
+    if (!already.empty() && SlotHolds(saves_dir / already)) {
+      std::filesystem::remove_all(src, ec);
+      std::filesystem::remove(root / "0000000000000000" / title_dir / "Headers" /
+                                  "00000002" / (name + ".header"),
+                              ec);
+      message = "already imported as " + already + " - not touched";
+      return true;
+    }
+  }
+  const std::string slot = FreeSlot(saves_dir, name);
+  if (slot.empty()) {
+    std::filesystem::remove_all(src, ec);
+    message = "all six save slots are in use - delete one in the game, or move a "
+              "HeroNNN folder out of " + saves_dir.string();
+    return false;
+  }
+  if (slot != name) {
+    // Re-point the content header and the destination at the free slot.
+    data.set_file_name(slot);
+    dest = saves_dir / slot;
+    std::filesystem::remove_all(dest, ec);
+  }
+
   std::filesystem::create_directories(dest, ec);
   size_t files = 0;
   for (auto& e : std::filesystem::recursive_directory_iterator(src, ec)) {
@@ -303,9 +443,21 @@ bool ImportSave(const std::filesystem::path& package, std::string& message) {
     return false;
   }
 
+  // A console save is usually from a title-updated game whose save version
+  // is newer than this build's. The game refuses those outright ("created
+  // with a more up-to-date version"), and the format is self-describing XML
+  // plus a serialised world, so the only thing standing between the player
+  // and the save is the number. Rewrite it to what this build writes.
+  {
+    std::string note;
+    if (AdjustSaveVersion(dest / "chaptersave.bin", note))
+      REXLOG_INFO("Save import: {} - {}", slot, note);
+  }
+
   // The header is what XAM enumerates, so without it the save is invisible no
   // matter where its bytes are.
   content->WriteContentHeaderFile(xuid, data);
+  ManifestRecord(saves_dir, fingerprint, slot, name);
 
   // Leave nothing behind in the downloadable-content slot: a save sitting
   // there would be offered to the game as DLC on the next boot.
@@ -315,7 +467,7 @@ bool ImportSave(const std::filesystem::path& package, std::string& message) {
                           ec);
 
   REXLOG_INFO("Save import: {} -> {} ({} file(s))", name, dest.string(), files);
-  message = info.display_name.empty() ? name : info.display_name;
+  message = (info.display_name.empty() ? name : info.display_name) + " -> " + slot;
   return true;
 }
 

@@ -126,6 +126,7 @@ class SetupScreen final : public rex::ui::ImGuiDialog {
   std::filesystem::path iso_path_;
   DiscInfo iso_info_;
   std::filesystem::path install_dest_;
+  std::string setup_save_message_;  // result of the save-folder pick, shown until cleared
   ExtractProgress progress_;
   std::thread install_thread_;
   bool install_started_ = false;

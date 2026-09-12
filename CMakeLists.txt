@@ -3,7 +3,7 @@
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
-project(fable2 LANGUAGES CXX)
+project(fable2 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,7 +31,9 @@ set(FABLE2_SOURCES
 )
 
 if(WIN32)
-    add_executable(fable2 WIN32 ${FABLE2_SOURCES})
+    # The icon resource (resources/fable2.rc -> fable2.ico) rides in the
+    # executable, so Explorer, the desktop and the taskbar show it.
+    add_executable(fable2 WIN32 ${FABLE2_SOURCES} resources/fable2.rc)
 else()
     add_executable(fable2 ${FABLE2_SOURCES})
 endif()

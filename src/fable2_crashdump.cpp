@@ -1,4 +1,5 @@
 #include "fable2_crashdump.h"
+#include "fable2_profiler.h"  // DescribeHostAddress: sub_ names for recompiled frames
 
 #include <windows.h>
 #include <dbghelp.h>
@@ -35,29 +36,12 @@ void LogStack(int skip) {
     SymInitialize(proc, nullptr, TRUE);
   }
   for (USHORT i = 0; i < n; ++i) {
-    const DWORD64 addr = reinterpret_cast<DWORD64>(frames[i]);
-    HMODULE mod = nullptr;
-    char modpath[MAX_PATH] = "?";
-    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       static_cast<LPCSTR>(frames[i]), &mod);
-    if (mod)
-      GetModuleFileNameA(mod, modpath, MAX_PATH);
-    const char* base = modpath;
-    for (const char* c = modpath; *c; ++c)
-      if (*c == '\\' || *c == '/')
-        base = c + 1;
-    const DWORD64 off = mod ? addr - reinterpret_cast<DWORD64>(mod) : addr;
-    alignas(SYMBOL_INFO) char buf[sizeof(SYMBOL_INFO) + 256] = {};
-    auto* sym = reinterpret_cast<SYMBOL_INFO*>(buf);
-    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-    sym->MaxNameLen = 255;
-    DWORD64 disp = 0;
-    if (SymFromAddr(proc, addr, &disp, sym)) {
-      REXLOG_CRITICAL("  #{:02} {}+{:#x} {}+{:#x}", i, base, off, sym->Name, disp);
-    } else {
-      REXLOG_CRITICAL("  #{:02} {}+{:#x}", i, base, off);
-    }
+    // Recompiled guest code is named sub_<guest address> through the
+    // codegen's own table, so a crash in the game's code says which
+    // function - the 09:03 crash on 2026-09-12 was 28 frames of
+    // "fable2.exe+0x..." until this.
+    REXLOG_CRITICAL("  #{:02} {}", i,
+                    fable2::DescribeHostAddress(reinterpret_cast<uint64_t>(frames[i])));
   }
 }
 
@@ -163,6 +147,13 @@ LONG WINAPI WriteDumpAndDie(EXCEPTION_POINTERS* exception) {
     if (ok) {
       REXLOG_CRITICAL("CRASH: exception {:#010x} at {} on thread {} - minidump written to {}",
                       code, at, GetCurrentThreadId(), narrow);
+      // The faulting frames, named: recompiled functions as sub_<guest
+      // address>, runtime frames by export. The dump has the same, but this
+      // is readable without a debugger and survives a lost dump. The
+      // dispatcher's own frames sit on top; the fault site is the first
+      // frame that is not ntdll.
+      REXLOG_CRITICAL("  fault at {}", fable2::DescribeHostAddress(reinterpret_cast<uint64_t>(at)));
+      LogStack(0);
     } else {
       REXLOG_CRITICAL("CRASH: exception {:#010x} at {} on thread {} - minidump FAILED ({})",
                       code, at, GetCurrentThreadId(), GetLastError());

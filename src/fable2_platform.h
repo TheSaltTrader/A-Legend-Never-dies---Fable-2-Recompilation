@@ -70,6 +70,18 @@ bool ThisProcessIsForeground();
 // helps this process. Logs what was granted.
 void RaiseTimerResolution();
 
+// Whether the page holding `p` is committed and readable. For dumping the
+// guest image range without touching a reserved-but-unmapped page.
+bool PageCommitted(const void* p);
+
+// The three places a Windows app's icon comes from, none of which implies the
+// others: the executable's resource (Explorer, desktop shortcuts), the
+// window's own icon (title bar, taskbar, Alt-Tab), and the AppUserModelID
+// that the taskbar groups and pins by. The resource is linked in from
+// resources/fable2.rc; these two do the rest.
+void SetAppUserModelId();                 // before any window exists
+void ApplyWindowIcon(void* native_window);  // HWND, once the window is up
+
 std::vector<MonitorInfo> Monitors();
 
 // The scaling Windows will ACTUALLY apply to this process's windows.

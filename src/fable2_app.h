@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -94,6 +95,7 @@ class Fable2App : public rex::ReXApp {
     // First thing, before anything that could fault: a crash from here on
     // leaves a minidump under crashdumps\ instead of a log that just stops.
     fable2::InstallCrashDumps();
+    fable2::SetAppUserModelId();  // before any window: the taskbar groups by it
     settings_.Load();
     // Choose the memory-hungry settings from the card, ONCE. The latch is
     // what makes it safe: a value the player edits afterwards is never
@@ -361,6 +363,7 @@ class Fable2App : public rex::ReXApp {
     MaybeWriteDiagnostics();
     ArmQuitSeam();
     ArmTexpackStressSeam();
+    DumpGuestImage();
     fable2::RaiseTimerResolution();
     fable2::StartProfiler();  // FABLE2_PROFILE=1: sample the guest threads
     // Per-region texture warming needs to know which region is loading, and
@@ -393,6 +396,7 @@ class Fable2App : public rex::ReXApp {
     // version where it is visible without opening anything.
     if (auto* w = window()) {
       w->SetTitle(std::string("Fable II  -  v") + FABLE2_VERSION);
+      fable2::ApplyWindowIcon(w->GetNativeWindowHandle());
     }
 
     // Overlays that live for the whole run and draw nothing until asked: the
@@ -635,6 +639,45 @@ class Fable2App : public rex::ReXApp {
       std::this_thread::sleep_for(std::chrono::seconds(after));
       app_context().CallInUIThreadDeferred([this] { QuitFromEscape(); });
     }).detach();
+  }
+
+  // FABLE2_DUMP_IMAGE=<file>: write the guest's loaded executable image
+  // (0x82000000 up, every committed page, as the runtime has it AFTER any
+  // sibling default.xexp title update was applied) to a flat file. The
+  // analysis tools decode the .xex themselves and cannot apply a title
+  // update; this hands them the patched bytes instead. Runs before the guest
+  // starts, so the old recompiled code never executes against patched data.
+  void DumpGuestImage() {
+    const char* path = std::getenv("FABLE2_DUMP_IMAGE");
+    if (!path || !*path)
+      return;
+    auto* memory = REX_KERNEL_MEMORY();
+    if (!memory) {
+      REXLOG_WARN("Image dump: no guest memory yet");
+      return;
+    }
+    FILE* f = std::fopen(path, "wb");
+    if (!f) {
+      REXLOG_WARN("Image dump: cannot create {}", path);
+      return;
+    }
+    const uint32_t base = 0x82000000u, end = 0x84000000u, step = 0x10000u;
+    uint64_t written = 0, last_used = 0;
+    for (uint32_t va = base; va < end; va += step) {
+      const uint8_t* host = memory->TranslateVirtual<const uint8_t*>(va);
+      if (host && fable2::PageCommitted(host)) {
+        std::fwrite(host, 1, step, f);
+        last_used = va - base + step;
+      } else {
+        // Keep the file position honest: a gap of zeros.
+        static const uint8_t zeros[0x10000] = {};
+        std::fwrite(zeros, 1, step, f);
+      }
+      written += step;
+    }
+    std::fclose(f);
+    REXLOG_INFO("Image dump: {} bytes written to {} (last committed byte at +{:#x})", written,
+                path, last_used);
   }
 
   // FABLE2_TEXPACK_STRESS=<seconds>: from then on, switch the texture pack

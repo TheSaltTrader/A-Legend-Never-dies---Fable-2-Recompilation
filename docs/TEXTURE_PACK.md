@@ -47,6 +47,15 @@ re-load used to re-read the file and re-upload it (1.3 ms each, ~5 a frame in
 play). A `[texpack] re-uploads in N s` line names the most re-uploaded ids
 every five seconds. The plugin edit scripts are in `patches/scripts/`.
 
+**0.0.16 (2026-09-12):** switching dumping on (or changing its folder) now
+drops every texture, so the scene already in memory is written out too - the
+dump runs per texture LOAD, and before this only what loaded after the
+switch was captured (NG2 saw it as "dumping does nothing" and made dumping
+restart-required; the pack path had the better answer in the same plugin
+block). And the shared plugin's resolve-at-load (NG2 v1.0.13: the pack match
+happens at load, on the bytes really in memory, with a separate upscaled
+resource per texture) is on by default here as well.
+
 ## Per-region warming (2026-09-11)
 
 The plugin records which pack textures each stage uses (`pack/stages/chNN.txt`,

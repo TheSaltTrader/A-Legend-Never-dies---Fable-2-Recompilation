@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -59,6 +60,7 @@ uint64_t g_guest_lo = 0, g_guest_hi = 0;  // host address range covered by gener
 HMODULE g_exe = nullptr, g_runtime = nullptr, g_gpu = nullptr, g_ntdll = nullptr, g_k32 = nullptr;
 
 void BuildGuestTable() {
+  if (!g_guest_fns.empty()) return;  // built once; the sampler and the crash log both ask
   for (const PPCFuncMapping* m = PPCFuncMappings; m->host != nullptr; ++m) {
     g_guest_fns.push_back({reinterpret_cast<uint64_t>(m->host), uint32_t(m->guest)});
   }
@@ -386,6 +388,22 @@ void StartProfiler() {
 void StopProfiler() {
   if (!g_run.exchange(false)) return;
   if (g_thread.joinable()) g_thread.join();
+}
+
+std::string DescribeHostAddress(uint64_t rip) {
+  static std::mutex init_mutex;
+  static bool ready = false;
+  {
+    std::lock_guard<std::mutex> lock(init_mutex);
+    if (!ready) {
+      ready = true;
+      if (!g_exe) g_exe = GetModuleHandleW(nullptr);
+      SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
+      SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+      if (g_guest_fns.empty()) BuildGuestTable();
+    }
+  }
+  return Describe(rip);
 }
 
 }  // namespace fable2

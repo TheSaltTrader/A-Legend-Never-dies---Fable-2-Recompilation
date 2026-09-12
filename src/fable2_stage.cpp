@@ -1,6 +1,9 @@
 #include "fable2_stage.h"
 
+#include <windows.h>
+
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -12,6 +15,8 @@
 
 #include <rex/cvar.h>
 #include <rex/kernel/xboxkrnl/io.h>
+
+#include "fable2_profiler.h"  // DescribeHostAddress
 #include <rex/logging.h>
 
 namespace fs = std::filesystem;
@@ -59,6 +64,21 @@ void OnFileOpen(const std::string& path, bool opened) {
   // Every open, at debug: this is the record that says whether region banks
   // are opened per region or all at boot, and it is cheap to keep.
   REXLOG_DEBUG("[stage] open #{}: {}{}", n, path, opened ? "" : " (failed)");
+  // FABLE2_TRACE_OPEN=<substring>: for an open whose path contains it, log
+  // the host stack with the recompiled functions named - which guest code
+  // opens this file. Static search for the string's address found asserts
+  // instead of the reader (2026-09-12); the caller's frames are exact.
+  {
+    static const char* trace = std::getenv("FABLE2_TRACE_OPEN");
+    if (trace && *trace && Lower(path).find(Lower(trace)) != std::string::npos) {
+      void* frames[40];
+      const USHORT depth = CaptureStackBackTrace(1, 40, frames, nullptr);
+      REXLOG_INFO("[trace-open] {} ({}) - {} frames:", path, opened ? "opened" : "failed", depth);
+      for (USHORT i = 0; i < depth; ++i)
+        REXLOG_INFO("[trace-open]   #{:02} {}", i,
+                    DescribeHostAddress(reinterpret_cast<uint64_t>(frames[i])));
+    }
+  }
   if (!opened)
     return;
   const std::string lowered = Lower(path);

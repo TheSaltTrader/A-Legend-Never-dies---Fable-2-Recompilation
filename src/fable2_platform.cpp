@@ -19,6 +19,48 @@
 
 namespace fable2 {
 
+void SetAppUserModelId() {
+  typedef HRESULT(WINAPI * SetAumidFn)(PCWSTR);
+  HMODULE shell = LoadLibraryW(L"shell32.dll");
+  auto fn = shell ? reinterpret_cast<SetAumidFn>(
+                        GetProcAddress(shell, "SetCurrentProcessExplicitAppUserModelID"))
+                  : nullptr;
+  if (fn) fn(L"TheSaltTrader.Fable2Recomp");
+}
+
+void ApplyWindowIcon(void* native_window) {
+  HWND hwnd = static_cast<HWND>(native_window);
+  if (!hwnd) {
+    REXLOG_WARN("Window icon: no native window handle");
+    return;
+  }
+  HMODULE exe = GetModuleHandleW(nullptr);
+  // Resource id 1 - see resources/fable2.rc. Two sizes: the small one is the
+  // title bar and the taskbar button, the big one Alt-Tab and the switcher.
+  // Not "small": <rpcndr.h> defines that word as a macro.
+  HICON icon_big =
+      static_cast<HICON>(LoadImageW(exe, MAKEINTRESOURCEW(1), IMAGE_ICON, 256, 256, 0));
+  HICON icon_small =
+      static_cast<HICON>(LoadImageW(exe, MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16, 0));
+  if (!icon_big && !icon_small) {
+    REXLOG_WARN("Window icon: resource 1 not found in the executable ({})", GetLastError());
+    return;
+  }
+  if (icon_big) SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon_big));
+  if (icon_small)
+    SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon_small));
+  REXLOG_INFO("Window icon applied ({}{})", icon_big ? "big" : "",
+              icon_small ? (icon_big ? "+small" : "small") : "");
+}
+
+bool PageCommitted(const void* p) {
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (!p || !VirtualQuery(p, &mbi, sizeof(mbi)))
+    return false;
+  return mbi.State == MEM_COMMIT && !(mbi.Protect & PAGE_NOACCESS) &&
+         !(mbi.Protect & PAGE_GUARD);
+}
+
 void RaiseTimerResolution() {
   // NtSetTimerResolution rather than timeBeginPeriod: it goes to 0.5 ms where
   // winmm stops at 1, and it needs no extra import library.

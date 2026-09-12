@@ -1124,15 +1124,27 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     RowStart("Import Xbox 360 saves",
              "Point this at a folder of Xbox 360 Fable II save packages (or at "
              "a single one) and they are imported into the profile on the next "
-             "launch, so Continue and Load Game can see them. Packages that are "
-             "not Fable II saves are skipped silently - a save folder usually "
-             "holds other things too.");
+             "launch, so Continue can see them. Each package is imported once, "
+             "into a free save slot, and its version number is adjusted to this "
+             "build's - a console save from an updated game is otherwise refused "
+             "as \"more up-to-date\". Packages that are not Fable II saves are "
+             "skipped silently - a save folder usually holds other things too.");
     {
       char buf[512];
       std::snprintf(buf, sizeof(buf), "%s", s.save_import_path.c_str());
       if (ImGui::InputText("##savepath", buf, sizeof(buf))) {
         s.save_import_path = buf;
         changed = true;
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Browse...##savebrowse")) {
+        if (auto picked = PickFolder("Folder holding Xbox 360 Fable II save packages",
+                                     s.save_import_path.empty()
+                                         ? s.ResolvedGamePath()
+                                         : std::filesystem::path(s.save_import_path))) {
+          s.save_import_path = picked->string();
+          changed = true;
+        }
       }
       ImGui::SameLine();
       // Local to the row: it is a transient result line, not state the
@@ -1769,6 +1781,43 @@ void SetupScreen::DrawInstaller() {
       StartInstall();
     }
     ImGui::EndDisabled();
+  }
+
+  // Xbox 360 saves, here as well as in the settings: a player with a save
+  // from the console wants it in before the first launch, not after a menu
+  // they have not seen yet. The folder is remembered in the settings; the
+  // packages are imported at launch, each once, into a free slot, with the
+  // save's version number adjusted to this build's - see fable2_saveimport.
+  {
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Import Xbox 360 saves (optional)");
+    PathField("##setupsavepath", settings_->save_import_path);
+    if (ImGui::Button("Choose save folder...")) {
+      if (auto picked = PickFolder("Folder holding Xbox 360 Fable II save packages",
+                                   settings_->save_import_path.empty()
+                                       ? install_dest_
+                                       : std::filesystem::path(settings_->save_import_path))) {
+        settings_->save_import_path = picked->string();
+        const auto found = fable2::FindSavePackages(settings_->save_import_path);
+        fable2::QueueSaveImports(found);
+        setup_save_message_ = found.empty()
+                                  ? std::string("No Fable II saves found there.")
+                                  : (std::to_string(found.size()) +
+                                     " save(s) found - imported when the game starts, "
+                                     "each once, into a free slot.");
+      }
+    }
+    if (!settings_->save_import_path.empty()) {
+      ImGui::SameLine();
+      if (ImGui::Button("Clear##setupsave")) {
+        settings_->save_import_path.clear();
+        fable2::QueueSaveImports({});
+        setup_save_message_.clear();
+      }
+    }
+    if (!setup_save_message_.empty()) {
+      ImGui::TextWrapped("%s", setup_save_message_.c_str());
+    }
   }
 
   if (busy || install_started_) {
