@@ -3,6 +3,71 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.1 — 2026-09-12 (branch `tu1`)
+
+### Fixed - a crash in play, and the class it belongs to
+
+Fifteen minutes into the first play-test of the update build the game
+died with `Call to invalid or unregistered function at 0x82DE2BA8`: the
+fourth of ten callbacks a builder at 0x82DE2D48 puts into a table, all
+of which the analyzer had absorbed into the function before them, and
+all of which the pointer scan's "site and target in different functions"
+rule had thrown away. The ten are registered, and `tools/scan_fnptrs.py`
+now finds that class on its own: a label is recognised as the destination
+of a direct branch rather than by who owns it, the `lis` window is 24
+instructions, and three shape tests (a block that reads a non-volatile
+register or the caller's frame before writing it; a run of `li; b` case
+pairs; an address that feeds a `bctr` at its site) keep the wider net from
+registering the middle of a function. The rewritten scan also dropped one
+entry the first pass had registered, 0x82451E90, a continuation that reads
+the frame pointer in its first instruction. README, "What a crash in play
+taught channel 2".
+
+### Changed - the logo videos are skipped, not pressed through
+
+"Skip intro videos" now starts the game without the Microsoft and
+Lionhead logos. They never answered to a button (the boot timeline was
+17.1 s with and without the synthetic presses), and a video file that
+fails to open stops the game, so neither the pad nor the files were the
+way in. The game keeps its boot movies in a list and plays until the end
+marker; a hook at 0x822F4EAC makes the first entry read as the end marker
+and the game takes the path it already has for an empty list. The boot-time
+arm of the synthetic controller is gone with them: with the title screen
+up by 15 s it sat inside the 25 s arm, and a synthetic A on the main menu
+is "New Game" (seen in a scripted run). The arm for a chapter's cinematic
+is unchanged.
+
+### Changed - readouts at every launch, with bars
+
+The on-screen readouts are shown at every launch; F8 hides them for the
+session only and is no longer saved. GPU load and video memory each get a
+bar under the number, each with its own checkbox. `FABLE2_HUD=1` still
+forces them for a scripted run.
+
+### Open - magenta tree impostors in the forest
+
+In Bower Lake the distant trees draw as bright magenta cards. Not the
+texture pack (it was off) and not a dumped texture (11,158 textures the
+session dumped hold no solid magenta), so the colour is made on the GPU
+side: the impostor cards are rendered at run time and read back, and two
+readbacks in this port are throttled - the resolve readback ("Black
+texture fix", `some`) and the shader memory-export readback (off for the
+60 fps lock). The scripted runs cannot walk to the forest, so the test is
+yours: `tools\impostor_test_memexport.cmd` and
+`tools\impostor_test_resolvefull.cmd` launch the game with one of the two
+turned up for that process (`FABLE2_TUNE=name=value;...` is the seam).
+Whichever clears the trees names the fix, which will then be made
+selective rather than left at the expensive setting.
+
+### Measured - what a region load costs (pre-cache, step 1)
+
+The plugin's persistent shader storage is live (`Translated 221 shaders
+from the storage in 26 milliseconds` at boot, pipelines rebuilt from it in
+the background), so pipelines seen once do not stall again. A scripted
+load of Bowerstone Market was bucketed by 5 s (`out/hitch_census` in the
+port record): see docs/TU1_PORT.md for the numbers that decide what the
+per-region pre-cache should hold.
+
 ## 0.1.0 — 2026-09-12 (branch `tu1`)
 
 ### Changed - compiled from the disc's title update

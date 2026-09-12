@@ -60,6 +60,11 @@ void NotifyTexturePack(bool enabled);
 // immediately rather than at the next launch.
 void SetHudSettings(const Fable2Settings* settings);
 
+// F8. Hides or shows the readouts for this session only - nothing is saved,
+// so every launch starts with what the settings say. Returns true when the
+// readouts are now hidden.
+bool ToggleHudHidden();
+
 // FPS / GPU / video memory, top right. Always present, draws only what is
 // switched on - and counts presented frames even when nothing is shown, so
 // turning the readout on does not start from a blank rate.

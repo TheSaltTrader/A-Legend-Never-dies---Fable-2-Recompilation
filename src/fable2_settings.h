@@ -160,12 +160,15 @@ struct Fable2Settings {
   // and with it on the game crashed at character select - a screen that is
   // stable for 8 straight frames with it off. Until that is understood this
   // stays opt-in.
-  // On-screen readouts, toggled with F8. Off by default: a number in the
-  // corner is a tool, not a decoration.
-  bool hud_enabled = false;
+  // On-screen readouts. ON at every launch - the player wants the numbers
+  // there when the game comes up (2026-09-12); F8 hides them for the session
+  // only and is not saved, so the next launch shows them again.
+  bool hud_enabled = true;
   bool hud_fps = true;
   bool hud_gpu = true;
+  bool hud_gpu_bar = true;   // a bar under the GPU number
   bool hud_vram = true;
+  bool hud_vram_bar = true;  // a bar under the VRAM number
   bool hud_menu_bars = true;   // the live cost bars in the Textures panel
   // A LATCH, not a preference: hardware detection runs once and records
   // that it ran, so a value changed by hand is never overwritten later.
@@ -288,6 +291,8 @@ struct Fable2Settings {
         << "hud_fps=" << (hud_fps ? 1 : 0) << "\n"
         << "hud_gpu=" << (hud_gpu ? 1 : 0) << "\n"
         << "hud_vram=" << (hud_vram ? 1 : 0) << "\n"
+        << "hud_gpu_bar=" << (hud_gpu_bar ? 1 : 0) << "\n"
+        << "hud_vram_bar=" << (hud_vram_bar ? 1 : 0) << "\n"
         << "hud_menu_bars=" << (hud_menu_bars ? 1 : 0) << "\n"
         << "hardware_detected=" << (hardware_detected ? 1 : 0) << "\n"
         << "texture_pack=" << (texture_pack ? 1 : 0) << "\n"
@@ -387,6 +392,8 @@ struct Fable2Settings {
     else if (k == "hud_fps") hud_fps = Truthy(v);
     else if (k == "hud_gpu") hud_gpu = Truthy(v);
     else if (k == "hud_vram") hud_vram = Truthy(v);
+    else if (k == "hud_gpu_bar") hud_gpu_bar = Truthy(v);
+    else if (k == "hud_vram_bar") hud_vram_bar = Truthy(v);
     else if (k == "hud_menu_bars") hud_menu_bars = Truthy(v);
     else if (k == "hardware_detected") hardware_detected = Truthy(v);
     else if (k == "texture_pack") texture_pack = Truthy(v);

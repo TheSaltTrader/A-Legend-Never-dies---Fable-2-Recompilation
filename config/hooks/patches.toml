@@ -103,3 +103,26 @@ address = 0x8231091C
 name = "fable2PatchTickRate"
 registers = ["r8"]
 after_instruction = true
+
+# --- Skip the boot logos -----------------------------------------------------
+# Not a community patch. sub_822F4E48 builds the boot movie list on the stack
+# ("GAME:\data\art\videos\microsoft_logo.bik", "...\lionhead_logo.bik", end
+# marker) and plays entries until one IS the end marker; sub_8229B1B8 answers
+# "this entry is not the end marker" (a byte compare against the empty string
+# at 0x82000CA0). Read back from the patched image:
+#
+#   0x822F4EA8  bl   sub_8229B1B8         <- first entry vs the end marker
+#   0x822F4EAC  clrlwi r9, r3, 24         <- hooked BEFORE: r3 forced to 0
+#   0x822F4EB0  cmplwi cr6, r9, 0
+#   0x822F4EB4  beq  cr6, 0x822F50A8      <- the game's own empty-list path
+#
+# With r3 = 0 the game takes the path it has for an empty list: no player
+# object is made, nothing is opened, start-up continues as it does after the
+# logos. Why a hook and not the files or the pad: a video that fails to open
+# stops the game ("bad disc"), and the auto-skip's button presses never
+# shortened the logos (17.1 s with and without them, 2026-09-12).
+[[midasm_hook]]
+address = 0x822F4EAC
+name = "fable2PatchSkipBootLogos"
+registers = ["r3"]
+after_instruction = false

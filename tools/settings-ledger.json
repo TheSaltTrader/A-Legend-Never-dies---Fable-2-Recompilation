@@ -63,6 +63,8 @@
     { "setting": "hud_fps", "doc_phrase": "On-screen readouts" },
     { "setting": "hud_gpu", "doc_phrase": "On-screen readouts" },
     { "setting": "hud_vram", "doc_phrase": "On-screen readouts" },
+    { "setting": "hud_gpu_bar", "doc_phrase": "On-screen readouts" },
+    { "setting": "hud_vram_bar", "doc_phrase": "On-screen readouts" },
     { "setting": "hud_menu_bars", "doc_phrase": "Live cost" },
     { "setting": "patch_60fps", "doc_phrase": "60 fps" },
     { "setting": "patch_720p", "doc_phrase": "Render at 1280 wide" },

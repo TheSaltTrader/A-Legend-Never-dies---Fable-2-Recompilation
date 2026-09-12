@@ -199,6 +199,10 @@ struct Fable2Tuning {
     out.push_back({"fable2_disable_texture_morph",
                    s.patch_disable_texture_morph ? "true" : "false",
                    "[Xenia/Guy] disable texture morphing"});
+    // Ours: the boot-logo list hook (patch_hooks.cpp). Driven by the same
+    // switch as the synthetic A presses, which never shortened the logos.
+    out.push_back({"fable2_skip_boot_logos", s.skip_intro ? "true" : "false",
+                   "start without the Microsoft and Lionhead logo videos"});
     out.push_back({"fable2_high_tick_rate",
                    s.patch_high_tick_rate ? "true" : "false",
                    "[Xenia/Guy] 15 Hz -> 30 Hz tick rate"});

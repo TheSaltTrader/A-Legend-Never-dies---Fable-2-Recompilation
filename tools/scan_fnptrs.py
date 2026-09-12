@@ -82,7 +82,10 @@ BLR = 0x4E800020
 BCTR = 0x4E800420
 NOP = 0x60000000
 MIN_RUN = 2          # consecutive code pointers before a table is believable
-MATERIALISE_WINDOW = 8   # instructions a lis result is trusted for
+# 24, not 8: the 0x82DE2D48 callback-table builder (2026-09-12) keeps five
+# `lis` results live across 16 instructions before the matching `addi`. The
+# register-write invalidation below is what keeps a wide window honest.
+MATERIALISE_WINDOW = 24  # instructions a lis result is trusted for
 POINTER_SECTIONS = (".rdata", ".data")
 
 UNRESOLVED_B = re.compile(
@@ -213,6 +216,152 @@ def looks_like_jump_table(img, addr, tlo, thi, need=3):
     return True
 
 
+def branch_targets(words, va):
+    """Every address a direct, non-linking branch in .text jumps to.
+
+    `b`/`ba` (op 18) and `bc`/`bca` (op 16) with LK=0. A `bl` target is a call,
+    which is a function start by definition and no threat to anything; what
+    this set is for is telling a label inside a function from a thunk that
+    only ever gets reached through a pointer.
+    """
+    out = set()
+    for i, w in enumerate(words):
+        op = w >> 26
+        if w & 1:
+            continue
+        if op == 18:
+            li = w & 0x03FFFFFC
+            if li & 0x02000000:
+                li -= 0x04000000
+            out.add(li if w & 2 else va + i * 4 + li)
+        elif op == 16:
+            bd = w & 0xFFFC
+            if bd & 0x8000:
+                bd -= 0x10000
+            out.add(bd if w & 2 else va + i * 4 + bd)
+    return out
+
+
+NON_VOLATILE = set(range(14, 32))
+MFLR_R12 = 0x7D8802A6
+
+
+def _reads_writes(w):
+    """The GPRs an instruction reads and writes - the subset the continuation
+    test needs. Anything not decoded reads nothing and writes nothing, which
+    errs toward calling a block a function (the side the old code was on)."""
+    op = w >> 26
+    rD = (w >> 21) & 0x1F
+    rA = (w >> 16) & 0x1F
+    rB = (w >> 11) & 0x1F
+    reads, writes = set(), set()
+    if op == 15 and rA == 0:                       # lis
+        writes.add(rD)
+    elif op in (7, 8, 12, 13, 14, 15):             # mulli subfic addic addi addis
+        reads.add(rA); writes.add(rD)
+    elif op in (32, 33, 34, 35, 40, 41, 42, 43, 58):   # integer loads
+        reads.add(rA); writes.add(rD)
+        if op in (33, 35, 41, 43):
+            writes.add(rA)
+    elif op in (36, 37, 38, 39, 44, 45, 62):       # integer stores
+        reads.add(rA); reads.add(rD)
+        if op in (37, 39, 45):
+            writes.add(rA)
+    elif op in (10, 11):                           # cmpli cmpi
+        reads.add(rA)
+    elif op in (20, 21, 23, 24, 25, 26, 27, 28, 29):   # rlwimi rlwinm rlwnm ori..andis
+        reads.add(rD); writes.add(rA)
+        if op == 23:
+            reads.add(rB)
+    elif op == 31:
+        xo = (w >> 1) & 0x3FF
+        if xo in (444, 28, 316, 124, 476, 284, 412, 60, 24, 536, 792, 824,
+                  26, 58, 922, 954, 986):          # logical, shifts, cntlz, exts
+            reads.add(rD); reads.add(rB); writes.add(rA)
+        elif xo in (151, 215, 407, 183, 247, 439, 149, 181):   # indexed stores
+            reads.add(rD); reads.add(rA); reads.add(rB)
+        elif xo in (467, 144):                     # mtspr mtcrf
+            reads.add(rD)
+        elif xo in (0, 32):                        # cmp cmpl
+            reads.add(rA); reads.add(rB)
+        elif xo in (339, 19, 83):                  # mfspr mfcr mfmsr
+            writes.add(rD)
+        else:                                      # loads and arithmetic
+            reads.add(rA); reads.add(rB); writes.add(rD)
+    reads.discard(0)
+    return reads, writes
+
+
+def looks_like_continuation(img, target, limit=24):
+    """True if the code at `target` is the MIDDLE of a function: it uses a
+    non-volatile register, or the caller's stack frame, before writing it.
+
+    A function starts with nothing in r14-r31 it may rely on, and with r1 as
+    the caller's frame (arguments at positive offsets excepted, which are
+    rare for the callbacks this tool is after and are counted as frame use
+    here on purpose - the other error is the one that crashes). Three of the
+    twenty sampled candidates at 0x82FFBEDC, 0x82CB700C and 0x830F4E54
+    (2026-09-12) were blocks like that, each five instructions after the
+    `lis/addi` that named them: a continuation the parent stores, not a
+    function anyone calls.
+    """
+    written = set()
+    for k in range(0, limit * 4, 4):
+        w = img.word(target + k)
+        op = w >> 26
+        if w == MFLR_R12 or (op == 37 and ((w >> 16) & 0x1F) == 1):
+            return False                           # a prologue: a real function
+        reads, writes = _reads_writes(w)
+        for r in reads:
+            if r in NON_VOLATILE and r not in written:
+                return True
+        # r1 with a NON-NEGATIVE displacement before any stwu is the caller's
+        # frame, i.e. the middle of a function. A negative one is the red
+        # zone a leaf function may scribble in without a frame of its own -
+        # 0x8300DF78 does exactly that (VMX128 code, `stw r10, -0x10(r1)`)
+        # and is a real function pointed to from a table.
+        if 1 in reads and op not in (31,) and ((w >> 16) & 0x1F) == 1:
+            if not (w & 0x8000):
+                return True
+        written |= writes
+        if is_terminator(w) or (op == 18 and not (w & 1)):
+            return False
+    return False
+
+
+def site_feeds_bctr(words, i, limit=10):
+    """True if a `bctr` follows the materialising instruction at index `i`
+    before any `bl` or `blr`: the address is jumped to, not handed over."""
+    for k in range(i + 1, min(i + 1 + limit, len(words))):
+        w = words[k]
+        if w == BCTR:
+            return True
+        if w == BLR or ((w >> 26) in (16, 18) and (w & 1)):   # blr, bl, bcl
+            return False
+    return False
+
+
+def looks_like_inline_cases(img, target):
+    """`li rD, 0; b L; li rD, 1; b L; li rD, 2; b L ...` - a switch whose
+    cases the compiler laid out at a fixed stride and jumps into by
+    arithmetic on the materialised base (0x83063ABC, 2026-09-12). Not a
+    function; registering it cuts the switch off from its exit."""
+    first_b = None
+    for n in range(3):
+        li = img.word(target + n * 8)
+        b = img.word(target + n * 8 + 4)
+        if (li >> 26) != 14 or ((li >> 16) & 0x1F) != 0:   # li rD, imm
+            return False
+        if (b >> 26) != 18 or (b & 3):                      # b (relative, no link)
+            return False
+        dest = target + n * 8 + 4 + ((b & 0x03FFFFFC) - (0x04000000 if b & 0x02000000 else 0))
+        if first_b is None:
+            first_b = dest
+        elif dest != first_b:
+            return False
+    return True
+
+
 def materialised(img, starts, tlo, thi, found):
     """Channel 2: function pointers BUILT IN CODE, never stored as data.
 
@@ -232,11 +381,21 @@ def materialised(img, starts, tlo, thi, found):
     from the `lis` destination, so matching `addi rD, rD, lo` alone misses most
     of them. And `lis` results are short-lived, so a register is only trusted
     until something else writes to it.
+
+    A third one cost a crash in play (2026-09-12, 0x82DE2BA8): the site and
+    the target may sit in the SAME analyzer function. A builder at
+    0x82DE2D48 fills a table with ten thunks at 0x82DE2B38..0x82DE2CF8, and
+    the analyzer had absorbed builder and thunks alike into 0x82DE2A70 - so
+    the old same-owner rule, meant to keep out labels, threw the whole family
+    away. A label is now recognised by what it is: the destination of a
+    direct branch somewhere in .text. A materialised address that no branch
+    ever jumps to is a function pointer whoever owns it.
     """
     va, size = next((v, s) for n, v, s in img.sections if n == ".text")
     n = size & ~3
     words = struct.unpack_from(f">{n // 4}I", img.data, img.offset(va))
     sorted_starts = sorted(starts)
+    labels = branch_targets(words, va)
 
     hi_of = {}                      # register -> (immediate, index it was set)
     for i, w in enumerate(words):
@@ -258,10 +417,14 @@ def materialised(img, starts, tlo, thi, found):
                 target = base[0] | lo
             site = va + i * 4
             if (target is not None and tlo <= target < thi and not target & 3
+                    and not site_feeds_bctr(words, i)
                     and target not in starts
                     and is_terminator(img.word(target - 4))
                     and not looks_like_jump_table(img, target, tlo, thi)
-                    and owner(sorted_starts, site) != owner(sorted_starts, target)):
+                    and (owner(sorted_starts, site) != owner(sorted_starts, target)
+                         or target not in labels)
+                    and not looks_like_inline_cases(img, target)
+                    and not looks_like_continuation(img, target)):
                 found.setdefault(target, site)
 
         # Anything that writes a register invalidates the lis we recorded for

@@ -75,6 +75,38 @@ the first suspect; if something misbehaves around register saves, v65.
 
 ## Log
 
+- 2026-09-12 12:50 MEASURED (pre-cache step 1): a scripted load of
+  Bowerstone Market on build 8, bucketed by 5 s from the region line
+  (`hitch_census.py`, `tools/hitch_census.py`; it reads the
+  `[gpu] fence waits`, `Creating graphics pipeline`, `[texpack]` and
+  `[swap]` lines). Baseline: the load itself spans ~20 s (10 -> 15 -> 46 ->
+  54 fps), graphics pipelines created 0 (the plugin's persistent shader
+  storage is live: `Translated 221 shaders from the storage in 26 ms` at
+  boot), fence waits small (29 x 6 ms, 16 x 8, 19 x 41), steady state
+  52-55 fps with 0-2 hitches per 5 s. So in this region nothing on the
+  plugin side is worth a pre-cache; the load-window hitches are the game's
+  own streaming. The forest (where the player saw 36 fps, p99 225-277 ms
+  and `frame pacing 125 x 447 ms` right after entering Bower Lake, with
+  "Dump while playing" ON) is not reachable by script - a session there
+  with the dump off is the missing number. Costs of the two readback
+  candidates for the magenta impostors, same load: memexport readback on =
+  34 fps (170 waits, ~2.0 s of every 5 s); resolve readback full = 16 fps
+  (2500 waits, ~1.6 s of every 5 s). `FABLE2_TUNE=texture_dump=false` and
+  `texture_pack_path=...` did NOT switch the dump off or the pack on (the
+  plugin keys on other entries) - those two runs are void.
+- 2026-09-12 12:40 CRASH IN PLAY after ~15 min (the player, Bower Lake and
+  on): `Call to invalid or unregistered function at 0x82DE2BA8` - the fourth
+  of ten callbacks a builder at 0x82DE2D48 puts in a table; the analyzer had
+  absorbed builder and callbacks into 0x82DE2A70 and the pointer scan's
+  same-owner rule had thrown the family away. Registered all ten by hand
+  (`_missed` entries); `tools/scan_fnptrs.py` rewritten to find that class
+  (README, "What a crash in play taught channel 2"): 266 raw candidates,
+  108 rejected by the new shape tests, net one new registration
+  (0x82D31398) and one wrong one dropped (0x82451E90, a continuation). The
+  boot logos are skipped by a hook (0x822F4EAC, `fable2PatchSkipBootLogos`)
+  and the boot-time auto-skip arm is gone: with the title screen up by
+  ~15 s, its synthetic A picked "New Game" off the main menu (seen in a
+  scripted run).
 - 2026-09-12 12:00 `kGameSaveVersion` follows `FABLE2_COMPILED_WITH_PATCH`
   (393219 on this build). `FABLE2_HUD=1` added: the on-screen readouts are
   forced on for a process without touching the settings file, and

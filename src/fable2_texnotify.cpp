@@ -1,5 +1,6 @@
 #include "fable2_texnotify.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -57,6 +58,26 @@ static bool HudForced() {
   return forced;
 }
 void SetHudSettings(const Fable2Settings* settings) { g_hud_settings = settings; }
+
+// The F8 state. Session-only on purpose: the readouts are meant to be there
+// at every launch, and a toggle that was saved once left a test run's frames
+// without numbers (2026-09-12).
+static std::atomic<bool> g_hud_hidden{false};
+bool ToggleHudHidden() {
+  const bool now = !g_hud_hidden.load(std::memory_order_acquire);
+  g_hud_hidden.store(now, std::memory_order_release);
+  return now;
+}
+
+// A thin bar under a readout, coloured like its number. ImGui's ProgressBar
+// takes its fill colour from the style, so it is pushed around the call; an
+// empty overlay string draws no text.
+static void ReadoutBar(float fraction, const ImVec4& colour) {
+  ImGui::PushStyleColor(ImGuiCol_PlotHistogram, colour);
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.18f, 0.20f, 0.19f, 0.85f));
+  ImGui::ProgressBar(std::clamp(fraction, 0.0f, 1.0f), ImVec2(160.0f, 6.0f), "");
+  ImGui::PopStyleColor(2);
+}
 
 void NotifyTexturePack(bool enabled) {
   g_enabled.store(enabled, std::memory_order_release);
@@ -132,7 +153,11 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
   const bool show_fps = forced || s->hud_fps;
   const bool show_gpu = forced || s->hud_gpu;
   const bool show_vram = forced || s->hud_vram;
-  if (!(forced || s->hud_enabled) || (!show_fps && !show_gpu && !show_vram))
+  const bool show_gpu_bar = forced || s->hud_gpu_bar;
+  const bool show_vram_bar = forced || s->hud_vram_bar;
+  const bool hidden = g_hud_hidden.load(std::memory_order_acquire);
+  if (!(forced || (s->hud_enabled && !hidden)) ||
+      (!show_fps && !show_gpu && !show_vram))
     return;
 
   const PerfSample p = GetPerfSample();
@@ -177,6 +202,7 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
       if (p.gpu_valid) {
         const ImVec4 c = p.gpu_percent < 80.0f ? good : (p.gpu_percent < 95.0f ? warn : bad);
         ImGui::TextColored(c, "%5.0f%%", p.gpu_percent);
+        if (show_gpu_bar) ReadoutBar(p.gpu_percent / 100.0f, c);
       } else {
         // Never a zero that looks like an idle GPU.
         ImGui::TextColored(label, "    n/a");
@@ -190,6 +216,7 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
         const ImVec4 c = frac < 0.7f ? good : (frac < 0.9f ? warn : bad);
         ImGui::TextColored(c, "%.1f / %.1f GB", p.vram_mb / 1024.0f,
                            p.vram_total_mb / 1024.0f);
+        if (show_vram_bar) ReadoutBar(frac, c);
       } else {
         ImGui::TextColored(label, "n/a");
       }

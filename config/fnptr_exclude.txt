@@ -17,3 +17,4 @@
 0x832B9EA4  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
 0x832B9EE4  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
 0x832B9EF4  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
+0x832B9D04  # import thunk (01010153/02010153 descriptor words, mtctr/bctr) under 0x832B97A8 - codegen drops it; found by the widened scan 2026-09-12

@@ -290,10 +290,15 @@ Enhancements
   (1 to 8) and filters it back down; the cost is the square of the number.
 - **Import Xbox 360 saves** - a folder of Fable II save packages (or one
   package) imported into the profile at the next launch.
-- **Skip intro videos** - presses A through the boot logos with a synthetic
-  controller; any genuine input disarms it.
-- **On-screen readouts** - FPS, GPU load and video memory in the corner (F8),
-  each switchable. FPS is the game's own frame rate (frames it finished), with
+- **Skip intro videos** - starts without the Microsoft and Lionhead logo
+  videos (17 seconds no button shortens): a hook makes the game's boot-movie
+  list read as empty, and the game takes its own empty-list path. The
+  synthetic A through a chapter's cinematic stays; any genuine input disarms
+  it.
+- **On-screen readouts** - FPS, GPU load and video memory in the corner,
+  each switchable, with a bar under the GPU and VRAM numbers (each
+  switchable too). Shown at every launch; F8 hides them for the session and
+  is not remembered. FPS is the game's own frame rate (frames it finished), with
   the host's present rate beside it, smaller; the window repaints far more
   often than the game draws, and only the first number says whether the game
   is keeping up.
@@ -358,7 +363,9 @@ Content and diagnostics
   `FABLE2_PROFILE=1` samples the game's own threads from inside the process
   and logs, every ten seconds, the hottest recompiled functions by name;
   `FABLE2_PAD_SCRIPT="autoskip:20,30:right,32:a"` presses buttons on a
-  synthetic controller at the given seconds after boot; `FABLE2_HUD=1` shows
+  synthetic controller at the given seconds after boot; `FABLE2_TUNE="name=value;..."`
+  overrides tuning entries for one process (the A/B seam;
+  `tools\impostor_test_*.cmd` use it); `FABLE2_HUD=1` shows
   the on-screen readouts for that process whatever the settings say (and
   saves nothing), so a test run's frames carry the numbers;
   `FABLE2_TEXPACK_STRESS` and `FABLE2_QUIT_AFTER` are the crash and quit
@@ -639,6 +646,8 @@ and silently ignored. Write `--fullscreen=true`.
 | `extract_disc.py` | GDF (XGD1/2/3) extractor: `--list`, `--only`, or everything |
 | `xex_image.py` | retail XEX2 decrypt + decompress to a flat guest image; caches `out/image.bin` |
 | `xex_imports.py` | which kernel/xam ordinals the game imports, and who calls them |
+| `hitch_census.py` | buckets a region load by 5 s: pipelines created, fence waits by reason, pack uploads, fps and hitches - what a stutter is made of |
+| `impostor_test_memexport.cmd`, `impostor_test_resolvefull.cmd` | launch the game with one readback turned up for that process (`FABLE2_TUNE`), for the magenta tree impostors |
 | `resolve_calls.py` | **run codegen, register every unresolved call, repeat to a fixpoint** |
 | `add_function.py` | register one missed function, sizing it by walking to its terminator |
 | `find_setjmp.py` | locate `_setjmp` / `longjmp` by shape, since the XEX is stripped |
@@ -717,6 +726,28 @@ That is what makes a false positive cheap: registering an address that is
 really the middle of a straight-line function would cut that function short,
 but if the preceding instruction cannot fall through, splitting there costs
 nothing even when the guess is wrong.
+
+**What a crash in play taught channel 2 (2026-09-12).** A builder at
+0x82DE2D48 fills a table with ten callbacks at 0x82DE2B38..0x82DE2CF8, and
+the analyzer had absorbed builder and callbacks alike into one function;
+the old rule "site and target must be in different functions" (meant to
+keep out labels) threw the whole family away, and the game died on the
+fourth of them. The rule is now the property it stood for: a label is the
+destination of a direct branch somewhere in `.text`, and a materialised
+address no branch jumps to is a function pointer whoever owns it. The
+`lis` window is 24 instructions (that builder holds five `lis` results
+across 16). Three shape tests keep the wider net honest, each written for a
+case seen in a sample: a block that reads a non-volatile register, or the
+caller's frame at a non-negative `r1` offset, before writing it is the
+middle of a function (a continuation the parent stores), not a function; a
+run of `li rD, k; b L` pairs is a switch's cases; and a site whose
+materialised address feeds a `bctr` before any call is a computed jump into
+its own cases. The same tests dropped one entry the first pass had
+registered, 0x82451E90, which reads the frame pointer in its first
+instruction - a continuation that would have read a zero `r31` the day the
+game resumed there. The import-thunk area under 0x832B97A8 stays in
+`config/fnptr_exclude.txt` (the codegen drops those and the link then wants
+them).
 
 #### Channel 2 was wrong the first time, and only a human sample caught it
 

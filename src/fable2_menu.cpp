@@ -1166,21 +1166,26 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     }
 
     RowStart("Skip intro videos",
-             "Presses A through the boot logos for you. It works by adding a "
-             "synthetic controller whose presses are merged with your own - "
-             "nothing in the game is patched - and ANY genuine input disarms it "
-             "at once, so a cinematic you want to watch is one stick nudge away "
-             "from being left alone. The video FILES are never hidden: this game "
-             "treats a video that fails to open as a bad disc and stops.");
+             "Starts the game without the Microsoft and Lionhead logo videos, "
+             "17 seconds that no button shortens. The game keeps its boot "
+             "movies in a list and plays until the end marker; one hook makes "
+             "the first entry read as the end marker, and the game takes the "
+             "path it already has for an empty list.\n\n"
+             "It also presses A through the cinematic after a chapter load, by "
+             "adding a synthetic controller whose presses are merged with your "
+             "own; ANY genuine input disarms that at once, so a cinematic you "
+             "want to watch is one stick nudge away from being left alone. The "
+             "video FILES are never hidden: this game treats a video that fails "
+             "to open as a bad disc and stops.");
     {
       if (ImGui::Checkbox("##skipintro", &s.skip_intro)) changed = true;
       if (!live) RestartTag();
     }
 
     RowStart("On-screen readouts",
-             "Frame rate, CPU, GPU and video memory in the corner, toggled with "
-             "F8 while playing. Off by default - a number in the corner is a "
-             "tool, not a decoration.\n\n"
+             "Frame rate, GPU and video memory in the corner, with a bar under "
+             "the GPU and VRAM numbers. Shown at every launch; F8 hides them "
+             "for the session only and is not remembered.\n\n"
              "FPS is the GAME's own rate - frames it finished - with the host's "
              "present rate beside it, smaller. The two differ: the window "
              "repaints far more often than the game draws, and the big number "
@@ -1196,6 +1201,10 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
         changed |= ImGui::Checkbox("GPU##hudgpu", &s.hud_gpu);
         ImGui::SameLine();
         changed |= ImGui::Checkbox("VRAM##hudvram", &s.hud_vram);
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("GPU bar##hudgpubar", &s.hud_gpu_bar);
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("VRAM bar##hudvrambar", &s.hud_vram_bar);
       }
     }
 

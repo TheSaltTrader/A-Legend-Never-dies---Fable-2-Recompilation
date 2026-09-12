@@ -37,6 +37,10 @@ REXCVAR_DEFINE_BOOL(fable2_high_tick_rate, false, "Fable II",
                     "Double the 15 Hz tick rate to 30 Hz - smoother in-game "
                     "UI and less input delay");
 
+// Not a community patch: ours (2026-09-12). See patches.toml for the site.
+REXCVAR_DEFINE_BOOL(fable2_skip_boot_logos, false, "Fable II",
+                    "Start without the Microsoft and Lionhead logo videos");
+
 namespace {
 
 // Each patch logs the first time it fires, with the value it replaced. A patch
@@ -139,4 +143,14 @@ void fable2PatchTickRate(PPCRegister& r8) {
     REXLOG_INFO("Patch: tick rate {} Hz -> {} Hz (guest 0x{:08X})", was, target,
                 va);
   }
+}
+
+// Boot logos. r3 is sub_8229B1B8's answer for the FIRST entry of the boot
+// movie list: non-zero = "not the end marker, play it". Zero sends the game
+// down its own empty-list path, so the two logo videos are never opened.
+void fable2PatchSkipBootLogos(PPCRegister& r3) {
+  if (!REXCVAR_GET(fable2_skip_boot_logos)) return;
+  static bool logged = false;
+  LogOnce(logged, "boot logo list", r3.u32, 0);
+  r3.u32 = 0;
 }

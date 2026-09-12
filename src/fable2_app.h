@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -338,13 +339,14 @@ class Fable2App : public rex::ReXApp {
     // reports nothing at all unless armed.
     fable2::SetAutoSkipEnabled(settings_.skip_intro);
     input->AddDriver(fable2::MakeAutoSkipDriver());
-    if (settings_.skip_intro) {
-      // The boot logos play immediately, so the arm goes in here rather than
-      // waiting for a signal this port cannot see.
-      fable2::ArmAutoSkip();
-    }
+    // NOT armed at boot any more. The boot logos never answered to a button
+    // (17.1 s with and without the presses, 2026-09-12) and are now skipped
+    // by the list hook in patch_hooks.cpp; the title screen then arrives
+    // inside what used to be the 25 s arm, where a synthetic A picks "New
+    // Game" off the main menu. The arm for a chapter's cinematic (ArmAutoSkip
+    // on a region load) is unchanged.
     REXLOG_INFO("Input: every controller drives guest user 0{}",
-                settings_.skip_intro ? ", intro auto-skip armed" : "");
+                settings_.skip_intro ? ", chapter auto-skip enabled" : "");
   }
 
   void OnPostSetup() override {
@@ -428,16 +430,15 @@ class Fable2App : public rex::ReXApp {
     rex::ui::RegisterBind("bind_fable2_quit", "Escape", "Quit the game",
                           [this] { QuitFromEscape(); });
 
-    // F8 shows or hides the readouts. A number in the corner is a tool, so it
-    // is off until asked for - but reaching it must not need a menu, because
-    // what it measures is what the menu being open changes. Which of the
-    // three are shown stays as chosen; this only switches them on and off.
+    // F8 hides or shows the readouts for this session. Reaching it must not
+    // need a menu, because what it measures is what the menu being open
+    // changes. Nothing is saved: the readouts are there at every launch, and
+    // which of them are shown stays as chosen in the settings.
     rex::ui::RegisterBind(
         "bind_fable2_hud", "F8", "Show or hide the on-screen readouts", [this] {
-          settings_.hud_enabled = !settings_.hud_enabled;
-          REXLOG_INFO("F8: on-screen readouts {}",
-                      settings_.hud_enabled ? "on" : "off");
-          settings_.Save();
+          const bool hidden = fable2::ToggleHudHidden();
+          REXLOG_INFO("F8: on-screen readouts {} (this session only)",
+                      hidden ? "hidden" : "shown");
         });
 
     // F9 switches the texture pack during play. This is the only practical way
@@ -763,6 +764,36 @@ class Fable2App : public rex::ReXApp {
     for (auto& e : Fable2Tuning::FromSettings(
              settings_, have_mappings ? mappings.string() : std::string())) {
       entries.push_back(std::move(e));
+    }
+    // FABLE2_TUNE="name=value;name=value" overrides or adds entries for this
+    // process only - the A/B seam for a rendering question (the magenta
+    // tree impostors, 2026-09-12). Never saved.
+    if (const char* tune = std::getenv("FABLE2_TUNE"); tune && *tune) {
+      static std::deque<std::string> names;  // Entry::name is a const char*
+      const std::string spec(tune);
+      size_t pos = 0;
+      while (pos < spec.size()) {
+        size_t end = spec.find(';', pos);
+        if (end == std::string::npos) end = spec.size();
+        const std::string item = spec.substr(pos, end - pos);
+        pos = end + 1;
+        const size_t eq = item.find('=');
+        if (eq == std::string::npos || eq == 0) continue;
+        const std::string name = item.substr(0, eq);
+        const std::string value = item.substr(eq + 1);
+        bool replaced = false;
+        for (auto& e : entries) {
+          if (name == e.name) {
+            e.value = value;
+            replaced = true;
+          }
+        }
+        if (!replaced) {
+          names.push_back(name);
+          entries.push_back({names.back().c_str(), value, "FABLE2_TUNE"});
+        }
+        REXLOG_INFO("Tuning override (FABLE2_TUNE): {} = {}", name, value);
+      }
     }
     Fable2Tuning::Apply(
         rex::filesystem::GetExecutableFolder() / "cache" / "fable2_tuning.toml",
