@@ -49,7 +49,35 @@ class XexImage:
     # -- loading ---------------------------------------------------------
 
     @classmethod
+    def load_raw(cls, image_path, image_base=0x82000000):
+        """A flat dump of the loaded image (FABLE2_DUMP_IMAGE), title update
+        applied. The PE header at the image base carries the section table,
+        which is all the tools need; the XEX header is not in a dump."""
+        with open(image_path, "rb") as f:
+            data = f.read()
+        if data[:2] != b"MZ":
+            raise ValueError(f"{image_path}: not a PE image (no MZ at the base)")
+        pe = struct.unpack_from("<I", data, 0x3C)[0]
+        nsec = struct.unpack_from("<H", data, pe + 6)[0]
+        opt = struct.unpack_from("<H", data, pe + 20)[0]
+        entry = image_base + struct.unpack_from("<I", data, pe + 24 + 16)[0]
+        sections = []
+        st = pe + 24 + opt
+        for i in range(nsec):
+            rec = data[st + i * 40: st + i * 40 + 40]
+            name = rec[:8].rstrip(b"\0").decode("latin-1")
+            vsize, va = struct.unpack_from("<II", rec, 8)
+            sections.append((name, image_base + va, vsize))
+        return cls(data, image_base, entry, sections)
+
+    @classmethod
     def load(cls, xex_path, cache_path=None):
+        # FABLE2_IMAGE=<flat dump>: analyse the loaded image instead of the
+        # .xex - the way to see the game WITH its title update applied, which
+        # this decoder cannot do (the patch is a delta the runtime applies).
+        raw = os.environ.get("FABLE2_IMAGE")
+        if raw:
+            return cls.load_raw(raw)
         if cache_path is None:
             cache_path = os.path.join(os.path.dirname(xex_path) or ".",
                                       "..", "out", "image.bin")

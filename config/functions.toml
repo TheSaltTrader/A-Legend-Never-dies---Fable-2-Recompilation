@@ -1,5 +1,5 @@
-# Manual function-boundary overrides for default.xex (Fable II GOTY, disc build
-# 0.0.0.26, title 4D5307F1).
+# Manual function-boundary overrides for default.xex (Fable II GOTY, title update 1 build
+# 0.0.1.26 (the disc build's list is config/functions_disc.toml), title 4D5307F1).
 #
 # The analyzer derives function bounds from .pdata, then fills the gaps. MSVC
 # emits no .pdata for small helpers with no prologue - `this`-adjusting virtual
@@ -13,105 +13,60 @@
 
 [functions]
 
-# .text, absorbed into pdata fn 0x82CD78C8.
-#   0x82CD7948  lwz r11, 0xc(r3)
-#   0x82CD794C  li r3, 0
-#   0x82CD7950  stw r11, 0(r4)
-#   0x82CD7954  blr
-0x82CD7948 = { name = "sub_82CD7948_missed", size = 0x10 }
+# A run of 8-byte forwarders (`lwz r3,12(r3); b <target>`) at 0x82C061F0, each
+# its own function; add_function.py walks each to its `b`.
+0x82C061F0 = { name = "sub_82C061F0_fwd", size = 0x8 }
+0x82C061F8 = { name = "sub_82C061F8_fwd", size = 0x8 }
+0x82C06200 = { name = "sub_82C06200_fwd", size = 0x8 }
+0x82C06208 = { name = "sub_82C06208_fwd", size = 0x8 }
+0x82C06210 = { name = "sub_82C06210_fwd", size = 0x8 }
+0x82C06218 = { name = "sub_82C06218_fwd", size = 0x8 }
+0x82C06220 = { name = "sub_82C06220_fwd", size = 0x8 }
 
-# .text, absorbed into pdata fn 0x82C000C8.
-#   0x82C00108  lwz r3, 0xc(r3)
-#   0x82C0010C  b 0x82c0b660
-0x82C00108 = { name = "sub_82C00108_missed", size = 0x8 }
 
-# .text, absorbed into pdata fn 0x82C000C8.
-#   0x82C000F8  lwz r3, 0xc(r3)
-#   0x82C000FC  b 0x82c106a8
-0x82C000F8 = { name = "sub_82C000F8_missed", size = 0x8 }
+# .text, absorbed into pdata fn 0x82C11900; branched to from 0x82C0621C.
+#   0x82C11BE8  addi r3, r3, 0x60
+#   0x82C11BEC  b 0x82c51ec0
+0x82C11BE8 = { name = "sub_82C11BE8_missed", size = 0x8 }
 
-# .text, absorbed into pdata fn 0x82C14CA0.
-#   0x82C14D58  lwz r11, 0x4c(r3)
-#   0x82C14D5C  cmplwi cr6, r11, 0
-#   0x82C14D60  beqlr cr6
-#   0x82C14D64  lwz r3, 0(r11)
-#   0x82C14D68  b 0x82c1dba8
-0x82C14D58 = { name = "sub_82C14D58_missed", size = 0x14 }
+# .text, absorbed into pdata fn 0x82C11900; branched to from 0x82C06214.
+#   0x82C11BE0  addi r3, r3, 0x60
+#   0x82C11BE4  b 0x82c4fc38
+0x82C11BE0 = { name = "sub_82C11BE0_missed", size = 0x8 }
 
-# .text, absorbed into pdata fn 0x82F274C0.
-#   0x82F279D8  li r3, 1
-#   0x82F279DC  blr
-0x82F279D8 = { name = "sub_82F279D8_missed", size = 0x8 }
+# .text, absorbed into pdata fn 0x82E84BD0; branched to from 0x832B8888.
+#   0x82E84C68  lis r11, -0x7dfc
+#   0x82E84C6C  addi r11, r11, -0x6c9c
+#   0x82E84C70  stw r11, 0(r3)
+#   0x82E84C74  b 0x82e84af8
+0x82E84C68 = { name = "sub_82E84C68_missed", size = 0x10 }
 
-# .text, absorbed into pdata fn 0x82E7E460.
-#   0x82E7E4F8  lis r11, -0x7dfc
-#   0x82E7E4FC  addi r11, r11, -0x6cb4
-#   0x82E7E500  stw r11, 0(r3)
-#   0x82E7E504  b 0x82e7e388
-0x82E7E4F8 = { name = "sub_82E7E4F8_missed", size = 0x10 }
+# .text, absorbed into pdata fn 0x82C1B1E8; branched to from 0x82C11B70.
+#   0x82C1B2A0  lwz r11, 0x4c(r3)
+#   0x82C1B2A4  cmplwi cr6, r11, 0
+#   0x82C1B2A8  beqlr cr6
+#   0x82C1B2AC  lwz r3, 0(r11)
+#   0x82C1B2B0  b 0x82c24610
+0x82C1B2A0 = { name = "sub_82C1B2A0_missed", size = 0x14 }
 
-# .text, absorbed into pdata fn 0x82C000C8.
-#   0x82C00118  lwz r3, 0xc(r3)
-#   0x82C0011C  b 0x82c0b680
-0x82C00118 = { name = "sub_82C00118_missed", size = 0x8 }
+# .text, absorbed into pdata fn 0x82CDF680; branched to from 0x82CDEE7C.
+#   0x82CDF778  lis r11, -0x7dff
+#   0x82CDF77C  lis r10, -0x7dff
+#   0x82CDF780  lis r9, -0x7dff
+#   0x82CDF784  addi r8, r11, 0x3ee0
+#   0x82CDF788  addi r7, r10, 0x3ec0
+#   0x82CDF78C  addi r6, r9, 0x3dd0
+#   0x82CDF790  stw r8, 0(r3)
+#   0x82CDF794  stw r7, 4(r3)
+#   0x82CDF798  addi r11, r3, 4
+#   0x82CDF79C  stw r6, 4(r3)
+#   0x82CDF7A0  blr
+0x82CDF778 = { name = "sub_82CDF778_missed", size = 0x2C }
 
-# .text, absorbed into pdata fn 0x82C0B3A0; branched to from 0x82C0011C.
-#   0x82C0B680  addi r3, r3, 0x60
-#   0x82C0B684  b 0x82c49670
-0x82C0B680 = { name = "sub_82C0B680_missed", size = 0x8 }
-
-# .text, absorbed into pdata fn 0x82C000C8; branched to from 0x82BFDAA4.
-#   0x82C00120  lwz r3, 0xc(r3)
-#   0x82C00124  b 0x82c0b688
-0x82C00120 = { name = "sub_82C00120_missed", size = 0x8 }
-
-# .text, absorbed into pdata fn 0x82C000C8; branched to from 0x82BFDA78.
-#   0x82C00110  lwz r3, 0xc(r3)
-#   0x82C00114  b 0x82c0b678
-0x82C00110 = { name = "sub_82C00110_missed", size = 0x8 }
-
-# .text, absorbed into pdata fn 0x82C0B3A0; branched to from 0x82C00124.
-#   0x82C0B688  addi r3, r3, 0x60
-#   0x82C0B68C  b 0x82c4bdd8
-0x82C0B688 = { name = "sub_82C0B688_missed", size = 0x8 }
-
-# .text, absorbed into pdata fn 0x82C000C8; branched to from 0x82BFDAB4.
-#   0x82C00128  lwz r3, 0xc(r3)
-#   0x82C0012C  b 0x82c0b690
-0x82C00128 = { name = "sub_82C00128_missed", size = 0x8 }
-
-# .text, absorbed into pdata fn 0x82CD84B8.
-#   0x82CD8650  li r11, 6
-#   0x82CD8654  li r10, 0
-#   0x82CD8658  stb r11, 0(r4)
-#   0x82CD865C  li r3, 0
-#   0x82CD8660  sth r10, 2(r4)
-#   0x82CD8664  blr
-0x82CD8650 = { name = "sub_82CD8650_missed", size = 0x18 }
-
-# .text, absorbed into pdata fn 0x82CDB980.
-#   0x82CDBAE0  mr r10, r3
-#   0x82CDBAE4  lwz r11, 4(r10)
-#   0x82CDBAE8  addi r3, r11, 1
-#   0x82CDBAEC  stw r3, 4(r10)
-#   0x82CDBAF0  blr
-0x82CDBAE0 = { name = "sub_82CDBAE0_missed", size = 0x14 }
-
-# .text, absorbed into pdata fn 0x82CE5C70.
-#   0x82CE5D50  lbz r10, 0x3c(r3)
-#   0x82CE5D54  clrlwi r11, r4, 0x18
-#   0x82CE5D58  mr r9, r5
-#   0x82CE5D5C  mr r5, r6
-#   0x82CE5D60  cmplw cr6, r11, r10
-#   0x82CE5D64  blt cr6, 0x82ce5d74
-#   0x82CE5D68  lis r3, -0x7ff9
-#   0x82CE5D6C  ori r3, r3, 0x57
-#   0x82CE5D70  blr
-#   0x82CE5D74  lwz r10, 0x24(r3)
-#   0x82CE5D78  slwi r11, r11, 3
-#   0x82CE5D7C  mr r6, r7
-#   ...
-0x82CE5D50 = { name = "sub_82CE5D50_missed", size = 0x48 }
+# .text, absorbed into pdata fn 0x82CE9B60; branched to from 0x82CE7CB4.
+#   0x82CE9BD0  addi r3, r3, 4
+#   0x82CE9BD4  b 0x82cdfd70
+0x82CE9BD0 = { name = "sub_82CE9BD0_missed", size = 0x8 }
 
 # --- BEGIN tools/scan_fnptrs.py ---
 # Regenerated by tools/scan_fnptrs.py - do not hand-edit; put any
@@ -121,165 +76,177 @@
 # Each of these is pointed to from a vtable or dispatch table in
 # .rdata/.data, is not a function start the analyzer already knows,
 # and is preceded by an instruction control cannot fall through.
-0x8217EFE0 = { name = "sub_8217EFE0_fnptr", size = 0x4C }  # in 0x8217EE30, ptr at 0x82822730
-0x822142D0 = { name = "sub_822142D0_fnptr", size = 0xC }  # in 0x82214180, ptr at 0x825AFD5C
-0x82267568 = { name = "sub_82267568_fnptr", size = 0xC }  # in 0x822674D0, ptr at 0x82006EA0
-0x82267C88 = { name = "sub_82267C88_fnptr", size = 0xC }  # in 0x82267BE0, ptr at 0x82001B44
-0x822D6678 = { name = "sub_822D6678_fnptr", size = 0x18 }  # in 0x822D64E8, ptr at 0x826788A0
-0x82353FD8 = { name = "sub_82353FD8_fnptr", size = 0xC }  # in 0x82353D78, ptr at 0x823540BC
-0x823A1810 = { name = "sub_823A1810_fnptr", size = 0x10 }  # in 0x823A1730, ptr at 0x823A1C68
-0x823AB0E0 = { name = "sub_823AB0E0_fnptr", size = 0xC }  # in 0x823AB028, ptr at 0x823AE5A0
-0x823AC190 = { name = "sub_823AC190_fnptr", size = 0x14 }  # in 0x823AC0E0, ptr at 0x823AE650
-0x82415540 = { name = "sub_82415540_fnptr", size = 0x70 }  # in 0x824154F0, ptr at 0x824155B8
-0x8243FFF0 = { name = "sub_8243FFF0_fnptr", size = 0x10 }  # in 0x8243FCD0, ptr at 0x82441118
-0x824D56C8 = { name = "sub_824D56C8_fnptr", size = 0x3C }  # in 0x824D4EF8, ptr at 0x82003CC8
-0x824DA7D0 = { name = "sub_824DA7D0_fnptr", size = 0x8 }  # in 0x824DA728, ptr at 0x824DE3F4
-0x824F0600 = { name = "sub_824F0600_fnptr", size = 0x10 }  # in 0x824F05A0, ptr at 0x82007390
-0x82520608 = { name = "sub_82520608_fnptr", size = 0x10 }  # in 0x825205A8, ptr at 0x825209F8
-0x825EF568 = { name = "sub_825EF568_fnptr", size = 0x1C }  # in 0x825EF4F8, ptr at 0x82006AE8
-0x8274B738 = { name = "sub_8274B738_fnptr", size = 0x10 }  # in 0x8274B5B0, ptr at 0x827497E8
-0x8274B748 = { name = "sub_8274B748_fnptr", size = 0x10 }  # in 0x8274B5B0, ptr at 0x827498CC
-0x8274B758 = { name = "sub_8274B758_fnptr", size = 0x10 }  # in 0x8274B5B0, ptr at 0x824C41A0
-0x8274B768 = { name = "sub_8274B768_fnptr", size = 0x10 }  # in 0x8274B5B0, ptr at 0x82749750
-0x8274B778 = { name = "sub_8274B778_fnptr", size = 0x10 }  # in 0x8274B5B0, ptr at 0x82749704
-0x8274B788 = { name = "sub_8274B788_fnptr", size = 0x10 }  # in 0x8274B5B0, ptr at 0x8274979C
-0x8274B798 = { name = "sub_8274B798_fnptr", size = 0x8 }  # in 0x8274B5B0, ptr at 0x82004F00
-0x827A0DE0 = { name = "sub_827A0DE0_fnptr", size = 0x10 }  # in 0x827A0BB0, ptr at 0x827A8B7C
-0x82903F70 = { name = "sub_82903F70_fnptr", size = 0x10 }  # in 0x82903EF0, ptr at 0x82009568
-0x82903F80 = { name = "sub_82903F80_fnptr", size = 0x10 }  # in 0x82903EF0, ptr at 0x8200955C
-0x8297EB28 = { name = "sub_8297EB28_fnptr", size = 0x10 }  # in 0x8297EA68, ptr at 0x8297B3E8
-0x8297EB38 = { name = "sub_8297EB38_fnptr", size = 0x10 }  # in 0x8297EA68, ptr at 0x8297B4CC
-0x8297EB48 = { name = "sub_8297EB48_fnptr", size = 0x10 }  # in 0x8297EA68, ptr at 0x8297B480
-0x82988EA8 = { name = "sub_82988EA8_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x82986530
-0x82988EB8 = { name = "sub_82988EB8_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x82986828
-0x82988EC8 = { name = "sub_82988EC8_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x8297B564
-0x82988ED8 = { name = "sub_82988ED8_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x829869F0
-0x82988EE8 = { name = "sub_82988EE8_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x8298657C
-0x82988EF8 = { name = "sub_82988EF8_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x829866F8
-0x82988F08 = { name = "sub_82988F08_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x829867DC
-0x82988F18 = { name = "sub_82988F18_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x829869A4
-0x82988F28 = { name = "sub_82988F28_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x82986A88
-0x82988F38 = { name = "sub_82988F38_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x82986498
-0x82988F48 = { name = "sub_82988F48_fnptr", size = 0x10 }  # in 0x82988DE0, ptr at 0x82986A3C
-0x82996258 = { name = "sub_82996258_fnptr", size = 0x8 }  # in 0x829961B0, ptr at 0x820A46DC
-0x829FCB00 = { name = "sub_829FCB00_fnptr", size = 0x18 }  # in 0x829FCA28, ptr at 0x820F1480
-0x82B56870 = { name = "sub_82B56870_fnptr", size = 0x38 }  # in 0x82B56758, ptr at 0x820F9F28
-0x82B84350 = { name = "sub_82B84350_fnptr", size = 0x8 }  # in 0x82B84288, ptr at 0x820FA490
-0x82BBC898 = { name = "sub_82BBC898_fnptr", size = 0x20 }  # in 0x82BBC828, ptr at 0x820FE1E4
-0x82BFA4A8 = { name = "sub_82BFA4A8_fnptr", size = 0x10 }  # in 0x82BFA420, ptr at 0x82009558
-0x82C09188 = { name = "sub_82C09188_fnptr", size = 0x24 }  # in 0x82C090E0, ptr at 0x8200A9E8
-0x82C0B400 = { name = "sub_82C0B400_fnptr", size = 0x20 }  # in 0x82C0B3A0, ptr at 0x8200AC6C
-0x82C1DC50 = { name = "sub_82C1DC50_fnptr", size = 0x10 }  # in 0x82C1DBA8, ptr at 0x8200A6B4
-0x82C1DC60 = { name = "sub_82C1DC60_fnptr", size = 0x10 }  # in 0x82C1DBA8, ptr at 0x82006A08
-0x82C1DC80 = { name = "sub_82C1DC80_fnptr", size = 0x18 }  # in 0x82C1DBA8, ptr at 0x8200B2D0
-0x82C1DC98 = { name = "sub_82C1DC98_fnptr", size = 0x34 }  # in 0x82C1DBA8, ptr at 0x8200A6CC
-0x82C2F500 = { name = "sub_82C2F500_fnptr", size = 0x18 }  # in 0x82C2F3C8, ptr at 0x8200BDD8
-0x82C4C2C8 = { name = "sub_82C4C2C8_fnptr", size = 0x20 }  # in 0x82C4C258, ptr at 0x8200CC30
-0x82C4C2E8 = { name = "sub_82C4C2E8_fnptr", size = 0x18 }  # in 0x82C4C258, ptr at 0x8200CC3C
-0x82C4C300 = { name = "sub_82C4C300_fnptr", size = 0x20 }  # in 0x82C4C258, ptr at 0x8200CC48
-0x82C4C320 = { name = "sub_82C4C320_fnptr", size = 0x1C }  # in 0x82C4C258, ptr at 0x8200CC54
-0x82C4C5A8 = { name = "sub_82C4C5A8_fnptr", size = 0x20 }  # in 0x82C4C518, ptr at 0x8200CCE4
-0x82C4C5C8 = { name = "sub_82C4C5C8_fnptr", size = 0x20 }  # in 0x82C4C518, ptr at 0x8200CCF0
-0x82C4C5E8 = { name = "sub_82C4C5E8_fnptr", size = 0x24 }  # in 0x82C4C518, ptr at 0x8200CCFC
-0x82C867E8 = { name = "sub_82C867E8_fnptr", size = 0xC }  # in 0x82C866B8, ptr at 0x8200E950
-0x82C8D820 = { name = "sub_82C8D820_fnptr", size = 0x78 }  # in 0x82C8D000, ptr at 0x8200F714
-0x82C9D8E8 = { name = "sub_82C9D8E8_fnptr", size = 0x30 }  # in 0x82C9D800, ptr at 0x82C9E748
-0x82CA507C = { name = "sub_82CA507C_fnptr", size = 0x28 }  # in 0x82CA4F80, ptr at 0x8210A0D8
-0x82CA8060 = { name = "sub_82CA8060_fnptr", size = 0x14 }  # in 0x82CA8010, ptr at 0x8210A168
-0x82CB49DC = { name = "sub_82CB49DC_fnptr", size = 0x3C }  # in 0x82CB48A0, ptr at 0x8210A2E0
-0x82CB4B38 = { name = "sub_82CB4B38_fnptr", size = 0x18 }  # in 0x82CB4AC8, ptr at 0x8210A300
-0x82CB4EAC = { name = "sub_82CB4EAC_fnptr", size = 0x18 }  # in 0x82CB4C48, ptr at 0x8210A318
-0x82CB4FEC = { name = "sub_82CB4FEC_fnptr", size = 0xC }  # in 0x82CB4ED8, ptr at 0x8210A330
-0x82CB56CC = { name = "sub_82CB56CC_fnptr", size = 0xBC }  # in 0x82CB5580, ptr at 0x8210A348
-0x82CB5918 = { name = "sub_82CB5918_fnptr", size = 0x18 }  # in 0x82CB5870, ptr at 0x8210A388
-0x82CB5BD0 = { name = "sub_82CB5BD0_fnptr", size = 0x34 }  # in 0x82CB5B78, ptr at 0x8210A3A8
-0x82CBC940 = { name = "sub_82CBC940_fnptr", size = 0x5C }  # in 0x82CBC6C0, ptr at 0x8210A4C0
-0x82CBF770 = { name = "sub_82CBF770_fnptr", size = 0x4FC }  # in 0x82CBF6D8, ptr at 0x8210A4E8
-0x82CC032C = { name = "sub_82CC032C_fnptr", size = 0x19C }  # in 0x82CBFC80, ptr at 0x8210A530
-0x82CE1510 = { name = "sub_82CE1510_fnptr", size = 0x8 }  # in 0x82CE1430, ptr at 0x82014E90
-0x82CE1520 = { name = "sub_82CE1520_fnptr", size = 0x8 }  # in 0x82CE1430, ptr at 0x82014E60
-0x82CE1548 = { name = "sub_82CE1548_fnptr", size = 0x8 }  # in 0x82CE1430, ptr at 0x82014E88
-0x82CE3750 = { name = "sub_82CE3750_fnptr", size = 0x8 }  # in 0x82CE3640, ptr at 0x82014F90
-0x82CE3760 = { name = "sub_82CE3760_fnptr", size = 0x8 }  # in 0x82CE3640, ptr at 0x82014F60
-0x82CE3768 = { name = "sub_82CE3768_fnptr", size = 0x8 }  # in 0x82CE3640, ptr at 0x82014E74
-0x82CE3770 = { name = "sub_82CE3770_fnptr", size = 0x8 }  # in 0x82CE3640, ptr at 0x82014F98
-0x82CE3798 = { name = "sub_82CE3798_fnptr", size = 0x8 }  # in 0x82CE3640, ptr at 0x82014ED0
-0x82CE37A0 = { name = "sub_82CE37A0_fnptr", size = 0x8 }  # in 0x82CE3640, ptr at 0x82014F64
-0x82CE37A8 = { name = "sub_82CE37A8_fnptr", size = 0x8 }  # in 0x82CE3640, ptr at 0x82014FA8
-0x82CE5D98 = { name = "sub_82CE5D98_fnptr", size = 0x1C }  # in 0x82CE5C70, ptr at 0x82013FF4
-0x82DA87B8 = { name = "sub_82DA87B8_fnptr", size = 0x4 }  # in 0x82DA8718, ptr at 0x832FA1F0
-0x82DDC510 = { name = "sub_82DDC510_fnptr", size = 0x1C }  # in 0x82DDC0C0, ptr at 0x82DDC6D4
-0x82E86188 = { name = "sub_82E86188_fnptr", size = 0x3C }  # in 0x82E86058, ptr at 0x82002774
-0x82E87A10 = { name = "sub_82E87A10_fnptr", size = 0x18 }  # in 0x82E87960, ptr at 0x820398AC
-0x82E8F9E8 = { name = "sub_82E8F9E8_fnptr", size = 0xC }  # in 0x82E8ED48, ptr at 0x82039B44
-0x82EAA980 = { name = "sub_82EAA980_fnptr", size = 0x24 }  # in 0x82EAA7D0, ptr at 0x82EAAE68
-0x82EB7ED0 = { name = "sub_82EB7ED0_fnptr", size = 0xC }  # in 0x82EB7B90, ptr at 0x8203AD9C
-0x82EC1918 = { name = "sub_82EC1918_fnptr", size = 0xC }  # in 0x82EC16E8, ptr at 0x8203B2E0
-0x82EC4E58 = { name = "sub_82EC4E58_fnptr", size = 0xC }  # in 0x82EC4CF0, ptr at 0x8203B608
-0x82EF41D8 = { name = "sub_82EF41D8_fnptr", size = 0x18 }  # in 0x82EF4188, ptr at 0x8203D018
-0x82EF41F0 = { name = "sub_82EF41F0_fnptr", size = 0x18 }  # in 0x82EF4188, ptr at 0x8203D01C
-0x82EF8D20 = { name = "sub_82EF8D20_fnptr", size = 0x14 }  # in 0x82EF8C90, ptr at 0x8203D21C
-0x82F04420 = { name = "sub_82F04420_fnptr", size = 0x10 }  # in 0x82F043C0, ptr at 0x8203E230
-0x82F04430 = { name = "sub_82F04430_fnptr", size = 0x8 }  # in 0x82F043C0, ptr at 0x8200D594
-0x82F0BAF8 = { name = "sub_82F0BAF8_fnptr", size = 0x8 }  # in 0x82F0BA58, ptr at 0x8203E6C0
-0x82F0BB08 = { name = "sub_82F0BB08_fnptr", size = 0x8 }  # in 0x82F0BA58, ptr at 0x8203E710
-0x82F1D508 = { name = "sub_82F1D508_fnptr", size = 0x18 }  # in 0x82F1D4B0, ptr at 0x8203F670
-0x82F1D520 = { name = "sub_82F1D520_fnptr", size = 0x18 }  # in 0x82F1D4B0, ptr at 0x8203F658
-0x82F1D538 = { name = "sub_82F1D538_fnptr", size = 0x18 }  # in 0x82F1D4B0, ptr at 0x8203F674
-0x82F1D550 = { name = "sub_82F1D550_fnptr", size = 0x18 }  # in 0x82F1D4B0, ptr at 0x8203F65C
-0x82F1D568 = { name = "sub_82F1D568_fnptr", size = 0x18 }  # in 0x82F1D4B0, ptr at 0x8203F660
-0x82F1D580 = { name = "sub_82F1D580_fnptr", size = 0x18 }  # in 0x82F1D4B0, ptr at 0x8203F664
-0x82F1D598 = { name = "sub_82F1D598_fnptr", size = 0x18 }  # in 0x82F1D4B0, ptr at 0x8203F668
-0x82F1D5B0 = { name = "sub_82F1D5B0_fnptr", size = 0x18 }  # in 0x82F1D4B0, ptr at 0x8203F66C
-0x82F2C2E8 = { name = "sub_82F2C2E8_fnptr", size = 0x14 }  # in 0x82F2C1D0, ptr at 0x82040924
-0x82F2C3A8 = { name = "sub_82F2C3A8_fnptr", size = 0x18 }  # in 0x82F2C348, ptr at 0x8204092C
-0x82F2C3C0 = { name = "sub_82F2C3C0_fnptr", size = 0x18 }  # in 0x82F2C348, ptr at 0x82040930
-0x82F38DA0 = { name = "sub_82F38DA0_fnptr", size = 0x10 }  # in 0x82F38D30, ptr at 0x82040CD8
-0x82F435A8 = { name = "sub_82F435A8_fnptr", size = 0x24 }  # in 0x82F43408, ptr at 0x820411F8
-0x82F56690 = { name = "sub_82F56690_fnptr", size = 0x8 }  # in 0x82F56250, ptr at 0x82041DE0
-0x82F67E18 = { name = "sub_82F67E18_fnptr", size = 0x14 }  # in 0x82F67D80, ptr at 0x8203EB54
-0x82F67E40 = { name = "sub_82F67E40_fnptr", size = 0x14 }  # in 0x82F67D80, ptr at 0x8203EB5C
-0x82F67E68 = { name = "sub_82F67E68_fnptr", size = 0x14 }  # in 0x82F67D80, ptr at 0x8203EB60
-0x82FB7470 = { name = "sub_82FB7470_fnptr", size = 0x10 }  # in 0x82FB73B8, ptr at 0x820467D0
-0x82FE7EF8 = { name = "sub_82FE7EF8_fnptr", size = 0x8 }  # in 0x82FE7DF8, ptr at 0x82047B9C
-0x82FE7F00 = { name = "sub_82FE7F00_fnptr", size = 0xC }  # in 0x82FE7DF8, ptr at 0x82047BAC
-0x8300342C = { name = "sub_8300342C_fnptr", size = 0x18 }  # in 0x83003368, ptr at 0x8210A648
-0x830074D8 = { name = "sub_830074D8_fnptr", size = 0x10 }  # in 0x83007470, ptr at 0x830080BC
-0x830074E8 = { name = "sub_830074E8_fnptr", size = 0x78 }  # in 0x83007470, ptr at 0x830080C8
-0x83056810 = { name = "sub_83056810_fnptr", size = 0x10 }  # in 0x830566F0, ptr at 0x82054774
-0x83056BC0 = { name = "sub_83056BC0_fnptr", size = 0x28 }  # in 0x830568F0, ptr at 0x82054944
-0x83056BE8 = { name = "sub_83056BE8_fnptr", size = 0x28 }  # in 0x830568F0, ptr at 0x82054948
-0x83056C10 = { name = "sub_83056C10_fnptr", size = 0x28 }  # in 0x830568F0, ptr at 0x8205494C
-0x83056C38 = { name = "sub_83056C38_fnptr", size = 0x28 }  # in 0x830568F0, ptr at 0x82054950
-0x83057068 = { name = "sub_83057068_fnptr", size = 0x20 }  # in 0x83056E40, ptr at 0x82054984
-0x83057088 = { name = "sub_83057088_fnptr", size = 0x10 }  # in 0x83056E40, ptr at 0x830600B4
-0x83057098 = { name = "sub_83057098_fnptr", size = 0x10 }  # in 0x83056E40, ptr at 0x830601DC
-0x830570A8 = { name = "sub_830570A8_fnptr", size = 0x10 }  # in 0x83056E40, ptr at 0x83060A24
-0x830570B8 = { name = "sub_830570B8_fnptr", size = 0x10 }  # in 0x83056E40, ptr at 0x8306048C
-0x830570C8 = { name = "sub_830570C8_fnptr", size = 0x10 }  # in 0x83056E40, ptr at 0x83060854
-0x830570D8 = { name = "sub_830570D8_fnptr", size = 0x10 }  # in 0x83056E40, ptr at 0x83060014
-0x830570E8 = { name = "sub_830570E8_fnptr", size = 0x10 }  # in 0x83056E40, ptr at 0x830604DC
-0x830570F8 = { name = "sub_830570F8_fnptr", size = 0x10 }  # in 0x83056E40, ptr at 0x830602BC
-0x83057108 = { name = "sub_83057108_fnptr", size = 0x10 }  # in 0x83056E40, ptr at 0x83060064
-0x83057118 = { name = "sub_83057118_fnptr", size = 0x10 }  # in 0x83056E40, ptr at 0x8306052C
-0x830ACB28 = { name = "sub_830ACB28_fnptr", size = 0x70 }  # in 0x830AC098, ptr at 0x82075F04
-0x830FB4A0 = { name = "sub_830FB4A0_fnptr", size = 0x38 }  # in 0x830FB3E8, ptr at 0x8210A6E0
-0x830FD7B8 = { name = "sub_830FD7B8_fnptr", size = 0x7C }  # in 0x830FD760, ptr at 0x8210A708
-0x830FE230 = { name = "sub_830FE230_fnptr", size = 0x30 }  # in 0x830FE118, ptr at 0x8210A738
-0x830FE390 = { name = "sub_830FE390_fnptr", size = 0x30 }  # in 0x830FE278, ptr at 0x8210A750
-0x83117F94 = { name = "sub_83117F94_fnptr", size = 0x44 }  # in 0x83117E80, ptr at 0x8210A768
-0x831465C8 = { name = "sub_831465C8_fnptr", size = 0x74 }  # in 0x83146460, ptr at 0x8315FA04
-0x831C5CD8 = { name = "sub_831C5CD8_fnptr", size = 0x50 }  # in 0x831C5B68, ptr at 0x820834C8
-0x831C5D28 = { name = "sub_831C5D28_fnptr", size = 0x18 }  # in 0x831C5B68, ptr at 0x820834D0
-0x831FFA08 = { name = "sub_831FFA08_fnptr", size = 0x2C }  # in 0x831FF940, ptr at 0x82087E64
+0x8217F6F0 = { name = "sub_8217F6F0_fnptr", size = 0x4C }  # in 0x8217F540, ptr at 0x827ACAD0
+0x82214198 = { name = "sub_82214198_fnptr", size = 0xC }  # in 0x82214048, ptr at 0x8245BB44
+0x822675A8 = { name = "sub_822675A8_fnptr", size = 0xC }  # in 0x82267510, ptr at 0x82006E80
+0x82267CC8 = { name = "sub_82267CC8_fnptr", size = 0xC }  # in 0x82267C20, ptr at 0x82001B44
+0x822D5F40 = { name = "sub_822D5F40_fnptr", size = 0x18 }  # in 0x822D5DB0, ptr at 0x82667C90
+0x82317C78 = { name = "sub_82317C78_fnptr", size = 0xC }  # in 0x82317A18, ptr at 0x82317D5C
+0x8234EDC0 = { name = "sub_8234EDC0_fnptr", size = 0xC }  # in 0x8234ED30, ptr at 0x820A6AB0
+0x823B96D0 = { name = "sub_823B96D0_fnptr", size = 0xC }  # in 0x823B9618, ptr at 0x823BCB90
+0x823BA780 = { name = "sub_823BA780_fnptr", size = 0x14 }  # in 0x823BA6D0, ptr at 0x823BCC40
+0x82451E90 = { name = "sub_82451E90_fnptr", size = 0x70 }  # in 0x82451E40, ptr at 0x82451F08
+0x82452EC0 = { name = "sub_82452EC0_fnptr", size = 0x1C }  # in 0x82452E50, ptr at 0x82006AC8
+0x824B5A28 = { name = "sub_824B5A28_fnptr", size = 0x10 }  # in 0x824B5708, ptr at 0x824B6BB0
+0x824EEDA0 = { name = "sub_824EEDA0_fnptr", size = 0x8 }  # in 0x824EEC48, ptr at 0x820BE4E4
+0x8254CE58 = { name = "sub_8254CE58_fnptr", size = 0x3C }  # in 0x8254C688, ptr at 0x82003CA8
+0x82551F60 = { name = "sub_82551F60_fnptr", size = 0x8 }  # in 0x82551EB8, ptr at 0x82555B7C
+0x8255BC90 = { name = "sub_8255BC90_fnptr", size = 0x10 }  # in 0x8255BC20, ptr at 0x8255C080
+0x825E28B0 = { name = "sub_825E28B0_fnptr", size = 0x10 }  # in 0x825E2818, ptr at 0x82007370
+0x826EE730 = { name = "sub_826EE730_fnptr", size = 0x10 }  # in 0x826EE5A8, ptr at 0x826EC9D0
+0x826EE740 = { name = "sub_826EE740_fnptr", size = 0x10 }  # in 0x826EE5A8, ptr at 0x826EC984
+0x827D9E30 = { name = "sub_827D9E30_fnptr", size = 0x8 }  # in 0x827D9C00, ptr at 0x82695BE4
+0x82854C78 = { name = "sub_82854C78_fnptr", size = 0x4 }  # in 0x82854748, ptr at 0x820DF020
+0x8288ACB0 = { name = "sub_8288ACB0_fnptr", size = 0x10 }  # in 0x8288AC30, ptr at 0x82009548
+0x8288ACC0 = { name = "sub_8288ACC0_fnptr", size = 0x10 }  # in 0x8288AC30, ptr at 0x8200953C
+0x8288ACD0 = { name = "sub_8288ACD0_fnptr", size = 0x4 }  # in 0x8288AC30, ptr at 0x8288B124
+0x8291F180 = { name = "sub_8291F180_fnptr", size = 0x8 }  # in 0x8291F0D8, ptr at 0x82004410
+0x82936E68 = { name = "sub_82936E68_fnptr", size = 0x8 }  # in 0x82936D68, ptr at 0x823E8304
+0x829647D0 = { name = "sub_829647D0_fnptr", size = 0x10 }  # in 0x82964718, ptr at 0x826ECB00
+0x829647E0 = { name = "sub_829647E0_fnptr", size = 0x10 }  # in 0x82964718, ptr at 0x82961048
+0x829647F0 = { name = "sub_829647F0_fnptr", size = 0x10 }  # in 0x82964718, ptr at 0x8296125C
+0x82964800 = { name = "sub_82964800_fnptr", size = 0x10 }  # in 0x82964718, ptr at 0x829610E0
+0x82964810 = { name = "sub_82964810_fnptr", size = 0x10 }  # in 0x82964718, ptr at 0x829611C4
+0x82964820 = { name = "sub_82964820_fnptr", size = 0x10 }  # in 0x82964718, ptr at 0x82961178
+0x82964830 = { name = "sub_82964830_fnptr", size = 0x14 }  # in 0x82964718, ptr at 0x820074CC
+0x82967530 = { name = "sub_82967530_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x82964BC0
+0x82967540 = { name = "sub_82967540_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x826ECA68
+0x82967550 = { name = "sub_82967550_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x82964EB8
+0x82967560 = { name = "sub_82967560_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x82965080
+0x82967570 = { name = "sub_82967570_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x82964C0C
+0x82967580 = { name = "sub_82967580_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x82964D88
+0x82967590 = { name = "sub_82967590_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x82964E6C
+0x829675A0 = { name = "sub_829675A0_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x82965034
+0x829675B0 = { name = "sub_829675B0_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x82965118
+0x829675C0 = { name = "sub_829675C0_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x82964B28
+0x829675D0 = { name = "sub_829675D0_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x826ECA1C
+0x829675E0 = { name = "sub_829675E0_fnptr", size = 0x10 }  # in 0x82967468, ptr at 0x829650CC
+0x82A015E0 = { name = "sub_82A015E0_fnptr", size = 0x18 }  # in 0x82A01508, ptr at 0x820F2138
+0x82B5C110 = { name = "sub_82B5C110_fnptr", size = 0x38 }  # in 0x82B5BFF8, ptr at 0x820FABE0
+0x82BC2FF8 = { name = "sub_82BC2FF8_fnptr", size = 0x20 }  # in 0x82BC2F70, ptr at 0x820FEEB8
+0x82C00A98 = { name = "sub_82C00A98_fnptr", size = 0x10 }  # in 0x82C00A10, ptr at 0x82009538
+0x82C0F1F0 = { name = "sub_82C0F1F0_fnptr", size = 0x24 }  # in 0x82C0F148, ptr at 0x8200AA18
+0x82C11960 = { name = "sub_82C11960_fnptr", size = 0x20 }  # in 0x82C11900, ptr at 0x8200ACE0
+0x82C1BDA8 = { name = "sub_82C1BDA8_fnptr", size = 0x10 }  # in 0x82C1BCD8, ptr at 0x8200A6B8
+0x82C1BDB8 = { name = "sub_82C1BDB8_fnptr", size = 0x10 }  # in 0x82C1BCD8, ptr at 0x820069E8
+0x82C35EA0 = { name = "sub_82C35EA0_fnptr", size = 0x18 }  # in 0x82C35D68, ptr at 0x8200BDCC
+0x82C523B0 = { name = "sub_82C523B0_fnptr", size = 0x20 }  # in 0x82C52340, ptr at 0x8200CC48
+0x82C523D0 = { name = "sub_82C523D0_fnptr", size = 0x18 }  # in 0x82C52340, ptr at 0x8200CC54
+0x82C523E8 = { name = "sub_82C523E8_fnptr", size = 0x20 }  # in 0x82C52340, ptr at 0x8200CC60
+0x82C52408 = { name = "sub_82C52408_fnptr", size = 0x1C }  # in 0x82C52340, ptr at 0x8200CC6C
+0x82C52690 = { name = "sub_82C52690_fnptr", size = 0x20 }  # in 0x82C52600, ptr at 0x8200CCFC
+0x82C526B0 = { name = "sub_82C526B0_fnptr", size = 0x20 }  # in 0x82C52600, ptr at 0x8200CD08
+0x82C526D0 = { name = "sub_82C526D0_fnptr", size = 0x24 }  # in 0x82C52600, ptr at 0x8200CD14
+0x82C8A920 = { name = "sub_82C8A920_fnptr", size = 0x1C }  # in 0x82C8A770, ptr at 0x8200E920
+0x82C8D000 = { name = "sub_82C8D000_fnptr", size = 0xC }  # in 0x82C8CED0, ptr at 0x8200E970
+0x82C94048 = { name = "sub_82C94048_fnptr", size = 0x78 }  # in 0x82C93828, ptr at 0x8200F734
+0x82CA4110 = { name = "sub_82CA4110_fnptr", size = 0x30 }  # in 0x82CA4028, ptr at 0x82CA4F70
+0x82CAB28C = { name = "sub_82CAB28C_fnptr", size = 0x28 }  # in 0x82CAB190, ptr at 0x8210AE00
+0x82CAE830 = { name = "sub_82CAE830_fnptr", size = 0x14 }  # in 0x82CAE7E0, ptr at 0x8210AE90
+0x82CBB210 = { name = "sub_82CBB210_fnptr", size = 0x1C }  # in 0x82CBB0F0, ptr at 0x8210B000
+0x82CBB22C = { name = "sub_82CBB22C_fnptr", size = 0x3C }  # in 0x82CBB0F0, ptr at 0x8210B008
+0x82CBB388 = { name = "sub_82CBB388_fnptr", size = 0x18 }  # in 0x82CBB318, ptr at 0x8210B028
+0x82CBB6FC = { name = "sub_82CBB6FC_fnptr", size = 0x18 }  # in 0x82CBB498, ptr at 0x8210B040
+0x82CBB83C = { name = "sub_82CBB83C_fnptr", size = 0xC }  # in 0x82CBB728, ptr at 0x8210B058
+0x82CBBF1C = { name = "sub_82CBBF1C_fnptr", size = 0xBC }  # in 0x82CBBDD0, ptr at 0x8210B070
+0x82CBC168 = { name = "sub_82CBC168_fnptr", size = 0x18 }  # in 0x82CBC0C0, ptr at 0x8210B0B0
+0x82CBC420 = { name = "sub_82CBC420_fnptr", size = 0x34 }  # in 0x82CBC3C8, ptr at 0x8210B0D0
+0x82CC3190 = { name = "sub_82CC3190_fnptr", size = 0x5C }  # in 0x82CC2F10, ptr at 0x8210B1E8
+0x82CC5DD0 = { name = "sub_82CC5DD0_fnptr", size = 0x4FC }  # in 0x82CC5D38, ptr at 0x8210B210
+0x82CC698C = { name = "sub_82CC698C_fnptr", size = 0x178 }  # in 0x82CC62E0, ptr at 0x8210B258
+0x82CC6B04 = { name = "sub_82CC6B04_fnptr", size = 0x24 }  # in 0x82CC62E0, ptr at 0x8210B268
+0x82CDE1A0 = { name = "sub_82CDE1A0_fnptr", size = 0x8 }  # in 0x82CDE120, ptr at 0x82013E2C
+0x82CDEB80 = { name = "sub_82CDEB80_fnptr", size = 0x10 }  # in 0x82CDEB18, ptr at 0x82013D00
+0x82CE2330 = { name = "sub_82CE2330_fnptr", size = 0x18 }  # in 0x82CE21D0, ptr at 0x82013E74
+0x82CE9F80 = { name = "sub_82CE9F80_fnptr", size = 0x8 }  # in 0x82CE9E70, ptr at 0x82014FB0
+0x82CE9F90 = { name = "sub_82CE9F90_fnptr", size = 0x8 }  # in 0x82CE9E70, ptr at 0x82014F80
+0x82CE9F98 = { name = "sub_82CE9F98_fnptr", size = 0x8 }  # in 0x82CE9E70, ptr at 0x82014EBC
+0x82CE9FA0 = { name = "sub_82CE9FA0_fnptr", size = 0x8 }  # in 0x82CE9E70, ptr at 0x82014E94
+0x82CE9FA8 = { name = "sub_82CE9FA8_fnptr", size = 0x8 }  # in 0x82CE9E70, ptr at 0x82014FB8
+0x82CE9FD0 = { name = "sub_82CE9FD0_fnptr", size = 0x8 }  # in 0x82CE9E70, ptr at 0x82014EF0
+0x82CE9FD8 = { name = "sub_82CE9FD8_fnptr", size = 0x8 }  # in 0x82CE9E70, ptr at 0x82014F84
+0x82CE9FE0 = { name = "sub_82CE9FE0_fnptr", size = 0x8 }  # in 0x82CE9E70, ptr at 0x82014FC8
+0x82CEC580 = { name = "sub_82CEC580_fnptr", size = 0x24 }  # in 0x82CEC4A0, ptr at 0x82014020
+0x82CEC5C8 = { name = "sub_82CEC5C8_fnptr", size = 0x1C }  # in 0x82CEC4A0, ptr at 0x82014014
+0x82DAEE50 = { name = "sub_82DAEE50_fnptr", size = 0x4 }  # in 0x82DAEDB0, ptr at 0x832FA330
+0x82DE2BE0 = { name = "sub_82DE2BE0_fnptr", size = 0x1C }  # in 0x82DE2A70, ptr at 0x82DE2DA4
+0x82E8C8E8 = { name = "sub_82E8C8E8_fnptr", size = 0x3C }  # in 0x82E8C7B8, ptr at 0x82002754
+0x82E8E010 = { name = "sub_82E8E010_fnptr", size = 0x18 }  # in 0x82E8DF60, ptr at 0x820398B4
+0x82E960C0 = { name = "sub_82E960C0_fnptr", size = 0xC }  # in 0x82E95420, ptr at 0x82039B54
+0x82EB1130 = { name = "sub_82EB1130_fnptr", size = 0x24 }  # in 0x82EB0F80, ptr at 0x82EB1618
+0x82EBE6D0 = { name = "sub_82EBE6D0_fnptr", size = 0xC }  # in 0x82EBE390, ptr at 0x8203ADB4
+0x82EC7FF8 = { name = "sub_82EC7FF8_fnptr", size = 0xC }  # in 0x82EC7DC8, ptr at 0x8203B304
+0x82ECA998 = { name = "sub_82ECA998_fnptr", size = 0x10 }  # in 0x82ECA830, ptr at 0x82002DE4
+0x82ECB348 = { name = "sub_82ECB348_fnptr", size = 0xC }  # in 0x82ECB1E0, ptr at 0x8203B62C
+0x82EFA978 = { name = "sub_82EFA978_fnptr", size = 0x18 }  # in 0x82EFA928, ptr at 0x8203D038
+0x82EFA990 = { name = "sub_82EFA990_fnptr", size = 0x18 }  # in 0x82EFA928, ptr at 0x8203D03C
+0x82EFF688 = { name = "sub_82EFF688_fnptr", size = 0x10 }  # in 0x82EFF5F8, ptr at 0x8203D22C
+0x82EFF698 = { name = "sub_82EFF698_fnptr", size = 0x14 }  # in 0x82EFF5F8, ptr at 0x8203D23C
+0x82F0AFE8 = { name = "sub_82F0AFE8_fnptr", size = 0x8 }  # in 0x82F0AF88, ptr at 0x8203E1E8
+0x82F0B060 = { name = "sub_82F0B060_fnptr", size = 0xC }  # in 0x82F0AFF0, ptr at 0x8203E2AC
+0x82F12838 = { name = "sub_82F12838_fnptr", size = 0x8 }  # in 0x82F127A0, ptr at 0x8203E698
+0x82F12848 = { name = "sub_82F12848_fnptr", size = 0x8 }  # in 0x82F127A0, ptr at 0x8203E6E8
+0x82F24458 = { name = "sub_82F24458_fnptr", size = 0x18 }  # in 0x82F24400, ptr at 0x8203F638
+0x82F24470 = { name = "sub_82F24470_fnptr", size = 0x18 }  # in 0x82F24400, ptr at 0x8203F620
+0x82F24488 = { name = "sub_82F24488_fnptr", size = 0x18 }  # in 0x82F24400, ptr at 0x8203F63C
+0x82F244A0 = { name = "sub_82F244A0_fnptr", size = 0x18 }  # in 0x82F24400, ptr at 0x8203F624
+0x82F244B8 = { name = "sub_82F244B8_fnptr", size = 0x18 }  # in 0x82F24400, ptr at 0x8203F628
+0x82F244D0 = { name = "sub_82F244D0_fnptr", size = 0x18 }  # in 0x82F24400, ptr at 0x8203F62C
+0x82F244E8 = { name = "sub_82F244E8_fnptr", size = 0x18 }  # in 0x82F24400, ptr at 0x8203F630
+0x82F24500 = { name = "sub_82F24500_fnptr", size = 0x18 }  # in 0x82F24400, ptr at 0x8203F634
+0x82F330F0 = { name = "sub_82F330F0_fnptr", size = 0x14 }  # in 0x82F32FD8, ptr at 0x820408EC
+0x82F331B0 = { name = "sub_82F331B0_fnptr", size = 0x18 }  # in 0x82F33150, ptr at 0x820408F4
+0x82F331C8 = { name = "sub_82F331C8_fnptr", size = 0x18 }  # in 0x82F33150, ptr at 0x820408F8
+0x82F4A430 = { name = "sub_82F4A430_fnptr", size = 0x24 }  # in 0x82F4A290, ptr at 0x820411C8
+0x82F5D7E0 = { name = "sub_82F5D7E0_fnptr", size = 0x8 }  # in 0x82F5D3A0, ptr at 0x82041D98
+0x82F6E7B0 = { name = "sub_82F6E7B0_fnptr", size = 0x14 }  # in 0x82F6E718, ptr at 0x8203EB18
+0x82F6E7D8 = { name = "sub_82F6E7D8_fnptr", size = 0x14 }  # in 0x82F6E718, ptr at 0x8203EB20
+0x82F6E800 = { name = "sub_82F6E800_fnptr", size = 0x14 }  # in 0x82F6E718, ptr at 0x8203EB24
+0x82FBDF38 = { name = "sub_82FBDF38_fnptr", size = 0x10 }  # in 0x82FBDE80, ptr at 0x820467C0
+0x82FEE980 = { name = "sub_82FEE980_fnptr", size = 0x8 }  # in 0x82FEE880, ptr at 0x82047B8C
+0x82FEE988 = { name = "sub_82FEE988_fnptr", size = 0xC }  # in 0x82FEE880, ptr at 0x82047B9C
+0x83009EBC = { name = "sub_83009EBC_fnptr", size = 0x18 }  # in 0x83009DF8, ptr at 0x8210B370
+0x8300DF68 = { name = "sub_8300DF68_fnptr", size = 0x10 }  # in 0x8300DF00, ptr at 0x8300EB4C
+0x8300DF78 = { name = "sub_8300DF78_fnptr", size = 0x78 }  # in 0x8300DF00, ptr at 0x8300EB58
+0x83047CC4 = { name = "sub_83047CC4_fnptr", size = 0x360 }  # in 0x830470C0, ptr at 0x8210B3A8
+0x8305D4C0 = { name = "sub_8305D4C0_fnptr", size = 0x10 }  # in 0x8305D3A0, ptr at 0x8205473C
+0x8305D5A0 = { name = "sub_8305D5A0_fnptr", size = 0x28 }  # in 0x8305D520, ptr at 0x8205490C
+0x8305D5C8 = { name = "sub_8305D5C8_fnptr", size = 0x28 }  # in 0x8305D520, ptr at 0x82054910
+0x8305D5F0 = { name = "sub_8305D5F0_fnptr", size = 0x28 }  # in 0x8305D520, ptr at 0x82054914
+0x8305D618 = { name = "sub_8305D618_fnptr", size = 0x28 }  # in 0x8305D520, ptr at 0x82054918
+0x8305DA48 = { name = "sub_8305DA48_fnptr", size = 0x20 }  # in 0x8305D820, ptr at 0x8205494C
+0x8305DA68 = { name = "sub_8305DA68_fnptr", size = 0x10 }  # in 0x8305D820, ptr at 0x83066F54
+0x8305DA78 = { name = "sub_8305DA78_fnptr", size = 0x10 }  # in 0x8305D820, ptr at 0x83066B6C
+0x8305DA88 = { name = "sub_8305DA88_fnptr", size = 0x10 }  # in 0x8305D820, ptr at 0x83066E1C
+0x8305DA98 = { name = "sub_8305DA98_fnptr", size = 0x10 }  # in 0x8305D820, ptr at 0x83066E6C
+0x8305DAA8 = { name = "sub_8305DAA8_fnptr", size = 0x10 }  # in 0x8305D820, ptr at 0x83067234
+0x8305DAB8 = { name = "sub_8305DAB8_fnptr", size = 0x10 }  # in 0x8305D820, ptr at 0x830669F4
+0x8305DAC8 = { name = "sub_8305DAC8_fnptr", size = 0x10 }  # in 0x8305D820, ptr at 0x8306744C
+0x8305DAD8 = { name = "sub_8305DAD8_fnptr", size = 0x10 }  # in 0x8305D820, ptr at 0x83066C4C
+0x8305DAE8 = { name = "sub_8305DAE8_fnptr", size = 0x10 }  # in 0x8305D820, ptr at 0x83066A44
+0x8305DAF8 = { name = "sub_8305DAF8_fnptr", size = 0x10 }  # in 0x8305D820, ptr at 0x83066EBC
+0x83101D78 = { name = "sub_83101D78_fnptr", size = 0x38 }  # in 0x83101CC0, ptr at 0x8210B408
+0x83104090 = { name = "sub_83104090_fnptr", size = 0x3C }  # in 0x83104038, ptr at 0x8210B430
+0x831040CC = { name = "sub_831040CC_fnptr", size = 0x40 }  # in 0x83104038, ptr at 0x8210B420
+0x83104B08 = { name = "sub_83104B08_fnptr", size = 0x30 }  # in 0x831049F0, ptr at 0x8210B460
+0x83104C68 = { name = "sub_83104C68_fnptr", size = 0x30 }  # in 0x83104B50, ptr at 0x8210B478
+0x8311E88C = { name = "sub_8311E88C_fnptr", size = 0x44 }  # in 0x8311E778, ptr at 0x8210B490
+0x8314CFD0 = { name = "sub_8314CFD0_fnptr", size = 0x74 }  # in 0x8314CE68, ptr at 0x831665CC
+0x831CC5C0 = { name = "sub_831CC5C0_fnptr", size = 0x18 }  # in 0x831CC450, ptr at 0x82083474
+0x83206320 = { name = "sub_83206320_fnptr", size = 0x2C }  # in 0x83206258, ptr at 0x82087E0C
+0x832B9CE4 = { name = "sub_832B9CE4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x82CB30B4
+0x832B9CF4 = { name = "sub_832B9CF4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x82CB30B8
+0x832B9D84 = { name = "sub_832B9D84_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0008
+0x832B9E74 = { name = "sub_832B9E74_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832EFF98
+0x832B9E84 = { name = "sub_832B9E84_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832EFF94
+0x832B9E94 = { name = "sub_832B9E94_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0020
+0x832B9EA4 = { name = "sub_832B9EA4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F002C
+0x832B9EE4 = { name = "sub_832B9EE4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0014
+0x832B9EF4 = { name = "sub_832B9EF4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0010
+0x832BA0F4 = { name = "sub_832BA0F4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0028
+0x832BA104 = { name = "sub_832BA104_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F000C
+0x832BA114 = { name = "sub_832BA114_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0024
+0x832BA174 = { name = "sub_832BA174_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F001C
+0x832BA184 = { name = "sub_832BA184_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0018
+0x832BA1D4 = { name = "sub_832BA1D4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0064
 # --- END tools/scan_fnptrs.py ---
-
-# .text, absorbed into pdata fn 0x82DDC0C0.
-#   0x82DDC4D8  mr r11, r4
-#   0x82DDC4DC  mr r4, r5
-#   0x82DDC4E0  lwz r3, 0(r11)
-#   0x82DDC4E4  lwz r11, 0(r3)
-#   0x82DDC4E8  lwz r11, 0x24(r11)
-#   0x82DDC4EC  mtctr r11
-#   0x82DDC4F0  bctr
-0x82DDC4D8 = { name = "sub_82DDC4D8_missed", size = 0x1C }

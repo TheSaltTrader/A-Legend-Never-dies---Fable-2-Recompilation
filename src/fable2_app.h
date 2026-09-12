@@ -125,6 +125,18 @@ class Fable2App : public rex::ReXApp {
 
     if (paths.game_data_root.empty())
       paths.game_data_root = settings_.ResolvedGamePath();
+    // The title update's data, mounted as update:\ - the game opens
+    // update:\data\tu1_data.bnk and update:\build_version.txt from there. A
+    // build compiled with the update wants it; the disc build ignores it
+    // (the files are simply not there). See docs/TU1_PORT.md.
+    if (paths.update_data_root.empty()) {
+      const auto update = paths.game_data_root / "update";
+      std::error_code ec;
+      if (std::filesystem::is_directory(update, ec)) {
+        paths.update_data_root = update;
+        REXLOG_INFO("Update data: {}", update.string());
+      }
+    }
   }
 
   // The setup screen, on the one hook where the window and the ImGui drawer

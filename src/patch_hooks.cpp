@@ -50,11 +50,21 @@ void LogOnce(bool& logged, const char* what, uint32_t from, uint32_t to) {
 
 }  // namespace
 
-// 0x82B9C8E8, after `li r11, 2`.
+// TU1: 0x82BA3058, after `li r11, 2` in the 3/2/1 selector (disc: 0x82B9C8E8).
 void fable2PatchFrameRate(PPCRegister& r11) {
   if (!REXCVAR_GET(fable2_60fps)) return;
   static bool logged = false;
   LogOnce(logged, "frame divider", r11.u32, 1);
+  r11.u32 = 1;
+}
+
+// TU1: 0x82BA3018, after `lwz r11, 0x351C(r31)` - the title update also reads
+// the divider from a field, and Xenia Canary's TU1 patch replaces that load
+// with `li r11, 1`. Same effect here, one comparison later.
+void fable2PatchFrameRateLoad(PPCRegister& r11) {
+  if (!REXCVAR_GET(fable2_60fps)) return;
+  static bool logged = false;
+  LogOnce(logged, "frame divider (loaded)", r11.u32, 1);
   r11.u32 = 1;
 }
 
@@ -99,10 +109,11 @@ void fable2PatchTickRate(PPCRegister& r8) {
   if (!memory) return;
 
   // The store's own effective address, computed the same way the instruction
-  // did - not the hard-coded 0x83319510 the Xenia patch names. If this build
-  // ever put the constant somewhere else, following r8 stays correct while a
-  // literal address would quietly write into whatever is there now.
-  const uint32_t va = r8.u32 - 0x6AF0;
+  // did - not a hard-coded .data address. The displacement is the store's:
+  // disc `stfd f0, -0x6AF0(r8)` at 0x8233AEB4 (double at 0x83319510); title
+  // update 1 `stfd f0, -0x69A0(r8)` at 0x8231091C (double at 0x83319660) -
+  // see config/hooks/patches.toml for how it was found.
+  const uint32_t va = r8.u32 - 0x69A0;
   auto* slot = memory->TranslateVirtual<uint8_t*>(va);
   if (!slot) return;
 

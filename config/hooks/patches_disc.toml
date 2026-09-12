@@ -1,0 +1,120 @@
+# Community game patches, as midasm hooks.
+#
+# The source is Xenia Canary's patch file for this title:
+#   game-patches/patches/4D5307F1 - Fable II (GOTY_Platinum Edition).patch.toml
+# by Margen67, Guy and Pepper.
+#
+# Xenia ships them as guest *memory* patches. That does not work for a static
+# recompilation: the values are immediates inside instructions, and those
+# instructions are already C++ constants by the time anything could patch
+# memory. Rewriting the register right after the instruction runs has the same
+# effect and costs one comparison when the patch is off.
+#
+# EVERY ADDRESS BELOW WAS VERIFIED AGAINST OUR OWN IMAGE before being used -
+# the disassembly is in the comments. That is not ceremony: the upstream
+# Fable2Recomp project's config targets GOTY TU1 and 164 of its 923 entries
+# land past the end of our .text, so "a Fable II patch file" is not the same
+# thing as "a patch file for this disc".
+#
+# The proof that this particular file does match our build is the High Tick
+# Rate patch: it presets a .data double, and at that address our image holds
+# exactly 15.0, which the patch turns into exactly 30.0 - matching its
+# description ("doubles tickrate to 30hz") to the bit.
+
+# --- 60 FPS (Margen67) -------------------------------------------------------
+# Xenia:  [[patch.be8]] address = 0x82b9c8eb  value = 0x01
+#
+# 0x82B9C8EB is the low byte of the instruction at 0x82B9C8E8, inside what
+# looks like a frame-divider selector:
+#
+#   0x82B9C8E0  li r11, 3   ; b +0x18
+#   0x82B9C8E8  li r11, 2   ; b +0x10     <- 2 = 30 fps
+#   0x82B9C8F0  li r11, 1   ; b +0x08     <- 1 = 60 fps
+#
+# So the patch picks the 60 fps divider. Hooked after the `li` and the register
+# rewritten to 1.
+[[midasm_hook]]
+address = 0x82B9C8E8
+name = "fable2PatchFrameRate"
+registers = ["r11"]
+after_instruction = true
+
+# --- 1280x720 (Margen67) -----------------------------------------------------
+# Xenia:  [[patch.be16]] address = 0x8238df5a  value = 0x0500
+#
+# 0x8238DF5A is the immediate halfword of the instruction at 0x8238DF58:
+#
+#   0x8238DF50  cmpwi cr6, r11, 0
+#   0x8238DF58  li r11, 0x460      ; 1120  <- widescreen width
+#   0x8238DF5C  bne cr6, +8
+#   0x8238DF60  li r11, 0x3c0      ; 960   <- the other branch
+#   0x8238DF64  stw r11, 0x94(r31)
+#
+# 0x460 = 1120 confirms the patch's own note, "Original resolution is
+# 1120x720". Only the widescreen immediate is touched, exactly as Xenia does.
+[[midasm_hook]]
+address = 0x8238DF58
+name = "fable2PatchRenderWidth"
+registers = ["r11"]
+after_instruction = true
+
+# --- Disable MSAA (Margen67) -------------------------------------------------
+# Xenia:  [[patch.be8]] address = 0x8238df3f  value = 0x01
+#
+#   0x8238DF3C  li r9, 2    <- sample count, in the same render setup as above
+#
+# 1 = no multisampling. Cheaper, and a smaller EDRAM footprint.
+[[midasm_hook]]
+address = 0x8238DF3C
+name = "fable2PatchMsaa"
+registers = ["r9"]
+after_instruction = true
+
+# --- Disable Texture Morphing (Guy) ------------------------------------------
+# Xenia:  [[patch.be16]] address = 0x8220ef10  value = 0x4280
+#
+# "Workaround for the dog's & the hero's broken textures. Makeup is still
+# bugged. Can make morphs look strange."
+#
+#   0x8220EF0C  cmplwi cr6, r18, 0
+#   0x8220EF10  beq cr6, 0x8220F08C     (0x419A017C)
+#
+# 0x419A -> 0x4280 turns that conditional branch into an unconditional one, so
+# the morph path is always skipped. A midasm hook cannot rewrite control flow,
+# so this hooks the COMPARE instead and forces r18 to 0: the compare then sets
+# cr6.eq, and the existing `beq` is taken every time. Same outcome, no
+# instruction rewriting.
+#
+# NOTE: the unofficial Xenia femtofork for Fable II drops this patch, because
+# it fixes the black-texture bug properly with selective readback. Our runtime
+# has that too - `readback_resolve` takes none/fast/some/full - so prefer the
+# Graphics setting and keep this as the cheap fallback.
+[[midasm_hook]]
+address = 0x8220EF0C
+name = "fable2PatchTextureMorph"
+registers = ["r18"]
+after_instruction = false
+
+# --- High Tick Rate (Guy) ----------------------------------------------------
+# Xenia:  [[patch.be32]] address = 0x8233aeb4  value = 0x60000000   (nop)
+#         [[patch.be8]]  address = 0x83319511  value = 0x3e
+#
+# "Doubles tickrate to 30hz. Vastly improves in-game UI framerate. Improves
+# input delay. Minor side effects."
+#
+#   0x8233AEB0  lfd  f0, 0x68(r1)
+#   0x8233AEB4  stfd f0, -0x6af0(r8)    <- Xenia NOPs this store
+#
+# With r8 = 0x83320000 the store target is 0x83319510, which is precisely the
+# .data address the second half of the patch edits. Our image holds the double
+# 15.0 there, and the byte edit makes it 30.0.
+#
+# Rather than NOP the store and preset the constant - neither of which a
+# recompilation can do to a compiled-in immediate - this hooks AFTER the store
+# and writes 30.0 over what it just wrote. Same end state, and it self-corrects
+# if the store runs again.
+[[midasm_hook]]
+address = 0x8233AEB4
+name = "fable2PatchTickRate"
+registers = ["r8"]
+after_instruction = true
