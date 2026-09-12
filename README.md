@@ -345,6 +345,15 @@ Content and diagnostics
   the machine is, in one text file under `diagnostics\` beside the game, with
   its path on the clipboard. `FABLE2_DIAGNOSTICS=1` writes the same file during
   startup, for a launch that never reaches a menu.
+- **Xbox 360 saves and the title update** (setup screen and settings) - a
+  folder of console save packages is imported at launch, each once, into a
+  free save slot, with the save's version number adjusted to this build's.
+  Saves made on a console still need the game at the console's version: the
+  setup screen's "Title update" section reads the executable's version and
+  media ID, names the update this pressing takes, checks a chosen update
+  file against the executable, and stages it for a build compiled with it.
+  This build is compiled from the disc; see the 0.0.16 changelog for what
+  loading such a save does without the update.
 - **Profiling and scripted runs** (environment variables, for development):
   `FABLE2_PROFILE=1` samples the game's own threads from inside the process
   and logs, every ten seconds, the hottest recompiled functions by name;

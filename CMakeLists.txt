@@ -27,8 +27,18 @@ set(FABLE2_SOURCES
     src/fable2_stage.cpp
     src/fable2_crashdump.cpp
     src/fable2_profiler.cpp
+    src/fable2_titleupdate.cpp
     src/patch_hooks.cpp
 )
+
+# A build made with the disc's title update beside the executable the codegen
+# read (assets/default.xexp) is a different game version, and the setup screen
+# says so. The runtime applies the same patch at launch from game/default.xexp.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/default.xexp")
+    set(FABLE2_COMPILED_WITH_PATCH ON)
+else()
+    set(FABLE2_COMPILED_WITH_PATCH OFF)
+endif()
 
 if(WIN32)
     # The icon resource (resources/fable2.rc -> fable2.ico) rides in the
@@ -44,6 +54,9 @@ endif()
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" FABLE2_VERSION_TEXT)
 string(STRIP "${FABLE2_VERSION_TEXT}" FABLE2_VERSION_TEXT)
 target_compile_definitions(fable2 PRIVATE FABLE2_VERSION="${FABLE2_VERSION_TEXT}")
+if(FABLE2_COMPILED_WITH_PATCH)
+    target_compile_definitions(fable2 PRIVATE FABLE2_COMPILED_WITH_PATCH=1)
+endif()
 
 # GPU_PLUGINS stages the SDK's Xenos emulation plugin (rexgpu-xenos.dll) next
 # to the executable. It is runtime-loaded, never linked.

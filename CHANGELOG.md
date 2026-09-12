@@ -3,6 +3,24 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.17 — 2026-09-12
+
+### Added - the title update, on the setup screen
+
+A "Title update" section reads the executable in the game folder and says
+what it is (version 0.0.0.26, media ID 716F0A0D on this disc), that saves
+made on a console need the disc's title update and a build compiled with
+it, and whether a title update file at hand is that update: the patch names
+the executable it was built against by the SHA-1 of its signature, and one
+for another pressing of the disc does not apply. "Choose title update
+file..." takes the disc's update as a LIVE package (unpacked when the game
+starts, the way saves are imported) or as its `default.xexp`, and keeps it
+under `titleupdate\` beside the executable, staged for the build that is
+compiled with it. Nothing is applied to a build that was not compiled for
+it: that would run the old code against patched data. A build compiled
+with the patch (`assets/default.xexp` present at codegen time) says so in
+the same section.
+
 ## 0.0.16 — 2026-09-12
 
 ### Fixed - pressing Y in the intro killed the game

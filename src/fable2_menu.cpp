@@ -5,6 +5,7 @@
 #include "fable2_perf.h"
 
 #include "fable2_saveimport.h"
+#include "fable2_titleupdate.h"
 
 #include <algorithm>
 #include <array>
@@ -1817,6 +1818,58 @@ void SetupScreen::DrawInstaller() {
     }
     if (!setup_save_message_.empty()) {
       ImGui::TextWrapped("%s", setup_save_message_.c_str());
+    }
+  }
+
+  // The title update. Saves from a console need the game at the version the
+  // console had, and this build was compiled from the disc's executable; the
+  // section says which version that is, which update the disc takes, and
+  // whether a file at hand is that update. A build compiled with the update
+  // is what loads those saves - see fable2_titleupdate.h.
+  {
+    static fable2::TitleUpdateStatus tu;
+    static double tu_read_at = -1.0e9;
+    static std::string tu_message;
+    const double now = ImGui::GetTime();
+    if (now - tu_read_at > 5.0) {
+      tu = fable2::InspectTitleUpdate(install_dest_.empty() ? settings_->ResolvedGamePath()
+                                                            : install_dest_);
+      tu_read_at = now;
+    }
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Title update");
+    if (!tu.xex_ok) {
+      ImGui::TextWrapped("Executable not inspected: %s", tu.xex_error.c_str());
+    } else {
+      ImGui::TextWrapped(
+          "This build was compiled from game version %s (media ID %08X). Saves made on "
+          "a console need the disc's title update - version %s for this pressing - and "
+          "a build compiled with it.",
+          fable2::VersionText(tu.version).c_str(), tu.media_id,
+          tu.patch_found && tu.patch_matches
+              ? fable2::VersionText(tu.patch_target_version).c_str()
+              : "the next one up");
+      if (tu.compiled_with_patch) {
+        ImGui::TextWrapped("This build WAS compiled with the title update applied.");
+      } else if (tu.patch_found) {
+        ImGui::TextWrapped("Title update file: %s - %s.%s", tu.patch_path.string().c_str(),
+                           tu.patch_note.c_str(),
+                           tu.patch_matches ? " This build was compiled without it; it is "
+                                              "staged for the build that will be."
+                                            : "");
+      } else {
+        ImGui::TextWrapped("No title update file found. Choose the disc's title update "
+                           "(a LIVE package, or its default.xexp) to stage it.");
+      }
+      if (ImGui::Button("Choose title update file...")) {
+        if (auto picked = PickFile("The disc's title update (LIVE package or default.xexp)",
+                                   {{"Title update", "*.xexp;*.*"}},
+                                   settings_->ResolvedGamePath())) {
+          fable2::ChooseTitleUpdateFile(*picked, tu_message);
+          tu_read_at = -1.0e9;  // re-read on the next frame
+        }
+      }
+      if (!tu_message.empty()) ImGui::TextWrapped("%s", tu_message.c_str());
     }
   }
 

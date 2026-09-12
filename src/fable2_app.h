@@ -41,6 +41,7 @@
 #include "fable2_stage.h"
 #include "fable2_crashdump.h"
 #include "fable2_profiler.h"
+#include "fable2_titleupdate.h"
 #include "fable2_menu.h"
 #include "fable2_platform.h"
 #include "fable2_settings.h"
@@ -360,6 +361,7 @@ class Fable2App : public rex::ReXApp {
     GateInputToForeground();
     fable2::StartPerfMonitor();
     ImportQueuedSaves();
+    fable2::InstallQueuedTitleUpdate();  // a package chosen on the setup screen
     MaybeWriteDiagnostics();
     ArmQuitSeam();
     ArmTexpackStressSeam();
