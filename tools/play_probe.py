@@ -157,6 +157,9 @@ def main():
     ap.add_argument("--exe-args", action="append", default=[],
                     help="arguments for --exe, repeatable; ours are not added")
     ap.add_argument("--no-mnk", action="store_true")
+    ap.add_argument("--no-hud", action="store_true",
+                    help="do not force the on-screen readouts (FABLE2_HUD=1) "
+                         "for this run")
     ap.add_argument("--manual", action="store_true",
                     help="hands off: send no keys and never steal focus, so a "
                          "person can drive with a controller. Frames and the log "
@@ -213,7 +216,13 @@ def main():
         print("--manual: ignoring %d scheduled press(es); you are driving."
               % len(args.press))
         args.press = []
-    proc = subprocess.Popen(cmd, cwd=os.path.dirname(exe))
+    # The readouts (fps game/host, GPU, VRAM) are on for every scripted run
+    # so the frames say how the game ran, whatever F8 state the player's own
+    # sessions left in the settings file. Nothing is saved.
+    env = dict(os.environ)
+    if not args.no_hud:
+        env["FABLE2_HUD"] = "1"
+    proc = subprocess.Popen(cmd, cwd=os.path.dirname(exe), env=env)
     print(f"launched pid {proc.pid}")
 
     hwnd, deadline = None, time.time() + 30

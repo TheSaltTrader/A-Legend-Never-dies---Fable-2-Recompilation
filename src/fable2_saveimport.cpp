@@ -25,10 +25,18 @@ constexpr uint32_t kTitleId = 0x4D5307F1;
 constexpr size_t kContentTypeOffset = 0x344;
 constexpr size_t kTitleIdOffset = 0x360;
 
-// The SaveInfo VersionNumber this build's game writes into its own saves
-// (every save the port made on 2026-09-04 carries it). A console save with
-// TU4 carries 393219 (0x00060003) and is refused as "more up-to-date".
+// The SaveInfo VersionNumber this build's game accepts. Title update 1
+// (branch tu1) writes and reads 393219 (0x00060003) - the number every
+// console save carries - so a console save imports untouched. The disc
+// build wrote 805699586 (0x30060002) and refused 393219 as "more up-to-date";
+// on that build this constant was 805699586 and the importer rewrote the
+// number, which got the save past the version screen and no further
+// (CHANGELOG 0.0.16).
+#if defined(FABLE2_COMPILED_WITH_PATCH)
+constexpr uint32_t kGameSaveVersion = 393219u;
+#else
 constexpr uint32_t kGameSaveVersion = 805699586u;
+#endif
 constexpr int kSlotCount = 6;
 
 // Size plus a hash of the first 64 KB: the STFS header, which holds the

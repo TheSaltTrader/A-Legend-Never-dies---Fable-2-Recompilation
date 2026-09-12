@@ -3,6 +3,52 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.0 — 2026-09-12 (branch `tu1`)
+
+### Changed - compiled from the disc's title update
+
+This build is the game at version 0.0.1.26: the disc's executable with
+title update 1 applied at codegen time (`assets/default.xexp`) and at run
+time (`default.xexp` beside `default.xex` in the game folder, plus
+`update\data\tu1_data.bnk`, mounted as `update:\`). Every address moved -
+5166 of the image's 5656 pages differ - so the registered helper
+functions, the setjmp/longjmp pair, the six hook sites (60 fps at two
+sites now, 1280 wide, MSAA, tick rate, texture morph) and the tick-rate
+displacement were re-derived; `docs/TU1_PORT.md` records each value, the
+tool that produced it and the check that it is right. The disc build's
+configuration is kept beside each file (`*_disc.*`) and the last disc
+executable as `out/fable2_base_0.0.15.exe`.
+
+A save made on a console loads: Hero000 (version 393219, refused by the
+disc build) reaches Bowerstone Market and plays at 51-55 fps in a scripted
+run, where the disc build with the number rewritten died in a recursive
+object walk. The importer no longer rewrites the version on this build;
+the number it writes follows the build (393219 here, 805699586 on the
+disc build). A save the disc build imported with the number rewritten
+(Hero001) is now the older format, and the game says so.
+
+The two executables are not interchangeable with one game folder: the
+update build needs `default.xexp` beside the executable it loads, the disc
+build must not see it (the runtime applies any sibling patch it finds).
+
+### Added - readouts on demand
+
+`FABLE2_HUD=1` shows the on-screen readouts (fps game/host, GPU, VRAM)
+for that process whatever the settings say, and saves nothing;
+`tools/play_probe.py` sets it for every scripted run, so the frames of a
+test carry the numbers however the player last left F8.
+
+### Tools
+
+`tools/relocate.py` finds a disc address on the patched image by matching
+an instruction window with branch and address fields masked (it
+reproduces Xenia Canary's two known TU1 sites from the disc's, which is
+the check that it works); `tools/vector_census.py` reads the shared
+vector registers off the generated code; `tools/xex_image.py` reads a
+flat image dump (`FABLE2_IMAGE`) written by the app (`FABLE2_DUMP_IMAGE`)
+so every tool built on it sees the patched code. Without `FABLE2_IMAGE`
+the tools decode the disc and size update addresses out of disc bytes.
+
 ## 0.0.17 — 2026-09-12
 
 ### Added - the title update, on the setup screen

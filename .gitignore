@@ -1,6 +1,7 @@
 # Build and codegen output
 /out/
 /generated/default/
+/generated/default_base/
 /build/
 
 # Game content - never committed. The XEX and every asset belong to the

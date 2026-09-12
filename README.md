@@ -358,9 +358,11 @@ Content and diagnostics
   `FABLE2_PROFILE=1` samples the game's own threads from inside the process
   and logs, every ten seconds, the hottest recompiled functions by name;
   `FABLE2_PAD_SCRIPT="autoskip:20,30:right,32:a"` presses buttons on a
-  synthetic controller at the given seconds after boot; `FABLE2_TEXPACK_STRESS`
-  and `FABLE2_QUIT_AFTER` are the crash and quit reproductions. See the
-  changelog for 0.0.13 and 0.0.14.
+  synthetic controller at the given seconds after boot; `FABLE2_HUD=1` shows
+  the on-screen readouts for that process whatever the settings say (and
+  saves nothing), so a test run's frames carry the numbers;
+  `FABLE2_TEXPACK_STRESS` and `FABLE2_QUIT_AFTER` are the crash and quit
+  reproductions. See the changelog for 0.0.13 and 0.0.14.
 
 ### What actually renders, and what never has
 
@@ -369,8 +371,13 @@ and the changelog both:
 
 - **Static world geometry renders.** Old Bowerstone's architecture, snow, fire,
   particles, water - all of it, and it looks right.
-- **No character has ever rendered in-engine.** Not NPCs, not the hero, not the
-  dog. Never, in any build.
+- **No character rendered in-engine on the disc build.** Not NPCs, not the
+  hero, not the dog, in any build up to 0.0.17, all of which played the
+  opening from New Game. **On the title-update build (0.1.0, branch `tu1`)
+  loading a console save, they do:** the hero and the townspeople of
+  Bowerstone Market are drawn, with their quest markers (`out/shots/tu1hud_05.png`,
+  2026-09-12). Whether the opening renders its characters on that build is
+  untested.
 - **The opening "cinematic" is a pre-rendered video**, not the engine. Frames
   from it show a street full of people, a cart, a bird - and reading those as
   engine output is exactly the mistake that kept this hidden. A frame full of

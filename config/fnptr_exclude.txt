@@ -2,3 +2,18 @@
 # The disc build's list is config/fnptr_exclude_disc.txt; its addresses do
 # not apply here. Each entry below broke something when registered; see the
 # README and docs/TU1_PORT.md.
+0x832BA0F4  # import thunk - codegen drops our entry (link: undefined sub_832BA0F4_fnptr)
+0x832BA104  # import thunk - codegen drops our entry (link: undefined sub_832BA104_fnptr)
+0x832BA114  # import thunk - codegen drops our entry (link: undefined sub_832BA114_fnptr)
+0x832BA174  # import thunk - codegen drops our entry (link: undefined sub_832BA174_fnptr)
+0x832BA184  # import thunk - codegen drops our entry (link: undefined sub_832BA184_fnptr)
+0x832BA1D4  # import thunk - codegen drops our entry (link: undefined sub_832BA1D4_fnptr)
+0x832B9CE4  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
+0x832B9CF4  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
+0x832B9D84  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
+0x832B9E74  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
+0x832B9E84  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
+0x832B9E94  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
+0x832B9EA4  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
+0x832B9EE4  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails
+0x832B9EF4  # import thunk area (parent 0x832B97A8) - codegen drops our entry, link fails

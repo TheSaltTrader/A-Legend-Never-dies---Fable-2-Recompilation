@@ -29,7 +29,7 @@ recursive object walk on a serialised index this build has no entry for
 
 | what | disc value | tool | TU1 value |
 |---|---|---|---|
-| registered helper functions (`config/functions.toml`) | 167 entries (kept as `config/functions_disc.toml`) | `tools/resolve_calls.py` to a fixpoint, then `tools/scan_fnptrs.py` | (in progress) |
+| registered helper functions (`config/functions.toml`) | 167 entries (kept as `config/functions_disc.toml`) | `tools/resolve_calls.py` to a fixpoint, then `tools/scan_fnptrs.py` | 171 entries: 7 forwarders at 0x82C061F0 + the fixpoint's helpers + the pointer-table scan, MINUS 15 import thunks under 0x832B97A8 (`config/fnptr_exclude.txt`): the codegen drops those and the link wanted `sub_832B...._fnptr` |
 | setjmp / longjmp (`fable2_manifest.toml`) | 0x83000200 / 0x82CA9260 | `tools/relocate.py` (find_setjmp.py's density heuristic picks zero-fill loops on this image) | 0x83006C90 (47/48 words; opens `lis r4,0x8332; lwz r0,0x1C4C(r4)` = the setjmp hook global, moved from 0x83321A8C) / 0x82CAFA30 (45/45; `mflr r0; stwu r1,-0x50(r1); mr r6,r4; cmpwi r4,0`) |
 | shared vector registers (manifest) | v64,65,77-84,86,87,90-94 | census of the generated source: a register READ before it is written | after the first codegen |
 | 60 fps hook | 0x82B9C8E8 `li r11,2` | Canary TU1 + relocate.py + disassembly | TWO sites: 0x82BA3018 `lwz r11, 0x351C(r31)` (Canary's; the divider read from a field) and 0x82BA3058 `li r11, 2` (the disc's 3/2/1 selector, moved +0x6770, 36/36); both hooked, r11 forced to 1 |
@@ -38,6 +38,7 @@ recursive object walk on a serialised index this build has no entry for
 | tick rate hook | 0x8233AEB4 `stfd f0,-0x6af0(r8)` -> 15.0 at 0x83319510 | the 15.0 double in .data (three candidates: 0x83319628, 0x83319660, 0x83319668), then the one `stfd f0,disp(r8)` in .text that targets one of them | 0x8231091C `stfd f0, -0x69A0(r8)` after `lfd f0, 0x68(r1)`, double at 0x83319660; `patch_hooks.cpp` displacement changed to 0x69A0 |
 | texture morph hook | 0x8220EF0C `cmplwi cr6,r18,0; beq cr6` | `tools/relocate.py` (36/36) | 0x8220EDD4 `cmplwi cr6, r18, 0; beq cr6, +0x17C` (same branch word) |
 | update data | none | `PathConfig::update_data_root` | `game/update/` holding `data/tu1_data.bnk` (the game opens `update:\data\tu1_data.bnk` and `update:\build_version.txt`) |
+| save version the game writes (`kGameSaveVersion`, `fable2_saveimport.cpp`) | 805699586 (0x30060002) | the number in a save this build made | 393219 (0x00060003) - the console's number: chosen by `FABLE2_COMPILED_WITH_PATCH` at compile time, so a console save now imports untouched |
 
 ## Rule for every tool on this branch
 
@@ -74,6 +75,29 @@ the first suspect; if something misbehaves around register saves, v65.
 
 ## Log
 
+- 2026-09-12 12:00 `kGameSaveVersion` follows `FABLE2_COMPILED_WITH_PATCH`
+  (393219 on this build). `FABLE2_HUD=1` added: the on-screen readouts are
+  forced on for a process without touching the settings file, and
+  `tools/play_probe.py` sets it for every scripted run - the acceptance run
+  below carried no numbers because the player's own session had F8 off.
+  Version 0.1.0 for this line.
+- 2026-09-12 11:45 ACCEPTANCE: the console save (Hero000, version 393219,
+  the one the disc build refused and then crashed on when the number was
+  rewritten) loads on the update build with no importer help. Scripted run
+  (`FABLE2_PAD_SCRIPT` b/a/down/a/right/a every 22 s from 30 s, 150 s):
+  frames at 60/90/120 s show the adult hero in Bowerstone Market with the
+  quests "The Snowglobe" and "The Crucible Champion"; `[swap]` 51-55 guest
+  fps there; no CRASH, ABORT or plugin warning in the log. Boot log:
+  `XEX patch applied successfully: base version: 0.0.0.26, new version:
+  0.0.1.26`; every hook in `config/hooks/patches.toml` fires; the menu runs
+  at 60. Note for the next reader: the log file rotates, so a line anchor
+  such as "Crash dumps:" is not always in it - grep the tail of the run.
+- 2026-09-12 11:35 builds 2 and 3: the link wanted `sub_832BA0F4_fnptr`,
+  ... `sub_832B9EF4_fnptr` (15 symbols, two rounds of 6+9): pointer-table
+  entries the scan registered that the codegen drops because they are
+  import thunks (all under the parent 0x832B97A8). Listed in
+  `config/fnptr_exclude.txt`, rescanned, and the third build linked
+  (`out/build_tu1_3.log`).
 - 2026-09-12 11:25 `tools/scan_fnptrs.py --write` registered 173 pointer-table
   helpers (186 entries in all); `resolve_calls.py` round 1: codegen succeeded
   with nothing further to register. Census run (table above); manifest list

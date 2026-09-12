@@ -7,6 +7,8 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include <cstdlib>
+
 #include "fable2_menu.h"  // Fonts()
 #include "fable2_perf.h"
 #include "fable2_settings.h"
@@ -41,6 +43,19 @@ constexpr ImGuiWindowFlags kOverlayFlags =
 // The settings the HUD reads. Pointed at the app's own settings object so the
 // readouts follow the checkboxes with no copying and no staleness.
 static const Fable2Settings* g_hud_settings = nullptr;
+
+// FABLE2_HUD=1 shows every readout for this process whatever the settings
+// say, and saves nothing: scripted test runs share the settings file with
+// the player's own sessions, and a run whose frames carried no numbers
+// because the player had toggled F8 the night before was worthless
+// (2026-09-12). Read once; an environment variable does not change.
+static bool HudForced() {
+  static const bool forced = [] {
+    const char* e = std::getenv("FABLE2_HUD");
+    return e && *e && *e != '0';
+  }();
+  return forced;
+}
 void SetHudSettings(const Fable2Settings* settings) { g_hud_settings = settings; }
 
 void NotifyTexturePack(bool enabled) {
@@ -111,7 +126,13 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
   PerfFrameTick();
 
   const Fable2Settings* s = g_hud_settings;
-  if (!s || !s->hud_enabled || (!s->hud_fps && !s->hud_gpu && !s->hud_vram))
+  if (!s)
+    return;
+  const bool forced = HudForced();
+  const bool show_fps = forced || s->hud_fps;
+  const bool show_gpu = forced || s->hud_gpu;
+  const bool show_vram = forced || s->hud_vram;
+  if (!(forced || s->hud_enabled) || (!show_fps && !show_gpu && !show_vram))
     return;
 
   const PerfSample p = GetPerfSample();
@@ -128,7 +149,7 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
     const ImVec4 bad(0.98f, 0.45f, 0.40f, 1.0f);
     const ImVec4 label(0.72f, 0.78f, 0.74f, 1.0f);
 
-    if (s->hud_fps) {
+    if (show_fps) {
       // The GAME's frame rate: swaps the guest completed, published by the GPU
       // plugin each second. The host presents 170-200 times a second on this
       // machine whether or not the game drew anything new, and a counter that
@@ -150,7 +171,7 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
       ImGui::SameLine();
       ImGui::TextColored(label, " host %.0f", p.fps);
     }
-    if (s->hud_gpu) {
+    if (show_gpu) {
       ImGui::TextColored(label, "GPU");
       ImGui::SameLine();
       if (p.gpu_valid) {
@@ -161,7 +182,7 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
         ImGui::TextColored(label, "    n/a");
       }
     }
-    if (s->hud_vram) {
+    if (show_vram) {
       ImGui::TextColored(label, "VRAM");
       ImGui::SameLine();
       if (p.vram_valid) {

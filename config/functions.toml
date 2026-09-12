@@ -234,19 +234,4 @@
 0x8314CFD0 = { name = "sub_8314CFD0_fnptr", size = 0x74 }  # in 0x8314CE68, ptr at 0x831665CC
 0x831CC5C0 = { name = "sub_831CC5C0_fnptr", size = 0x18 }  # in 0x831CC450, ptr at 0x82083474
 0x83206320 = { name = "sub_83206320_fnptr", size = 0x2C }  # in 0x83206258, ptr at 0x82087E0C
-0x832B9CE4 = { name = "sub_832B9CE4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x82CB30B4
-0x832B9CF4 = { name = "sub_832B9CF4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x82CB30B8
-0x832B9D84 = { name = "sub_832B9D84_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0008
-0x832B9E74 = { name = "sub_832B9E74_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832EFF98
-0x832B9E84 = { name = "sub_832B9E84_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832EFF94
-0x832B9E94 = { name = "sub_832B9E94_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0020
-0x832B9EA4 = { name = "sub_832B9EA4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F002C
-0x832B9EE4 = { name = "sub_832B9EE4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0014
-0x832B9EF4 = { name = "sub_832B9EF4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0010
-0x832BA0F4 = { name = "sub_832BA0F4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0028
-0x832BA104 = { name = "sub_832BA104_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F000C
-0x832BA114 = { name = "sub_832BA114_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0024
-0x832BA174 = { name = "sub_832BA174_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F001C
-0x832BA184 = { name = "sub_832BA184_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0018
-0x832BA1D4 = { name = "sub_832BA1D4_fnptr", size = 0x10 }  # in 0x832B97A8, ptr at 0x832F0064
 # --- END tools/scan_fnptrs.py ---
