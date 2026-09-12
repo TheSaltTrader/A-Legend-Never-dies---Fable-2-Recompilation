@@ -61,6 +61,15 @@ struct MonitorInfo {
 // player is now typing into something else with.
 bool ThisProcessIsForeground();
 
+// Ask Windows for the finest timer resolution (0.5 ms) and opt out of the
+// timer coalescing it applies to processes it considers background. The
+// runtime sleeps in whole milliseconds all over its frame - the guest's
+// KeDelayExecutionThread, the GPU thread's poll of the game's own wait
+// packets, the vsync worker - and every one of those sleeps lasts at least
+// one timer tick. Per-process since Windows 10 2004, so nobody else's request
+// helps this process. Logs what was granted.
+void RaiseTimerResolution();
+
 std::vector<MonitorInfo> Monitors();
 
 // The scaling Windows will ACTUALLY apply to this process's windows.

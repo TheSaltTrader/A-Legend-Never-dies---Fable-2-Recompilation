@@ -176,6 +176,18 @@ struct Fable2Tuning {
     out.push_back({"readback_resolve", s.readback,
                    "readback for the hero/dog black-texture bug"});
 
+    // Memexport readback OFF. The SDK's default is on, and on this title it
+    // was the frame: the game exports from shaders about five times a frame,
+    // and each export made the GPU thread drain the whole GPU queue before
+    // copying the result back - measured 1.9 to 3.9 s of every 5 s spent in
+    // that wait, 17-45 fps in town. The double-buffered "fast" path never
+    // applied because the previous frame's copy is never complete when it
+    // checks. Off: a locked 60 in the same places, nothing visibly wrong in
+    // play (2026-09-12). If something does read exported data on the CPU,
+    // the answer is a one-frame-late copy, not this drain.
+    out.push_back({"readback_memexport", "false",
+                   "no full-queue drain per shader memory export"});
+
     // The community patches, read by the midasm hooks in patch_hooks.cpp.
     out.push_back({"fable2_60fps", s.patch_60fps ? "true" : "false",
                    "[Xenia/Margen67] 60 fps"});

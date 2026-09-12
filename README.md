@@ -250,6 +250,17 @@ go undocumented.
 on-screen readouts; F9 switches the texture pack on and off without opening a
 menu; Escape quits and saves the settings; F4 is the runtime's own cvar browser.
 
+**Frame rate.** With the 60 fps patch on, this port holds a locked 60 in town
+at 2x supersampling on a 5090 (0.0.15). What made it 17 to 45 before was not
+the game's code: the runtime drained the whole GPU queue for every shader
+memory export, five times a frame, and slept in millisecond steps while
+polling the game's own wait packets. Both are fixed in the plugin this port
+ships. Two settings still cost frames if left on: texture dumping (a tool for
+making a pack, it hashes and writes every new texture on the render thread)
+and 3x supersampling. The F8 counter's first number is the game's own rate;
+the log's `[swap]` line has the frame-time percentiles, and `[gpu] fence
+waits` says who waited on the GPU and for how long.
+
 Display
 - **Fullscreen** - borderless fullscreen on the chosen monitor.
 - **Monitor** - which display to open on, listed with each display's size.

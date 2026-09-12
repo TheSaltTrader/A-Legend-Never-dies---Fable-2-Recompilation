@@ -18,6 +18,45 @@
 #pragma comment(lib, "shell32.lib")
 
 namespace fable2 {
+
+void RaiseTimerResolution() {
+  // NtSetTimerResolution rather than timeBeginPeriod: it goes to 0.5 ms where
+  // winmm stops at 1, and it needs no extra import library.
+  typedef LONG(NTAPI * NtSetTimerResolutionFn)(ULONG, BOOLEAN, PULONG);
+  typedef LONG(NTAPI * NtQueryTimerResolutionFn)(PULONG, PULONG, PULONG);
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  auto set_res = ntdll ? reinterpret_cast<NtSetTimerResolutionFn>(
+                             GetProcAddress(ntdll, "NtSetTimerResolution"))
+                       : nullptr;
+  auto query_res = ntdll ? reinterpret_cast<NtQueryTimerResolutionFn>(
+                               GetProcAddress(ntdll, "NtQueryTimerResolution"))
+                         : nullptr;
+  ULONG min_res = 0, max_res = 0, before = 0, actual = 0;
+  if (query_res) query_res(&min_res, &max_res, &before);
+  if (set_res) set_res(max_res ? max_res : 5000, TRUE, &actual);
+
+  // Windows 11 coalesces timers for processes it does not consider foreground
+  // work. A game with its window in front usually is, but say so explicitly.
+  struct PowerThrottling {
+    ULONG Version;
+    ULONG ControlMask;
+    ULONG StateMask;
+  } throttling{1, 0x4 /* PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION */, 0};
+  typedef BOOL(WINAPI * SetProcessInformationFn)(HANDLE, int, LPVOID, DWORD);
+  HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+  auto set_info = k32 ? reinterpret_cast<SetProcessInformationFn>(
+                            GetProcAddress(k32, "SetProcessInformation"))
+                      : nullptr;
+  const BOOL throttling_ok =
+      set_info ? set_info(GetCurrentProcess(), 4 /* ProcessPowerThrottling */, &throttling,
+                          sizeof(throttling))
+               : FALSE;
+  REXLOG_INFO("Timer resolution: {:.2f} ms before, {:.2f} ms granted (finest {:.2f}); "
+              "timer coalescing opt-out {}",
+              before / 10000.0, actual / 10000.0, max_res / 10000.0,
+              throttling_ok ? "accepted" : "not available");
+}
+
 namespace {
 
 std::wstring Widen(const std::string& s) {

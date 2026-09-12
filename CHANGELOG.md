@@ -3,6 +3,52 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.0.15 — 2026-09-12
+
+### Fixed - the frame rate: 17 to 45 fps in town, now a locked 60
+
+Three causes, found in order with the in-process sampler during play, and
+the last one was the frame.
+
+1. **Memexport readback drained the GPU five times a frame.** The game
+   exports data from shaders (memexport) about five times per frame. The
+   SDK's default reads every export back to guest memory, and on this title
+   every one of those readbacks waited for the entire GPU queue to finish
+   first. Named fence-wait statistics (new, `[gpu] fence waits in 5 s`)
+   showed 220 to 260 such drains every five seconds, 1.9 to 3.9 seconds of
+   every 5 spent in them, and the frame rate followed that number exactly:
+   38% waiting was 45 fps, 75% was 17. The SDK's double-buffered "fast"
+   path never applied, because it falls back to the drain whenever the
+   previous frame's copy is not complete yet, which is always. The port now
+   sets `readback_memexport=false`: a locked 60.0 in the same places, nothing
+   visibly wrong in play. If this game turns out to read exported data on the
+   CPU somewhere, the right fix is a one-frame-late copy, never the drain.
+2. **The game's wait packets were polled with millisecond sleeps.** The GPU
+   command thread services the game's "wait until this value changes"
+   packets, and with V-Sync on it slept a millisecond between polls; with
+   V-Sync off it yielded, which is why V-Sync off ran the same scenes at
+   60 to 73 (V-Sync off also raises the fake vblank to 1000 Hz, so that is not
+   a setting to play with). The poll is now a yield for the first two
+   milliseconds of any wait, whatever V-Sync says; longer waits still sleep.
+   Plugin change; the vblank stays at the refresh rate.
+3. **Texture dumping hashes and writes every new texture on the render
+   thread.** It was on in the settings file. In camera turns and loads, when
+   new textures arrive, its CRC was 9-17% of the GPU-command thread and the
+   file creates were on the same thread. Turned off in the settings; it is a
+   tool for making a pack, not a setting to leave on.
+
+Also: the process asks Windows for the 0.5 ms timer and opts out of timer
+coalescing (it already had the 0.5 ms, so this changed nothing here, but a
+machine without another requester would sleep in 15.6 ms steps). The
+sampler now names who asked for each wait two levels up
+(`waiting in: A, B`), which is what made the fence wait readable.
+
+What "like NG2" would have taken, since it was asked: nothing in the
+recompiled code. Both game threads sit at 100% of a core, but they are the
+game's own frame waits (a sleep-and-poll in `sub_82CBD098`, a spin in
+`sub_82B9BF90`); the frame was the runtime stopping to wait for the GPU. The
+GPU itself sat under 50% the whole time because the pipeline kept draining.
+
 ## 0.0.14 — 2026-09-12
 
 ### Fixed - 0.0.13's upload guard skipped every pack texture of an odd width

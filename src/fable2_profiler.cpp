@@ -35,6 +35,7 @@ struct Target {
   // suspended (see Sample()).
   std::unordered_map<uint64_t, uint32_t> leaf;       // rip -> samples
   std::unordered_map<uint64_t, uint32_t> guest_fn;   // host entry of first sub_ frame -> samples
+  std::unordered_map<uint64_t, uint32_t> waiter;     // first frame above ntdll/kernel32 -> samples
   uint32_t samples = 0;         // on-CPU samples: the thread ran since the last look
   uint32_t blocked = 0;         // wall-clock samples where it had not run at all
   uint64_t last_cycles = 0;
@@ -285,11 +286,17 @@ void Report(Target& t, double secs) {
   };
   top(t.guest_fn, "guest fn", 14);
   top(t.leaf, "leaf", 12);
+  // For samples sitting in a system call: who called it. "ntdll 90%" says
+  // the thread waits; this says on what - a fence, the guest's WAIT_REG_MEM
+  // poll, the ring buffer event - which is the difference between "the GPU is
+  // slow" and "we are sleeping in one-millisecond steps".
+  if (!t.waiter.empty()) top(t.waiter, "waiting in", 10);
   if (t.no_guest_frame)
     REXLOG_INFO("[profile]   {} samples ({:.0f}%) had no guest frame on the stack", t.no_guest_frame,
                 100.0 * t.no_guest_frame / t.samples);
   t.leaf.clear();
   t.guest_fn.clear();
+  t.waiter.clear();
   t.samples = 0;
   t.blocked = 0;
   t.no_guest_frame = 0;
@@ -335,7 +342,21 @@ void SamplerMain(std::vector<std::string> wanted) {
       if (n <= 0) continue;
       ++t.samples;
       ++t.leaf[frames[0]];
-      ++t.by_module[ClassOf(frames[0])];
+      const ModuleClass leaf_class = ClassOf(frames[0]);
+      ++t.by_module[leaf_class];
+      if (leaf_class == kNtdll || leaf_class == kKernel32 || leaf_class == kOther) {
+        // Walk up past the system's own frames to whoever asked for the wait,
+        // and count its caller too: "CheckSubmissionFence" alone does not say
+        // whether a frame is pacing itself or a readback is draining the GPU.
+        int found = 0;
+        for (int i = 1; i < n && found < 2; ++i) {
+          const ModuleClass c = ClassOf(frames[i]);
+          if (c != kNtdll && c != kKernel32 && c != kOther && c != kUnknown) {
+            ++t.waiter[frames[i]];
+            ++found;
+          }
+        }
+      }
       const GuestFn* g = nullptr;
       for (int i = 0; i < n && !g; ++i) g = GuestFnFor(frames[i]);
       if (g)

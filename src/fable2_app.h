@@ -361,6 +361,7 @@ class Fable2App : public rex::ReXApp {
     MaybeWriteDiagnostics();
     ArmQuitSeam();
     ArmTexpackStressSeam();
+    fable2::RaiseTimerResolution();
     fable2::StartProfiler();  // FABLE2_PROFILE=1: sample the guest threads
     // Per-region texture warming needs to know which region is loading, and
     // the game says so through the audio bank it opens for it. The path the
