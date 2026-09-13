@@ -171,6 +171,15 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 13:50 The frame-rate collapse: same-save A/B at the lake, 16:9,
+  100% = 33 fps, 400% = 30 fps, both with ~5,000 resolve-readback waits per
+  5 s (2.4 s). Not the draw distance and not the dump: the run's config
+  line said `readback_resolve = full` - the Black texture fix at full,
+  set that morning on the port's own advice for the purple flashes. Full
+  waits for the whole GPU on every resolve (IssueCopy_ReadbackResolvePath,
+  the non-delayed branch). Back at some: the same spot holds 59-60 fps at 100% and at 200% draw distance with no resolve-readback waits at all, where "full" gave 33. The fast/some
+  first-seen-address drain got a per-frame budget on the way
+  (readback_resolve_sync_budget, deferred copies from BeginSubmission).
 - 2026-09-13 13:10 Disk full twice: the texture dump. 193,458 raw files
   (99.8 GB), 101,493 of them from one hour of play with dumping on at 400%
   draw distance - the dump's dedupe was per session and keyed by address.

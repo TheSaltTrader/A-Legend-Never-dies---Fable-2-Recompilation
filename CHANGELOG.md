@@ -3,6 +3,34 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.15 — 2026-09-13 (branch `tu1`)
+
+### Fixed - the frame-rate collapse was the Black texture fix at "full"
+
+The lake ran at 33 fps at 100% draw distance and 30 fps at 400%, and the
+user saw 12-15 fps in towns: in every one of those runs the render thread
+spent 2.4 s of every 5 s in resolve-readback waits, about a thousand a
+second. The settings had the Black texture fix at "full" (set that
+morning on the port's own advice, to test the purple flashes at the
+lake). "Full" waits for the entire GPU queue on every resolve, and the
+lake's reflections and tree impostors resolve about a thousand times a
+second. Back at "some" the same spot holds 59-60 fps at 100% and at 200% draw distance with no resolve-readback waits at all, where "full" gave 33. The help for that row now carries
+the number, and "full" is called what it is: a diagnostic. Draw distance
+was not the lake's problem; it still costs frame rate in dense towns
+(47 fps at 400% where 100% holds 60) and can make the streamer late, and
+the slider's help now says so with the 150-200 sweet spot.
+
+### Changed - resolve readbacks at "fast" and "some" no longer drain the GPU for every new address
+
+In those two modes the first resolve at an address the plugin had not
+seen also waited for the whole queue before its copy. The plugin now
+allows a budget of such synchronous copies per frame
+(`readback_resolve_sync_budget`, 8) and copies the rest into guest memory
+when their submission completes, a frame or two later, without waiting.
+A safety for high draw distances rather than a measured gain at "some".
+The texture dump also caps a session at 4,000 raw files (about 2 GB): the
+20,000 cap let one run write 11 GB. Plugin pair: rexgpu-xenos.dll 6567936 B (2026-09-13 12:37) with the unchanged rexruntime.dll 11,031,552 B.
+
 ## 0.1.14 — 2026-09-13 (branch `tu1`)
 
 ### Fixed - the texture dump no longer refills the disk

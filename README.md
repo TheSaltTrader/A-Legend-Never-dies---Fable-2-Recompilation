@@ -347,7 +347,9 @@ Enhancements
   applies to the swap image.
 - **Anisotropic filtering** - leave the game's own samplers alone, or force a level.
 - **Graphics engine** - DirectX 12 or Vulkan; Vulkan needs a plugin built with it.
-- **Black texture fix** - the graduated readback (none / fast / some / full)
+- **Black texture fix** - the graduated readback (none / fast / some / full;
+  full waits for the whole GPU on every resolve and halves the frame rate at
+  the lake - a diagnostic, not a setting to play with)
   for the hero and dog turning black at adulthood; `some` is the fix.
 - **Dither the output** - dither the 10 bpc output down to 8 bpc.
 
