@@ -75,6 +75,13 @@ the first suspect; if something misbehaves around register saves, v65.
 
 ## Log
 
+- 2026-09-13 00:xx v0.1.3: the pack is content-addressed (plugin), the
+  resolve-at-load path records the stage, and the post-logo blank screen
+  is gone: `FABLE2_PROFILE=all` showed 'Front end audio loading' 99.6% in
+  sub_82CC8880 (Sleep(ms, alertable): r3 ms, x-10000 -> KeDelayExecution)
+  - 400 ms after each of 29 bank reads. Hook at 0x82CC8898 shortens it on
+  audio-loading threads: banks 11.6 s -> 0.1 s. The hook logs other long
+  sleeps once; only a 100 ms one on GameThread appeared at boot.
 - 2026-09-12 19:25 PROFILE (Bowerstone Market, save spot, 2x): GameThread
   guest 23% / syscalls 70% (NtYieldExecution -> ZwDelayExecution: it waits
   for the frame by yielding; hottest guest fn sub_82CC38E8 = the yield

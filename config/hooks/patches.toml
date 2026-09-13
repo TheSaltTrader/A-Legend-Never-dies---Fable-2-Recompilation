@@ -148,3 +148,24 @@ address = 0x82BA1FE4
 name = "fable2PatchGpuWaitYield"
 registers = ["r11"]
 after_instruction = false
+
+# --- Sound-bank load sleep -----------------------------------------------------
+# Not a community patch. After the logos the game shows a blank frame for
+# ~12 s while its "Front end audio loading" thread loads 29 sound banks;
+# each read takes a millisecond and is followed by a 400 ms sleep
+# (FABLE2_PROFILE=all, 2026-09-12: that thread 99.6% in sub_82CC8880 ->
+# XThread::Delay). sub_82CC8880 is the game's Sleep(ms, alertable):
+#
+#   0x82CC8880  mflr r12 ... stwu r1, -0x70(r1)
+#   0x82CC8894  mr r31, r4
+#   0x82CC8898  cmpwi cr6, r3, -1          <- hooked BEFORE: r3 = milliseconds
+#   0x82CC88A0  clrldi r11, r3, 32 ; mulli r11, r11, -10000  (100 ns units)
+#
+# The hook shortens a 400 ms sleep to 1 ms on threads whose name says they
+# load audio, and logs every other sleep of 100 ms or more once per
+# (thread, duration), so the next such wait names itself in the log.
+[[midasm_hook]]
+address = 0x82CC8898
+name = "fable2PatchBankLoadSleep"
+registers = ["r3"]
+after_instruction = false

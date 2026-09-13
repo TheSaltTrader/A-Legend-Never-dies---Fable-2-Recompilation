@@ -72,6 +72,33 @@ before. **Whether the game opens those banks per region rather than all at
 boot has not been observed yet** - every open is logged at debug level as
 `[stage] open #N` for exactly that check.
 
+## The pack is content-addressed (2026-09-12)
+
+A session with the finished 28,587-file pack made ZERO replacements: no
+`[texpack] N replacements` line, no stage list, no warming bar, F9 with no
+visible change. The pack file's id (`TexturePackId`) carries the texture's
+ADDRESS in its high bits, and Fable II streams: the same texture lands at a
+different address on every visit. The dump index says how bad that is -
+of 35,545 distinct contents, 13,080 had been filed under two or more ids,
+one 128x128 texture under six - so a lookup that needed the address to
+match missed almost everything, and the 3,173 older files (dumped on the
+disc build's memory layout) could never match the update build at all.
+
+The plugin now indexes the folder by content hash as well (hash -> the file
+ids that carry it) and a lookup takes any file whose hash matches the bytes
+in memory AND whose shape bits (height, width, tiling, format: bits 0..39
+of the id) equal the lookup's - the address bits above 40 are ignored.
+File names are unchanged, so nothing is re-upscaled or migrated, and the
+stage lists record the FILE that was served rather than the address the
+game used, so warming opens files that exist. Resolve-at-load and the
+pre-content sizing use the same rule. NG2 keeps its collision fix (a
+different texture at the same address still misses) and gains the same
+address independence. The resolve-at-load path also records the stage now:
+it had never called `StageNote`, so once it carried the pack no stage list
+was written and the warming bar could not appear - the first content-
+addressed run served 1,000 textures at the lake and still wrote no list.
+`patches/rexglue-texpack-content-addressed.patch`.
+
 ## Ids carry a content hash (2026-09-11, ported from NG2)
 
 The plugin's texture id (`TexturePackId` in

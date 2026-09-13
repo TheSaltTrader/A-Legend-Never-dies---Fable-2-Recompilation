@@ -183,6 +183,10 @@ std::vector<std::string> WantedNames() {
   if (!env || !*env) return out;
   std::string s = env;
   if (s == "1") s = "GameThread,3D Engine";
+  // "all": every guest thread - the runtime names them "<name> (F8xxxxxx)".
+  // The boot loader turned out to be a thread neither default name covers
+  // (2026-09-12: 400 ms per sound bank on a thread nobody was sampling).
+  if (s == "all") s = "*";
   size_t start = 0;
   while (start <= s.size()) {
     size_t comma = s.find(',', start);
@@ -230,7 +234,9 @@ void RefreshTargets(const std::vector<std::string>& wanted, std::vector<Target>&
       // "GameThread (F8000004)" - so match the name as a prefix.
       bool want = false;
       for (const std::string& w : wanted)
-        if (name == w || name.rfind(w + " (", 0) == 0) want = true;
+        if (name == w || name.rfind(w + " (", 0) == 0 ||
+            (w == "*" && name.find(" (F8") != std::string::npos))
+          want = true;
       if (!want) {
         static int listed = 0;
         if (!name.empty() && listed < 40) {

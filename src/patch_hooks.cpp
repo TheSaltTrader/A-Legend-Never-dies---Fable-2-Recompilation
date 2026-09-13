@@ -12,6 +12,10 @@
 #include <rex/system/kernel_state.h>
 
 #include <cstring>
+#include <mutex>
+#include <set>
+#include <string>
+#include <utility>
 
 #include <windows.h>
 
@@ -42,6 +46,10 @@ REXCVAR_DEFINE_BOOL(fable2_high_tick_rate, false, "Fable II",
 // Not a community patch: ours (2026-09-12). See patches.toml for the site.
 REXCVAR_DEFINE_BOOL(fable2_skip_boot_logos, false, "Fable II",
                     "Start without the Microsoft and Lionhead logo videos");
+
+// Ours (2026-09-12): the audio loader's 400 ms sleep per sound bank.
+REXCVAR_DEFINE_BOOL(fable2_fast_bank_load, false, "Fable II",
+                    "Shorten the 400 ms sleep the game takes after each sound bank");
 
 // Ours (2026-09-12): the render thread's GPU progress poll yields instead of
 // spinning through no-ops. See patches.toml for the profile that found it.
@@ -175,4 +183,58 @@ void fable2PatchGpuWaitYield(PPCRegister& r11) {
     REXLOG_INFO("Patch: GPU progress poll yields instead of spinning");
   }
   SwitchToThread();
+}
+
+namespace {
+
+// The host thread's description, read once per thread: the runtime names
+// guest threads "<name> (F8xxxxxx)" and the audio loader is
+// "Front end audio loading". Cached thread-locally so a sleep costs no
+// syscall after the first.
+const std::string& CurrentThreadName() {
+  thread_local std::string name;
+  thread_local bool read = false;
+  if (!read) {
+    read = true;
+    typedef HRESULT(WINAPI * GetDescFn)(HANDLE, PWSTR*);
+    static GetDescFn get_desc = reinterpret_cast<GetDescFn>(
+        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription"));
+    PWSTR desc = nullptr;
+    if (get_desc && SUCCEEDED(get_desc(GetCurrentThread(), &desc)) && desc) {
+      char narrow[256] = {};
+      WideCharToMultiByte(CP_UTF8, 0, desc, -1, narrow, sizeof(narrow), nullptr, nullptr);
+      LocalFree(desc);
+      name = narrow;
+    }
+  }
+  return name;
+}
+
+}  // namespace
+
+// Sleep(ms) at its entry. 400 ms on an audio-loading thread becomes 1 ms:
+// the read it follows took a millisecond, and nothing waits on the other
+// side of the sleep but the next bank. Everything else 100 ms or longer is
+// logged once per (thread, duration) and left alone.
+void fable2PatchBankLoadSleep(PPCRegister& r3) {
+  if (!REXCVAR_GET(fable2_fast_bank_load)) return;
+  const uint32_t ms = r3.u32;
+  if (ms == 0xFFFFFFFFu || ms < 100) return;
+  const std::string& thread = CurrentThreadName();
+  const bool audio_loader = thread.find("audio loading") != std::string::npos;
+  if (audio_loader && ms == 400) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      REXLOG_INFO("Patch: sound-bank load sleep 400 ms -> 1 ms on '{}'", thread);
+    }
+    r3.u32 = 1;
+    return;
+  }
+  static std::mutex mutex;
+  static std::set<std::pair<std::string, uint32_t>> seen;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (seen.size() < 40 && seen.insert({thread, ms}).second) {
+    REXLOG_INFO("Sleep {} ms on '{}' (first time; left alone)", ms, thread);
+  }
 }

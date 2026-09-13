@@ -203,6 +203,10 @@ struct Fable2Tuning {
     // (the player asked to be able to keep the logos, 2026-09-12).
     out.push_back({"fable2_skip_boot_logos", s.skip_logos ? "true" : "false",
                    "start without the Microsoft and Lionhead logo videos"});
+    // Ours: the audio loader's 400 ms sleep per sound bank (patch_hooks.cpp).
+    // Always on; FABLE2_TUNE=fable2_fast_bank_load=false is the A/B.
+    out.push_back({"fable2_fast_bank_load", "true",
+                   "shorten the 400 ms sleep after each sound bank load"});
     // Ours: the render thread's GPU progress poll yields (patch_hooks.cpp).
     // OFF: measured neutral (Bowerstone Market, profiled, 2026-09-12 - 57-59
     // fps either way, and SwitchToThread returns at once, so the thread

@@ -3,6 +3,46 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.3 — 2026-09-12 (branch `tu1`)
+
+### Fixed - the texture pack matches by content, not by address
+
+The first session with the finished pack (28,587 files) made zero
+replacements, which is why F9 showed no change and no warming bar ever
+appeared. A pack file is named by the texture's id plus its content hash,
+and the id carries the texture's memory address; Fable II streams, so the
+same texture lands at a different address on every visit (in the dump,
+13,080 of 35,545 contents had been filed under two or more ids). The GPU
+plugin now matches on the content hash plus the shape bits of the id and
+ignores the address; file names, the dump and the upscaler are untouched,
+and the stage lists name the file that was served so warming reads real
+files. Shared with the NG2 port, which keeps its collision safety and
+gains the same independence. `docs/TEXTURE_PACK.md`, "The pack is
+content-addressed"; `patches/rexglue-texpack-content-addressed.patch`.
+
+### Fixed - the blank screen after the logos (11.6 s of sleeping)
+
+With the logos skipped, a blank frame stayed for about twelve seconds
+before the title screen. With a warm disk cache the game still spent
+exactly 400 ms per sound bank, 29 banks, doing nothing after a one-
+millisecond read: its "Front end audio loading" thread was 99.6 percent
+inside the game's own Sleep wrapper (sub_82CC8880, milliseconds in r3),
+found by profiling every guest thread (`FABLE2_PROFILE=all` is new; the
+default two threads never showed the loader). A hook at that wrapper's
+entry turns a 400 ms sleep into 1 ms on any thread whose name says it
+loads audio, and logs every other sleep of 100 ms or more once per
+thread and duration so the next such wait names itself. The banks now
+load in 0.1 s. `fable2_fast_bank_load`, on;
+`FABLE2_TUNE=fable2_fast_bank_load=false` is the A/B.
+
+### Verified - the warming lists are written again
+
+Two scripted loads on the content-addressed plugin wrote `stages/ch04.txt`
+(Bower Lake, 320 textures) and `ch06.txt` (Bowerstone Market); the first
+visit to a region writes its list, every visit after that shows the blue
+warming bar. The first content-addressed run also served 1,000 pack
+textures at the lake where the address-keyed lookup had served none.
+
 ## 0.1.2 — 2026-09-12 (branch `tu1`)
 
 ### Fixed - vector register 96 is shared (the flashing foliage)

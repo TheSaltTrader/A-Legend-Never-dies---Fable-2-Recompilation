@@ -1,0 +1,199 @@
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -385,6 +385,26 @@
+ static std::string g_texpack_index_dir;
+ static std::unordered_map<uint64_t, std::vector<uint32_t>> g_texpack_index;
+ static int g_texpack_legacy = 0;               // <id>.tex files, ignored
++// [texpack] Content-addressed. The id carries the texture's ADDRESS in its
++// high bits, and a game that streams puts the same texture at a different
++// address on every visit: in Fable II's dump 13,080 of 35,545 distinct
++// contents had been filed under two or more ids, one 128x128 under six. A
++// lookup that needed the address to match therefore missed nearly
++// everything - a session with a 28,587-file pack made zero replacements
++// (2026-09-12). The pixels and the shape identify a texture; where the game
++// happened to put it does not. So: hash -> the file ids that carry that
++// content, and a match is any of them whose shape bits equal the lookup's.
++// File names are unchanged, so NG2's packs and Fable II's need no migration.
++static std::unordered_map<uint32_t, std::vector<uint64_t>> g_texpack_by_hash;
++// shape -> one (file id, hash) of that shape: sizing before content is known.
++static std::unordered_map<uint64_t, std::pair<uint64_t, uint32_t>> g_texpack_by_shape;
++// runtime id -> the (file id, hash) it was served from, so the stage list
++// names files that exist rather than addresses that will not recur.
++static std::unordered_map<uint64_t, std::pair<uint64_t, uint32_t>> g_texpack_file_of;
++// TexturePackId puts height, width, tiling and format in bits 0..39; the
++// address (base_page) starts at bit 40 and the pitch at 48. Below 40 is shape.
++static constexpr uint64_t kTexturePackShapeMask = (uint64_t(1) << 40) - 1;
++static uint64_t TexturePackShape(uint64_t id) { return id & kTexturePackShapeMask; }
+ // Hash of the texture currently in guest memory, by id. Written when a texture
+ // is CREATED (the bytes are read then anyway), reused by the load and view
+ // lookups of that same texture so the bytes are hashed once, not three times.
+@@ -397,6 +417,8 @@
+   if (dir == g_texpack_index_dir)
+     return;
+   g_texpack_index.clear();
++  g_texpack_by_hash.clear();
++  g_texpack_by_shape.clear();
+   g_texpack_index_dir = dir;
+   g_texpack_legacy = 0;
+   int hashed = 0;
+@@ -410,6 +432,8 @@
+       const uint64_t id = std::strtoull(stem.substr(0, 16).c_str(), nullptr, 16);
+       const uint32_t hash = uint32_t(std::strtoul(stem.substr(17, 8).c_str(), nullptr, 16));
+       g_texpack_index[id].push_back(hash);
++      g_texpack_by_hash[hash].push_back(id);
++      g_texpack_by_shape.emplace(TexturePackShape(id), std::make_pair(id, hash));
+       ++hashed;
+     } else if (stem.size() == 16) {
+       ++g_texpack_legacy;
+@@ -462,11 +486,23 @@
+     return w != 0 && h != 0;
+   }
+   uint32_t rw = 0, rh = 0;
++  uint64_t file_id = 0;
++  uint32_t file_hash = 0;
+   auto ix = g_texpack_index.find(id);
+   if (ix != g_texpack_index.end() && !ix->second.empty()) {
++    file_id = id;
++    file_hash = ix->second.front();
++  } else if (auto sh = g_texpack_by_shape.find(TexturePackShape(id));
++             sh != g_texpack_by_shape.end()) {
++    // Every file of this shape was upscaled from the same source size, so
++    // any of them says how big the resource must be.
++    file_id = sh->second.first;
++    file_hash = sh->second.second;
++  }
++  if (file_id) {
+     char p[600];
+     std::snprintf(p, sizeof(p), "%s/%016llX-%08X.tex", dir.c_str(),
+-                  (unsigned long long)id, ix->second.front());
++                  (unsigned long long)file_id, file_hash);
+     std::ifstream f(p, std::ios::binary);
+     uint8_t head[16] = {};
+     if (f && f.read(reinterpret_cast<char*>(head), sizeof(head)) &&
+@@ -526,6 +562,7 @@
+     g_texpack_hash[id] = hash;
+   }
+   const TexturePackKey key{id, hash};
++  uint64_t file_id = 0;
+   {
+     std::lock_guard<std::mutex> lock(g_texpack_mutex);
+     TexturePackIndexBuild(dir);
+@@ -534,26 +571,37 @@
+     auto it = g_texpack_present.find(key);
+     if (it != g_texpack_present.end())
+       return &it->second;
+-    auto ix = g_texpack_index.find(id);
+-    if (ix == g_texpack_index.end() ||
+-        std::find(ix->second.begin(), ix->second.end(), hash) == ix->second.end()) {
++    // Content first: any file with these pixels and this shape, whatever
++    // address it was dumped at.
++    if (auto bh = g_texpack_by_hash.find(hash); bh != g_texpack_by_hash.end()) {
++      const uint64_t shape = TexturePackShape(id);
++      for (uint64_t fid : bh->second) {
++        if (TexturePackShape(fid) == shape) {
++          file_id = fid;
++          break;
++        }
++      }
++    }
++    if (!file_id) {
+       g_texpack_absent.insert(key);
+-      // The id is in the pack but with other pixels: another texture shares
+-      // this address. Say so once, because "the pack skipped one texture" is
++      // The id is in the pack but with other pixels and nothing else carries
++      // these pixels: say so once, because "the pack skipped one texture" is
+       // otherwise indistinguishable from "the pack never covered it".
++      auto ix = g_texpack_index.find(id);
+       if (ix != g_texpack_index.end() && g_texpack_collisions_logged.insert(id).second) {
+         REXLOG_INFO("[texpack] {:016X}: {} pack file(s) carry this id but none matches the "
+-                    "texture in memory (hash {:08X}) - another texture shares its address; "
++                    "texture in memory (hash {:08X}) and no file carries that content; "
+                     "the game's own texture is used",
+                     id, ix->second.size(), hash);
+       }
+       return nullptr;
+     }
++    g_texpack_file_of[id] = {file_id, hash};
+   }
+ 
+   char path[512];
+   std::snprintf(path, sizeof(path), "%s/%016llX-%08X.tex", dir.c_str(),
+-                (unsigned long long)id, hash);
++                (unsigned long long)file_id, hash);
+   // "NG2T", u32 version, u32 width, u32 height, then raw RGBA. Raw rather than
+   // PNG because decoding cost ~16ms per texture on the RENDER THREAD - see the
+   // comment on the upload below.
+@@ -1276,6 +1324,9 @@
+         g_texpack_absent.clear();
+         g_texpack_hash.clear();
+         g_texpack_index.clear();
++        g_texpack_by_hash.clear();
++        g_texpack_by_shape.clear();
++        g_texpack_file_of.clear();
+         g_texpack_dims.clear();
+         g_texpack_index_dir.clear();          // re-walk the folder on the next lookup
+         g_texpack_collisions_logged.clear();
+@@ -2348,18 +2399,26 @@
+   // Match against the in-memory index first: the tens of thousands of per-stage
+   // loads whose content is not in the pack never touch the disk.
+   const uint64_t id = TexturePackId(key);
+-  bool have_file = false;
++  uint64_t file_id = 0;
+   {
+     std::lock_guard<std::mutex> lock(g_texpack_mutex);
+     TexturePackIndexBuild(dir);
+-    auto it = g_texpack_index.find(id);
+-    if (it != g_texpack_index.end())
+-      have_file = std::find(it->second.begin(), it->second.end(), hash) != it->second.end();
++    if (auto bh = g_texpack_by_hash.find(hash); bh != g_texpack_by_hash.end()) {
++      const uint64_t shape = TexturePackShape(id);
++      for (uint64_t fid : bh->second) {
++        if (TexturePackShape(fid) == shape) {
++          file_id = fid;
++          break;
++        }
++      }
++    }
++    if (file_id)
++      g_texpack_file_of[id] = {file_id, hash};
+   }
+-  if (!have_file) { retire_current(); return; }
++  if (!file_id) { retire_current(); return; }
+   char p[600];
+   std::snprintf(p, sizeof(p), "%s/%016llX-%08X.tex", dir.c_str(),
+-                (unsigned long long)id, hash);
++                (unsigned long long)file_id, hash);
+   uint32_t w = 0, h = 0;
+   {
+     std::ifstream hf(p, std::ios::binary);
+@@ -2459,6 +2518,11 @@
+   g_texpack_uploads.emplace_back(command_processor_.GetCurrentSubmission(), std::move(upload));
+   texture.SetTexpackResource(res, hash);
+   texture.ClearSRVDescriptors();
++  // Which stage used this file, for the per-region warming. StageNote lived
++  // only in the upload path, and once resolve-at-load carried the pack that
++  // path served nothing, so no stage list was ever written and the warming
++  // bar never appeared (2026-09-12). The file served is what gets listed.
++  StageNote(dir, REXCVAR_GET(texture_pack_chapter), file_id, hash);
+   {
+     static std::atomic<uint32_t> built{0};
+     const uint32_t n = ++built;
+@@ -2741,8 +2805,17 @@
+     // there is wasted I/O.
+     {
+       const uint64_t stage_id = TexturePackId(texture.key());
++      uint64_t file_id = stage_id;
++      uint32_t file_hash = TexturePackHashFor(stage_id);
++      {
++        std::lock_guard<std::mutex> lock(g_texpack_mutex);
++        if (auto fo = g_texpack_file_of.find(stage_id); fo != g_texpack_file_of.end()) {
++          file_id = fo->second.first;
++          file_hash = fo->second.second;
++        }
++      }
+       StageNote(rex::cvar::Query<std::string>("texture_pack_path"),
+-                REXCVAR_GET(texture_pack_chapter), stage_id, TexturePackHashFor(stage_id));
++                REXCVAR_GET(texture_pack_chapter), file_id, file_hash);
+     }
+ 
+     // Which textures are uploaded AGAIN AND AGAIN. One session showed 9300
