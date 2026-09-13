@@ -33,6 +33,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "fable2_keyremap.h"
 #include "fable2_settings.h"
 
 struct Fable2Tuning {
@@ -236,10 +237,15 @@ struct Fable2Tuning {
     // the game at all - a bare Shift+Down does not move a menu cursor while
     // the unmodified left-stick keys do. The arrow keys are free: the left
     // stick is on WASD.
-    out.push_back({"keybind_dpad_up", "Up", "plain arrows, not Shift+Arrow"});
-    out.push_back({"keybind_dpad_down", "Down", "plain arrows"});
-    out.push_back({"keybind_dpad_left", "Left", "plain arrows"});
-    out.push_back({"keybind_dpad_right", "Right", "plain arrows"});
+    // Every action the keyboard driver binds: the player's binding from the
+    // Keyboard bindings screen, or the port's default (fable2_keyremap.cpp;
+    // the D-pad on plain arrows, as this port always had it).
+    {
+      size_t count = 0;
+      const fable2::KeyAction* actions = fable2::KeyActions(&count);
+      for (size_t i = 0; i < count; ++i)
+        out.push_back({actions[i].cvar, fable2::KeyBinding(s, actions[i]), actions[i].label});
+    }
 
     if (!mappings_file.empty()) {
       // The runtime resolves this against the working directory, so a shortcut

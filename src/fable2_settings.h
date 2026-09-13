@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 
 #include <rex/filesystem.h>
@@ -225,6 +226,11 @@ struct Fable2Settings {
   // Drive the guest pad from keyboard and mouse. Off by default in the
   // runtime, which is a surprising default for a PC port.
   bool keyboard_control = false;
+  // Key bindings the player changed on the Keyboard bindings screen, by the
+  // runtime's cvar name ("keybind_a" -> "Semicolon,Space"). Only what was
+  // changed is here; fable2_keyremap.cpp holds the defaults, and the tuning
+  // emits every action from one or the other.
+  std::map<std::string, std::string> keybinds;
   bool mouse_look = false;         // mnk_mouse: mouse drives the right stick
   double mouse_sensitivity = 1.0;  // 0.01..10
 
@@ -321,7 +327,10 @@ struct Fable2Settings {
         << "cursor_hide_seconds=" << cursor_hide_seconds << "\n"
         << "mute=" << (mute ? 1 : 0) << "\n"
         << "audio_queue_frames=" << audio_queue_frames << "\n"
-        << "keyboard_control=" << (keyboard_control ? 1 : 0) << "\n"
+        << "keyboard_control=" << (keyboard_control ? 1 : 0) << "\n";
+    for (const auto& kv : keybinds)
+      out << kv.first << "=" << kv.second << "\n";
+    out
         << "mouse_look=" << (mouse_look ? 1 : 0) << "\n"
         << "mouse_sensitivity=" << mouse_sensitivity << "\n"
         << "game_path=" << game_path << "\n"
@@ -425,6 +434,7 @@ struct Fable2Settings {
     else if (k == "audio_queue_frames") audio_queue_frames = std::atoi(v.c_str());
     else if (k == "cursor_hide_seconds") cursor_hide_seconds = std::atoi(v.c_str());
     else if (k == "keyboard_control") keyboard_control = Truthy(v);
+    else if (k.rfind("keybind_", 0) == 0) keybinds[k] = v;
     else if (k == "mouse_look") mouse_look = Truthy(v);
     else if (k == "mouse_sensitivity") mouse_sensitivity = std::atof(v.c_str());
     else if (k == "game_path") game_path = v;

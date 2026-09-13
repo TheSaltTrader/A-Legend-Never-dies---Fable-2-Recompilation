@@ -275,6 +275,11 @@ Display
   hides; 0 keeps it visible.
 - **Keyboard and mouse** - drives the guest controller from the keyboard
   (Enter is Start, Space is A, WASD the left stick, arrows the d-pad).
+  **Remap keys...** opens the Keyboard bindings screen: every controller
+  action with the keys that press it; Set replaces with the next key you
+  press, Add adds an alternative, Clear empties it, modifiers held while
+  pressing become Shift+/Ctrl+/Alt+ prefixes. Applied live, saved as
+  `keybind_<action>=` lines in the settings file.
 - **Mouse look** / **Mouse sensitivity** - the mouse drives the right stick,
   and how far it deflects per unit of movement.
 

@@ -202,6 +202,9 @@ struct PageOptions {
   // The App's texture run, borrowed by whichever screen is drawing the
   // Textures section. Null hides the section's controls.
   TextureJob* tex_job = nullptr;
+  // Opens the Keyboard bindings screen; only the in-game overlay has one
+  // (the setup screen runs before the window the capture listens to).
+  std::function<void()> on_remap;
 };
 
 // Marks a row that will not take effect until the next launch. Drawn after the
@@ -1027,9 +1030,13 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     RowStart("Keyboard and mouse",
              "Drives the guest controller from the keyboard. The runtime has "
              "the driver but leaves it off, so without this only a real pad "
-             "works. Bindings are on the F4 screen under Input / Keybinds - "
-             "Enter is Start and Semicolon or Space is A.");
+             "works. Remap keys... opens a screen with every action and the "
+             "keys that press it; press a key to bind it. Out of the box: "
+             "Enter is Start, Semicolon or Space is A, WASD the left stick, "
+             "arrows the right stick and the D-pad.");
     changed |= ImGui::Checkbox("##mnk", &s.keyboard_control);
+    ImGui::SameLine();
+    if (opts.on_remap && ImGui::Button("Remap keys...")) opts.on_remap();
 
     // The mouse rows only mean anything once the keyboard driver is on, so
     // they follow its state rather than sitting there inert.
@@ -2039,11 +2046,13 @@ void SetupScreen::DrawFooter(float column_width) {
 SettingsOverlay::SettingsOverlay(rex::ui::ImGuiDrawer* drawer,
                                  Fable2Settings* settings, rex::ui::Window* window,
                                  std::function<void()> on_advanced,
+                                 std::function<void()> on_remap,
                                  TextureJob* tex_job)
     : ImGuiDialog(drawer),
       settings_(settings),
       window_(window),
       on_advanced_(std::move(on_advanced)),
+      on_remap_(std::move(on_remap)),
       tex_job_(tex_job) {}
 
 SettingsOverlay::~SettingsOverlay() {
@@ -2069,6 +2078,7 @@ void SettingsOverlay::OnDraw(ImGuiIO& io) {
                                     ImGuiWindowFlags_NoSavedSettings);
   if (visible) {
     PageOptions opts;
+    opts.on_remap = on_remap_;
     opts.restart_bound_editable = false;
     opts.tex_job = tex_job_;
 

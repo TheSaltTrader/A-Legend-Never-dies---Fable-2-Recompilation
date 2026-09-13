@@ -3,6 +3,22 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.4 — 2026-09-13 (branch `tu1`)
+
+### Added - a Keyboard bindings screen
+
+"Remap keys..." beside the Keyboard-and-mouse switch opens a screen with
+all 25 controller actions the runtime's keyboard driver knows and the
+keys bound to each. Set replaces the binding with the next key pressed,
+Add adds an alternative, Clear empties it, Defaults restores the port's
+defaults; Shift, Ctrl or Alt held while pressing become prefixes, Escape
+cancels. The capture reads the window's own key events above ImGui, so
+what is written is the exact key name the driver compares against. A
+binding applies the moment it is set (the driver reads its cvars on every
+poll) and is saved as `keybind_<action>=` in the settings file; the
+tuning emits every action from the player's binding or the default. The
+bindings used to live only on the SDK's F4 page as raw strings.
+
 ## 0.1.3 — 2026-09-12 (branch `tu1`)
 
 ### Fixed - the texture pack matches by content, not by address

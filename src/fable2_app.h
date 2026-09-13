@@ -38,6 +38,7 @@
 #include "fable2_hwdetect.h"
 #include "fable2_perf.h"
 #include "fable2_texnotify.h"
+#include "fable2_keyremap.h"
 #include "fable2_diagnostics.h"
 #include "fable2_stage.h"
 #include "fable2_crashdump.h"
@@ -486,7 +487,7 @@ class Fable2App : public rex::ReXApp {
           }
           overlay_ = std::make_unique<fable2::SettingsOverlay>(
               drawer, &settings_, window(), [this] { ToggleAdvancedSettings(); },
-              &tex_job_);
+              [this, drawer] { ShowKeyRemap(drawer); }, &tex_job_);
         });
   }
 
@@ -530,6 +531,23 @@ class Fable2App : public rex::ReXApp {
  private:
   // The SDK's cvar browser: the honest "everything else" surface, because it
   // enumerates the registry rather than a hand-written list.
+  // The Keyboard bindings screen. Made once, on first use, and kept: it
+  // listens to the window for the capture, and a binding it sets goes to
+  // the runtime at once (the driver reads the cvars on every poll) and into
+  // the settings file.
+  void ShowKeyRemap(rex::ui::ImGuiDrawer* drawer) {
+    if (!key_remap_) {
+      key_remap_ = std::make_unique<fable2::KeyRemapScreen>(
+          drawer, &settings_, window(),
+          [this](const std::string& cvar, const std::string& value) {
+            if (!rex::cvar::SetFlagByName(cvar, value))
+              REXLOG_WARN("Keys: cvar '{}' rejected '{}'", cvar, value);
+            settings_.Save();
+          });
+    }
+    key_remap_->Show();
+  }
+
   void ToggleAdvancedSettings() {
     if (advanced_) {
       advanced_.reset();
@@ -716,7 +734,7 @@ class Fable2App : public rex::ReXApp {
         if (!overlay_) {
           overlay_ = std::make_unique<fable2::SettingsOverlay>(
               imgui_drawer(), &settings_, window(), [this] { ToggleAdvancedSettings(); },
-              &tex_job_);
+              [this] { ShowKeyRemap(imgui_drawer()); }, &tex_job_);
           REXLOG_INFO("Texpack stress: settings menu opened");
         }
       });
@@ -858,6 +876,7 @@ class Fable2App : public rex::ReXApp {
 
   std::unique_ptr<fable2::SetupScreen> setup_screen_;
   std::unique_ptr<fable2::SettingsOverlay> overlay_;
+  std::unique_ptr<fable2::KeyRemapScreen> key_remap_;
   std::unique_ptr<rex::ui::SettingsDialog> advanced_;
   std::unique_ptr<fable2::TextureNotifyOverlay> tex_notify_;
   std::unique_ptr<fable2::WarmOverlay> warm_overlay_;

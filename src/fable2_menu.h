@@ -136,7 +136,7 @@ class SettingsOverlay final : public rex::ui::ImGuiDialog {
  public:
   SettingsOverlay(rex::ui::ImGuiDrawer* drawer, Fable2Settings* settings,
                   rex::ui::Window* window, std::function<void()> on_advanced,
-                  TextureJob* tex_job);
+                  std::function<void()> on_remap, TextureJob* tex_job);
   ~SettingsOverlay() override;
 
  protected:
@@ -146,6 +146,7 @@ class SettingsOverlay final : public rex::ui::ImGuiDialog {
   Fable2Settings* settings_;
   rex::ui::Window* window_;
   std::function<void()> on_advanced_;
+  std::function<void()> on_remap_;     // opens the Keyboard bindings screen
   // Borrowed from the App - see TextureJob. Never null while the overlay
   // exists.
   TextureJob* tex_job_;
