@@ -109,6 +109,28 @@ void OnPureCall() {
 }
 
 LONG WINAPI WriteDumpAndDie(EXCEPTION_POINTERS* exception) {
+  // A debugger's leftover. cdb's data breakpoints (`ba w4`) stay armed in
+  // the thread's debug registers after it detaches, `bc *` or not, and the
+  // next write to that address raises a single-step exception with nobody
+  // attached to take it. That killed two test sessions (2026-09-13) while
+  // finding the projection builder. It is not a fault in the game: clear
+  // the debug registers in the faulting context, say so once, and carry
+  // on. A real single-step never reaches an unhandled-exception filter
+  // with a debugger attached, so nothing legitimate is swallowed here.
+  if (exception && exception->ExceptionRecord && exception->ContextRecord &&
+      exception->ExceptionRecord->ExceptionCode == EXCEPTION_SINGLE_STEP) {
+    CONTEXT* ctx = exception->ContextRecord;
+    ctx->Dr0 = ctx->Dr1 = ctx->Dr2 = ctx->Dr3 = 0;
+    ctx->Dr6 = ctx->Dr7 = 0;
+    ctx->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
+    static std::atomic<int> seen{0};
+    if (seen.fetch_add(1) < 4)
+      REXLOG_WARN("Single-step exception at {} on thread {} with no debugger attached - a "
+                  "leftover hardware breakpoint; debug registers cleared, continuing",
+                  exception->ExceptionRecord->ExceptionAddress, GetCurrentThreadId());
+    return EXCEPTION_CONTINUE_EXECUTION;
+  }
+
   // One dump per process. A second fault while writing the first (possible,
   // since the heap may be corrupt) must not recurse into this.
   static std::atomic<bool> writing{false};
