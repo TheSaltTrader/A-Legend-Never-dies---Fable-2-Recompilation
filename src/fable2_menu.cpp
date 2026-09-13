@@ -1239,15 +1239,19 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
 
     RowStart("Field of view",
              "How wide the camera sees, in degrees (vertical). The game runs "
-             "at 60; higher shows more of the world at the edges. Applies "
-             "immediately. Cutscenes and menus use their own cameras and are "
-             "unaffected.");
+             "at 60; higher shows more of the world at the edges.\n\n"
+             "Takes effect when the game builds a camera - at startup, and "
+             "when you enter or reload an area - not the instant you drag it: "
+             "the camera copies the value once and keeps it until the next "
+             "area. Restart to be sure it applies everywhere. Cutscenes and "
+             "menus use their own cameras and are unaffected.");
     {
       if (ImGui::SliderInt("##fov", &s.fov, fable2::kFovMinDegrees,
                            fable2::kFovMaxDegrees, "%d deg")) {
         fable2::ApplyFieldOfView(s.fov);
         changed = true;
       }
+      RestartTag();
     }
 
     RowStart("Fuzzy alpha test",

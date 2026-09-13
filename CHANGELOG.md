@@ -3,6 +3,20 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.7 — 2026-09-13 (branch `tu1`)
+
+### Changed - field of view is honest about when it applies
+
+0.1.6 said the field-of-view slider applied immediately. It does not: the
+game copies the field-of-view constant when it builds a camera and keeps
+that copy until the next area, so a change is seen at startup and when you
+enter or reload an area, not while standing still in one already loaded.
+Confirmed by testing every writable copy of the value in the running game -
+none updates the live camera (the projection is derived once and cached).
+The slider is now marked restart-bound and its help says so. The feature
+is unchanged and still applies the saved value at startup; only the
+promise is corrected.
+
 ## 0.1.6 — 2026-09-13 (branch `tu1`)
 
 ### Added - a field-of-view slider

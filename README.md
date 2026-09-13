@@ -311,7 +311,9 @@ Enhancements
   is keeping up.
 - **Field of view** - how wide the camera sees, in degrees (vertical); the
   game runs at 60. Written into the game's own field-of-view constant at
-  runtime, so it applies immediately. Cutscenes and menus keep their own.
+  runtime; the game copies it when it builds a camera, so a change takes
+  effect at startup and when you enter or reload an area, not the instant
+  you drag the slider. Cutscenes and menus keep their own.
 - **Fuzzy alpha test** - the plugin's approximate alpha test, its fix for
   alpha flicker on NVIDIA cards.
 - **Texture cache** - host memory the GPU may hold textures in; larger means
