@@ -54,6 +54,7 @@ class KeyRemapScreen final : public rex::ui::ImGuiDialog,
   // WindowInputListener - only acts while a capture is in progress.
   void OnKeyDown(rex::ui::KeyEvent& e) override;
   void OnKeyUp(rex::ui::KeyEvent& e) override;
+  void OnMouseDown(rex::ui::MouseEvent& e) override;
 
  protected:
   void OnDraw(ImGuiIO& io) override;

@@ -122,13 +122,16 @@ struct Fable2Tuning {
     out.push_back({"diag_vs_const_nan_fix", std::to_string(s.nan_constant_repair),
                    "repair NaN in vertex shader constants: 0 off, 1 zero, 2 identity row"});
 
-    // Exact float24 depth. Both halves or neither - converting in the pixel
-    // shader without the matching rounding is a half-applied change.
-    out.push_back({"depth_float24_convert_in_pixel_shader",
-                   s.accurate_depth ? "true" : "false",
-                   "exact float24 depth: costs shader work, buys depth precision"});
-    out.push_back({"depth_float24_round", s.accurate_depth ? "true" : "false",
-                   "the other half of exact float24 depth"});
+    // Exact float24 depth: ALWAYS off. With it on the plugin failed to create
+    // 52 graphics pipelines in one session (six vertex shaders) - black bars
+    // on the loading screen, a shadow smear following the hero (2026-09-13).
+    // The setting is gone from the menu; a value left in an old settings
+    // file is ignored here rather than honoured.
+    (void)s.accurate_depth;
+    out.push_back({"depth_float24_convert_in_pixel_shader", "false",
+                   "exact float24 depth breaks this title's pipelines"});
+    out.push_back({"depth_float24_round", "false",
+                   "the other half of exact float24 depth, off with it"});
     out.push_back({"use_fuzzy_alpha_epsilon", s.fuzzy_alpha ? "true" : "false",
                    "approximate alpha test - the plugin's fix for alpha flicker"});
 

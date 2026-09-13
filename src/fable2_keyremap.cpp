@@ -20,8 +20,8 @@ namespace {
 const KeyAction kActions[] = {
     {"keybind_a", "A", "Semicolon,Space"},
     {"keybind_b", "B", "Quote,Backspace"},
-    {"keybind_x", "X", "L"},
-    {"keybind_y", "Y", "P"},
+    {"keybind_x", "X", "L,LMB"},      // attack: the left mouse button too
+    {"keybind_y", "Y", "P,RMB"},      // ranged: the right mouse button too
     {"keybind_start", "Start", "X,Return"},
     {"keybind_back", "Back", "Z,Tab"},
     {"keybind_left_trigger", "Left trigger", "Q,I"},
@@ -127,6 +127,30 @@ void KeyRemapScreen::OnKeyDown(rex::ui::KeyEvent& e) {
   e.set_handled(true);
 }
 
+// Mouse buttons bind too: the driver names them LMB, RMB and MMB and takes
+// them from its own OnMouseDown. Only while a capture is waiting, so the
+// click that pressed "Set" (already delivered) and ordinary clicks pass.
+void KeyRemapScreen::OnMouseDown(rex::ui::MouseEvent& e) {
+  if (capturing_ < 0) return;
+  const char* name = nullptr;
+  switch (e.button()) {
+    case rex::ui::MouseEvent::Button::kLeft: name = "LMB"; break;
+    case rex::ui::MouseEvent::Button::kRight: name = "RMB"; break;
+    case rex::ui::MouseEvent::Button::kMiddle: name = "MMB"; break;
+    default: return;
+  }
+  const size_t index = size_t(capturing_);
+  std::string value = name;
+  if (append_) {
+    const std::string current = KeyBinding(*settings_, kActions[index]);
+    if (!current.empty()) value = current + "," + name;
+  }
+  Set(index, value);
+  status_ = std::string(kActions[index].label) + " = " + value;
+  capturing_ = -1;
+  e.set_handled(true);
+}
+
 void KeyRemapScreen::OnKeyUp(rex::ui::KeyEvent& e) {
   if (capturing_ >= 0) e.set_handled(true);
 }
@@ -144,7 +168,8 @@ void KeyRemapScreen::OnDraw(ImGuiIO& io) {
     ImGui::TextWrapped(
         "Each action lists the keys that press it, separated by commas. Set "
         "replaces them with the next key you press, Add keeps them and adds "
-        "one, Clear empties the action. Hold Shift, Ctrl or Alt while pressing "
+        "one, Clear empties the action. Mouse buttons bind too (LMB, RMB, MMB). "
+        "Hold Shift, Ctrl or Alt while pressing "
         "to bind the combination. Escape cancels a capture. Changes apply at "
         "once and are saved.");
     ImGui::Spacing();

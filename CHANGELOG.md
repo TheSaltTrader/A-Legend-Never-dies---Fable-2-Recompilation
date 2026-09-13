@@ -3,6 +3,29 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.5 — 2026-09-13 (branch `tu1`)
+
+### Removed - "Accurate depth", because it breaks the game
+
+With exact float24 depth on, the plugin failed to create 52 graphics
+pipelines in one session across six vertex shaders; the draws behind them
+were skipped, which showed as black bars on the loading screen and a
+shadow smear that followed the hero, with or without the texture pack.
+The option is gone from both settings screens, the tuning sends false
+whatever an older settings file says, and the field remains only so those
+files still parse. Rule adopted with it: a setting that breaks the game is
+not offered as a choice.
+
+### Fixed - the settings screens get the mouse back; mouse buttons bind
+
+With the keyboard driver on, the cursor stayed captured for the camera
+while the F10 settings were open, so nothing there could be clicked: the
+port's foreground-only input rule had replaced the framework's clause that
+releases input to ImGui. Input is now held while a settings screen or the
+bindings screen is open. The mouse buttons join the defaults, left for X
+(attack) and right for Y (ranged), and the bindings screen captures LMB,
+RMB and MMB like any key.
+
 ## 0.1.4 — 2026-09-13 (branch `tu1`)
 
 ### Added - a Keyboard bindings screen

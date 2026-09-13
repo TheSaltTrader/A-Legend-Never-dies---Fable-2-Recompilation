@@ -148,9 +148,10 @@ struct Fable2Settings {
   // Imported in OnPostSetup, which is after the ContentManager and
   // profile exist and before the guest looks for saves.
   std::string save_import_path;
-  // Two levers the plugin already had. accurate_depth buys depth
-  // precision for shader work; fuzzy_alpha is the plugin's own fix for
-  // alpha-test flicker.
+  // fuzzy_alpha is the plugin's own fix for alpha-test flicker.
+  // accurate_depth is kept only so older settings files still parse: the
+  // option was removed from the menu on 2026-09-13 (it broke pipeline
+  // creation on this title) and the tuning ignores its value.
   bool accurate_depth = false;
   bool fuzzy_alpha = false;
   // Start without the Microsoft and Lionhead logo videos (the list hook in

@@ -1229,15 +1229,12 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       }
     }
 
-    RowStart("Accurate depth",
-             "Converts depth to the Xbox 360's float24 format exactly, in the "
-             "pixel shader, instead of approximating it. Costs shader work and "
-             "buys depth precision - the thing it fixes is z-fighting and "
-             "shadow acne on distant geometry.");
-    {
-      if (ImGui::Checkbox("##accdepth", &s.accurate_depth)) changed = true;
-      if (!live) RestartTag();
-    }
+    // "Accurate depth" (exact float24 depth in the pixel shader) is no longer
+    // offered: with it on, the plugin failed to create 52 graphics pipelines
+    // in one session (six vertex shaders), which showed as black bars on the
+    // loading screen and a shadow smear following the hero (2026-09-13). A
+    // setting that breaks the game is not a choice to put in front of a
+    // player; the tuning sends false whatever an old settings file says.
 
     RowStart("Fuzzy alpha test",
              "The plugin's own workaround for alpha-test flicker, where a pixel "

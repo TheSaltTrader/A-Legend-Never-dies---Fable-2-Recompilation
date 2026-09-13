@@ -309,8 +309,6 @@ Enhancements
   the host's present rate beside it, smaller; the window repaints far more
   often than the game draws, and only the first number says whether the game
   is keeping up.
-- **Accurate depth** - exact float24 depth emulation, for shadow acne and
-  z-fighting, at some shader cost.
 - **Fuzzy alpha test** - the plugin's approximate alpha test, its fix for
   alpha flicker on NVIDIA cards.
 - **Texture cache** - host memory the GPU may hold textures in; larger means

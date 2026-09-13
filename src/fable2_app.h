@@ -611,13 +611,19 @@ class Fable2App : public rex::ReXApp {
                               : nullptr;
     if (input == nullptr)
       return;
-    input->SetActiveCallback([] {
+    input->SetActiveCallback([this] {
       if (fable2::GetWarmState().warming)
+        return false;
+      // Our own screens want the mouse: with the driver active the cursor
+      // stayed captured for the camera while the F10 settings were open,
+      // and nothing on that screen could be clicked (2026-09-13). The
+      // framework's rule this callback replaced had the same clause.
+      if (overlay_ || (key_remap_ && key_remap_->shown()))
         return false;
       return fable2::ThisProcessIsForeground();
     });
-    REXLOG_INFO("Input: held while the texture cache warms, and while we are "
-                "not the foreground window");
+    REXLOG_INFO("Input: held while the texture cache warms, while a settings "
+                "screen is open, and while we are not the foreground window");
   }
 
   // Escape's quit: save, release what we own, then take the close button's

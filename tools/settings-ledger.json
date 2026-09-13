@@ -46,7 +46,11 @@
     { "setting": "fsr_sharpness", "doc_phrase": "FSR sharpness", "guarded_by": ["present_effect"] },
     { "setting": "cas_sharpness", "doc_phrase": "CAS sharpness", "guarded_by": ["present_effect"] },
     { "setting": "present_dither", "doc_phrase": "Dither the output" },
-    { "setting": "accurate_depth", "doc_phrase": "Accurate depth" },
+    {
+      "setting": "accurate_depth",
+      "reason": "removed from the menu on 2026-09-13: with it on the plugin failed to create 52 graphics pipelines in one session (six vertex shaders), seen as black bars on the loading screen and a shadow smear following the hero. The field stays so older settings files still parse; the tuning always sends false.",
+      "undocumented_ok": true
+    },
     { "setting": "fuzzy_alpha", "doc_phrase": "Fuzzy alpha test" },
     { "setting": "nan_constant_repair", "doc_phrase": "NaN constant repair" },
     { "setting": "readback", "doc_phrase": "Black texture fix" },
