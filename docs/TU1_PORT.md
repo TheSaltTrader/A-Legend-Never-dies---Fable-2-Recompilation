@@ -171,6 +171,36 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 04:30 Sweep on 0.1.10 (regressions, unresolved functions,
+  security, leaks, performance), all scripted, the user asleep:
+  * Regression run (150 s in Bowerstone Market from the console save): 0
+    critical, 0 fatal/unresolved, region loaded, 59.2-59.8 guest fps (p50
+    16.3 ms, p99 31-35 ms, 2-3 hitches per 5 s); 19 warnings, every one an
+    optional file the game probes (lang.ini per language, build_version.txt,
+    episodic DLC stubs); NO warning kind new versus the 0.1.9 baseline log.
+    3,856 `BaseHeap::AllocFixed attempting to reserve an already reserved
+    range` error lines at boot - identical count in every run since 0.1.9
+    (and earlier: it is the game's arena reservation pattern against the
+    runtime's heap), boot-time only, not per frame; noise, not a fault.
+  * Memory, 300 s standing still in the market (Get-Process): private bytes 5251 -> 5306 -> 5328 -> 5367 MB at 60/120/180/240 s (+116 MB, ~0.6 MB/s, the texture cache filling towards its configured 8 GB ceiling; the earlier long profile saw this level off), working set 1371 -> 1392 MB (+21 MB). No runaway; separating a slow leak from cache growth needs a longer run than five minutes.
+  * Unresolved: build logs 30-33 carry 0 `Unresolved`; the generated tree
+    has 0 `Unresolved call` sites; `scan_fnptrs.py --check` finds 8 of the
+    15 hand-registered answers (the 7 it cannot see are the 8-byte thunks and
+    funclets that no data pointer references - registered by hand, unchanged).
+  * Security (static, src/): no sprintf/strcpy/strcat/gets; the three
+    sscanf calls are width-bounded into fixed buffers; every CreateProcessA
+    command line quotes its paths and runs hidden inside a kill-on-close
+    job; `where` lookups take fixed candidate names; ShellExecute's
+    argument is quoted; settings are a key=value file next to the exe with
+    atoi/atof parsing and clamps; the new gdb code bounds-checks every walk,
+    refuses an unexpected layout, writes temp-then-rename, mounts read-only.
+  * Leaks (static): no raw new/malloc in src/; the perf and profiler
+    threads are joined on stop; the pack-census thread is detached on
+    purpose and writes only atomics in a static; long-lived containers trim.
+  * Performance: the frame-rate summary above is the locked 60 with the
+    known 2-3 two-frame intervals per 5 s (texture uploads); nothing new
+    to fix was found in this pass. The FOV hook costs two tan and one atan
+    per camera per frame; the draw-distance mirror costs nothing at run time.
 - 2026-09-13 04:00 Draw distance: globals.gdb decoded (descriptors at
   0x18 + header word 0x08; records from 0x28; values in id order, NOT by the
   type word's member index - that is the C++ slot). Three experiments:
