@@ -102,6 +102,19 @@ def send_key(vk, hold=0.05):
         time.sleep(hold if flags == 0 else 0.05)
 
 
+def running_fable2_pids():
+    """PIDs of every fable2.exe already running - the player's session, most
+    likely. Read from tasklist so it needs nothing beyond the stdlib."""
+    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq fable2.exe", "/FO", "CSV",
+                          "/NH"], capture_output=True, text=True).stdout
+    pids = []
+    for line in out.splitlines():
+        parts = [c.strip('"') for c in line.split('","')]
+        if len(parts) >= 2 and parts[0].lower() == "fable2.exe" and parts[1].isdigit():
+            pids.append(int(parts[1]))
+    return pids
+
+
 def hwnd_for_pid(pid):
     """Top-level visible window owned by exactly this PID."""
     found = []
@@ -209,6 +222,16 @@ def main():
             cmd += ["--mnk_mode=true"]       # a bare --mnk_mode is ignored
             cmd += EXPLICIT_BINDS
         cmd += args.extra
+
+    # Refuse to start beside a running game. On 2026-09-12 a scripted check
+    # launched while the player was at the keyboard: the second window came
+    # up on their screen, they played in it, and the probe's own stop at the
+    # end of the run looked exactly like a crash. One game at a time, and
+    # the person's session always wins.
+    other = running_fable2_pids()
+    if other:
+        sys.exit("fable2.exe is already running (pid %s) - not launching a second "
+                 "instance beside it; close that session first." % ", ".join(map(str, other)))
 
     if args.manual and args.press:
         # Said rather than silently dropped: a schedule that looks honoured and

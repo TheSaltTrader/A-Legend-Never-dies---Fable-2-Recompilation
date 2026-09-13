@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <thread>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -151,13 +152,15 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
     return;
   const bool forced = HudForced();
   const bool show_fps = forced || s->hud_fps;
+  const bool show_cpu = forced || s->hud_cpu;
+  const bool show_cpu_bar = forced || s->hud_cpu_bar;
   const bool show_gpu = forced || s->hud_gpu;
   const bool show_vram = forced || s->hud_vram;
   const bool show_gpu_bar = forced || s->hud_gpu_bar;
   const bool show_vram_bar = forced || s->hud_vram_bar;
   const bool hidden = g_hud_hidden.load(std::memory_order_acquire);
   if (!(forced || (s->hud_enabled && !hidden)) ||
-      (!show_fps && !show_gpu && !show_vram))
+      (!show_fps && !show_cpu && !show_gpu && !show_vram))
     return;
 
   const PerfSample p = GetPerfSample();
@@ -195,6 +198,20 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
       }
       ImGui::SameLine();
       ImGui::TextColored(label, " host %.0f", p.fps);
+    }
+    if (show_cpu) {
+      // This process across all cores (fable2_perf.h says why not the
+      // machine), and the same figure in cores, because one game thread
+      // flat out is 100% of a core and 3% of this box.
+      static const float cores = float(std::max(1u, std::thread::hardware_concurrency()));
+      const float busy_cores = p.cpu_percent / 100.0f * cores;
+      const ImVec4 c = p.cpu_percent < 50.0f ? good : (p.cpu_percent < 80.0f ? warn : bad);
+      ImGui::TextColored(label, "CPU");
+      ImGui::SameLine();
+      ImGui::TextColored(c, "%5.0f%%", p.cpu_percent);
+      ImGui::SameLine();
+      ImGui::TextColored(label, " %.1f of %.0f cores", busy_cores, cores);
+      if (show_cpu_bar) ReadoutBar(p.cpu_percent / 100.0f, c);
     }
     if (show_gpu) {
       ImGui::TextColored(label, "GPU");

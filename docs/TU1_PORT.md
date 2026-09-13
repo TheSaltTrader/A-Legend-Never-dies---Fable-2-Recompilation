@@ -75,6 +75,18 @@ the first suspect; if something misbehaves around register saves, v65.
 
 ## Log
 
+- 2026-09-12 19:00 LOG CENSUS of a two-hour play session (v0.1.1/0.1.2):
+  3,856 `BaseHeap::AllocFixed attempting to reserve an already reserved
+  range` errors, all inside ONE second (18:33:36, one thread) - the game
+  probing fixed addresses; each is refused with NO_MEMORY and the game
+  carries on; not a running cost. 189 `Stub XFileSectorInformation`
+  (harmless). Two `XmaContext: no bits to copy` (audio, momentary). The
+  plugin's `draw resolution scaling is enabled, but the swap source is
+  unscaled` warning - read its numbers on the next launch: if the swap
+  source is 1280x720, the supersample is folded back to 720p at the game's
+  own resolve and the extra scale buys antialiasing only. Codegen: eight
+  `REX_FATAL` stubs from 22 exception-funclet registrations (fixed, see
+  the changelog). Saving verified (Hero000 rewritten at 18:35).
 - 2026-09-12 12:50 MEASURED (pre-cache step 1): a scripted load of
   Bowerstone Market on build 8, bucketed by 5 s from the region line
   (`hitch_census.py`, `tools/hitch_census.py`; it reads the

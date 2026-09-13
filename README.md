@@ -290,13 +290,15 @@ Enhancements
   (1 to 8) and filters it back down; the cost is the square of the number.
 - **Import Xbox 360 saves** - a folder of Fable II save packages (or one
   package) imported into the profile at the next launch.
-- **Skip intro videos** - starts without the Microsoft and Lionhead logo
+- **Skip publisher logos** - starts without the Microsoft and Lionhead logo
   videos (17 seconds no button shortens): a hook makes the game's boot-movie
-  list read as empty, and the game takes its own empty-list path. The
-  synthetic A through a chapter's cinematic stays; any genuine input disarms
-  it.
-- **On-screen readouts** - FPS, GPU load and video memory in the corner,
-  each switchable, with a bar under the GPU and VRAM numbers (each
+  list read as empty, and the game takes its own empty-list path. Off, the
+  logos play as on the console.
+- **Skip intro videos** - presses A through a chapter's cinematic with a
+  synthetic controller; any genuine input disarms it.
+- **On-screen readouts** - FPS, CPU (this process, across all cores, with
+  the same figure in cores), GPU load and video memory in the corner, each
+  switchable, with a bar under the CPU, GPU and VRAM numbers (each
   switchable too). Shown at every launch; F8 hides them for the session and
   is not remembered. FPS is the game's own frame rate (frames it finished), with
   the host's present rate beside it, smaller; the window repaints far more

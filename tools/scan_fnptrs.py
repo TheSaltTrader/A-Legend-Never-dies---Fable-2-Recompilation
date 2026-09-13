@@ -179,6 +179,14 @@ def flush(found, run, starts, img, tlo):
             continue
         if not is_terminator(img.word(target - 4)):
             continue                       # would split a fall-through
+        # The C++ exception tables in .rdata (a run at 0x8210Bxxx here) point
+        # at catch funclets: blocks inside a function that read the frame
+        # pointer the unwinder restores, and whose parent branches back into
+        # them on the normal path. Registered as functions they cut the parent
+        # and the codegen emitted REX_FATAL at eight branch sites (2026-09-12,
+        # 0x82CC6B04 and three more). Same test as channel 2.
+        if looks_like_continuation(img, target):
+            continue
         found.setdefault(target, slot)
 
 

@@ -152,8 +152,11 @@ struct Fable2Settings {
   // alpha-test flicker.
   bool accurate_depth = false;
   bool fuzzy_alpha = false;
-  // Press A through the boot logos for you. A synthetic pad, ORed into
-  // the real one; any genuine input disarms it immediately.
+  // Start without the Microsoft and Lionhead logo videos (the list hook in
+  // patch_hooks.cpp). Its own switch, so the logos can be kept on purpose.
+  bool skip_logos = true;
+  // Press A through a chapter's cinematic for you. A synthetic pad, ORed
+  // into the real one; any genuine input disarms it immediately.
   bool skip_intro = true;
   bool texture_dump = false;
   // OFF by default. The replacement path is new code in the shared plugin,
@@ -165,6 +168,8 @@ struct Fable2Settings {
   // only and is not saved, so the next launch shows them again.
   bool hud_enabled = true;
   bool hud_fps = true;
+  bool hud_cpu = true;       // this process's CPU, across all cores
+  bool hud_cpu_bar = true;   // a bar under the CPU number
   bool hud_gpu = true;
   bool hud_gpu_bar = true;   // a bar under the GPU number
   bool hud_vram = true;
@@ -285,10 +290,13 @@ struct Fable2Settings {
         << "save_import_path=" << save_import_path << "\n"
         << "accurate_depth=" << (accurate_depth ? 1 : 0) << "\n"
         << "fuzzy_alpha=" << (fuzzy_alpha ? 1 : 0) << "\n"
+        << "skip_logos=" << (skip_logos ? 1 : 0) << "\n"
         << "skip_intro=" << (skip_intro ? 1 : 0) << "\n"
         << "texture_dump=" << (texture_dump ? 1 : 0) << "\n"
         << "hud_enabled=" << (hud_enabled ? 1 : 0) << "\n"
         << "hud_fps=" << (hud_fps ? 1 : 0) << "\n"
+        << "hud_cpu=" << (hud_cpu ? 1 : 0) << "\n"
+        << "hud_cpu_bar=" << (hud_cpu_bar ? 1 : 0) << "\n"
         << "hud_gpu=" << (hud_gpu ? 1 : 0) << "\n"
         << "hud_vram=" << (hud_vram ? 1 : 0) << "\n"
         << "hud_gpu_bar=" << (hud_gpu_bar ? 1 : 0) << "\n"
@@ -386,10 +394,13 @@ struct Fable2Settings {
     else if (k == "save_import_path") save_import_path = v;
     else if (k == "accurate_depth") accurate_depth = Truthy(v);
     else if (k == "fuzzy_alpha") fuzzy_alpha = Truthy(v);
+    else if (k == "skip_logos") skip_logos = Truthy(v);
     else if (k == "skip_intro") skip_intro = Truthy(v);
     else if (k == "texture_dump") texture_dump = Truthy(v);
     else if (k == "hud_enabled") hud_enabled = Truthy(v);
     else if (k == "hud_fps") hud_fps = Truthy(v);
+    else if (k == "hud_cpu") hud_cpu = Truthy(v);
+    else if (k == "hud_cpu_bar") hud_cpu_bar = Truthy(v);
     else if (k == "hud_gpu") hud_gpu = Truthy(v);
     else if (k == "hud_vram") hud_vram = Truthy(v);
     else if (k == "hud_gpu_bar") hud_gpu_bar = Truthy(v);

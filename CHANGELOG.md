@@ -3,6 +3,70 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.2 — 2026-09-12 (branch `tu1`)
+
+### Fixed - vector register 96 is shared (the flashing foliage)
+
+At Bower Lake the trees flashed between their colours and a flat
+blue-violet from one frame to the next, caught in two screen grabs half a
+second apart. The register census had flagged v96 as read before it is
+written in a block of 24 SIMD functions on both the disc and the update
+image, and the shared list had been left as the disc's because the disc
+build never reached a forest. v96 is now in `shared_vector_registers`
+(`fable2_manifest.toml`), so the callee sees what its caller put there.
+The magenta impostor cards in the deep forest are the same class if they
+go with it; the player's next forest visit decides.
+
+### Added - CPU in the readouts, and a switch of its own for the logos
+
+The readouts gain a CPU line: this process across all cores, with the
+same figure in cores beside it (a game thread flat out on one core is 100
+percent of a core and about 3 percent of a 32-thread machine), and a bar
+under it; both switchable. The bar checkboxes moved to a second line,
+because the settings cell clipped whatever sat past "VRAM" on the first.
+
+"Skip publisher logos" is its own setting now, default on, so the
+Microsoft and Lionhead videos can be kept on purpose; "Skip intro videos"
+is back to what it always did, the synthetic A through a chapter's
+cinematic.
+
+### Fixed - eight fatal stubs the codegen had been emitting since the first TU1 build
+
+Every build's codegen log carried `Unresolved b target` lines, and the
+generated code carried `REX_FATAL("Unresolved call from ...")` at eight
+branch sites in four functions - the game would have died the first time
+any of them ran. The cause: the pointer scan's data channel had registered
+22 entries pointed to from the C++ exception tables in `.rdata`
+(0x8210AE00..0x8210B490). Those are catch funclets - blocks inside a
+function that read the frame pointer the unwinder restores - and the
+parent branches back into them on its normal path; registered as
+functions they cut the parent in two. The continuation test now applies
+to that channel as well, the 22 are gone, and the codegen log is clean.
+
+### Changed - controller database shipped, play sessions log at info
+
+`gamecontrollerdb.txt` (SDL's community mapping database, 869 Windows
+pads) is copied beside the executable at build time; the runtime had
+logged its absence at every launch and fallen back to SDL's built-in
+mappings. `tools\run.cmd` launches at log level info: a play session at
+debug wrote 25,000 debug lines an hour (APC deliveries, guest input,
+user-context calls) for 12,000 of everything else, every one formatted
+and flushed. Scripted runs keep debug; the crash record is critical either
+way.
+
+### Changed - one game at a time
+
+`tools/play_probe.py` refuses to start while any Fable II process exists
+and names the pid. A scripted check launched beside the player's own
+session put a second window on their screen; they played in it, and the
+probe's own stop at the end of its run looked exactly like a crash.
+
+### Verified - saving works
+
+A manual save from the game menu rewrote Hero000 (chaptersave, herosave,
+mainsave, texturemorphs, publisher info). The earlier sessions had simply
+never saved.
+
 ## 0.1.1 — 2026-09-12 (branch `tu1`)
 
 ### Fixed - a crash in play, and the class it belongs to

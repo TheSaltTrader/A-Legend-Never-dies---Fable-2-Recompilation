@@ -62,6 +62,15 @@ endif()
 # to the executable. It is runtime-loaded, never linked.
 rexglue_setup_target(fable2 GPU_PLUGINS xenos)
 
+# SDL's community controller database, read beside the executable at startup
+# (fable2_app.h hands it to the runtime when present). Without it the runtime
+# logged "gamecontrollerdb.txt does not exist" at every launch and fell back
+# to SDL's built-in mappings, which cover far fewer pads (2026-09-12).
+add_custom_command(TARGET fable2 POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/gamecontrollerdb.txt"
+          "$<TARGET_FILE_DIR:fable2>/gamecontrollerdb.txt")
+
 # DbgHelp resolves recompiled sub_<guest address> names for the
 # FP trap diagnostic (src/fable2_fptrap.h).
 if (WIN32)

@@ -73,4 +73,8 @@ non_volatile_as_local = true
 # written - a spill to memory does not count. sub_83000200 is deliberately
 # absent: it is _setjmp, declared above, so the recompiler models it rather than
 # running the generated body, and it touches the whole file.
-shared_vector_registers = [64, 65, 77, 78, 79, 80, 81, 82, 83, 84, 86, 87, 90, 91, 92, 93, 94]
+# 96 added 2026-09-12: tools/vector_census.py flags it as READ before written
+# in 24 functions (a SIMD block around 0x82CEE000, sub_82CEEAF8 ..) on both
+# images, and the tree foliage in Bower Lake flashes blue/violet between
+# frames - the flat-colour class docs/TU1_PORT.md names it the first suspect for.
+shared_vector_registers = [64, 65, 77, 78, 79, 80, 81, 82, 83, 84, 86, 87, 90, 91, 92, 93, 94, 96]

@@ -2,6 +2,11 @@
 setlocal
 rem Launch fable2 against the extracted disc in game\.
 rem
+rem Log level info: a play session at debug wrote 25,000 debug lines an hour
+rem (APC deliveries, guest input, user-context calls) for 12,000 of
+rem everything else, and every line is formatted and flushed. Scripted runs
+rem (tools/play_probe.py) keep debug; the crash record is critical either way.
+rem
 rem   tools\run.cmd [extra fable2 args...]
 rem
 rem Note: a bare `--flag` does NOT set a boolean cvar in this runtime - it is
@@ -18,5 +23,5 @@ if not exist "%EXE%" (
 
 "%EXE%" --game_data_root "%PROJECT_ROOT%\game" ^
         --log_file "%PROJECT_ROOT%\out\fable2.log" ^
-        --log_level debug ^
+        --log_level info ^
         %*
