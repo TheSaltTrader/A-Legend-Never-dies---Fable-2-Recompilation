@@ -3,6 +3,40 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.10 — 2026-09-13 (branch `tu1`)
+
+### Added - draw distance, from the game's own object database
+
+The per-object draw distances (MaxDrawDistance, MaxDrawDistanceOverride,
+BillboardDistance, LodFadeDistance) are values in `data\globals\globals.gdb`.
+The file's layout was decoded (docs/DRAW_DISTANCE.md): descriptors of
+field ids with their types, and records of values in the descriptor's id
+order. The game reads it once while it starts and copies the numbers into
+its object definitions - scaling them in the resident copy, in play or on
+the title screen, changes nothing, while a scaled file at x0.1 removes the
+far side of Bowerstone Market. So the "Draw distance" slider (Display,
+10-400%) mirrors `data\globals` next to the executable - the scaled file
+plus hard links (copies across volumes) to the other six files there - and
+serves that folder in place of the original through the runtime's file
+system: a second symbolic link on the folder's resolved path, pointing at
+a device of its own. The folder rather than the file, because the
+runtime resolves a path's directory (where links apply) and then takes
+the child by name; a link on the file alone is never consulted. The game
+folder is never written. At 100% nothing is served and the mirror is
+removed. Restart-bound, as the game reads the file only at start-up.
+Verified: a run at 10% loses the distant buildings, a run at 100% is the
+shipped picture, and a run at 300% loads and plays.
+
+### Changed - the crash filter ignores a debugger's leftover breakpoint
+
+cdb's data breakpoints stay armed in the debug registers after it
+detaches, and the next write raised a single-step exception that the
+crash filter treated as a crash (two test sessions lost while finding the
+projection builder). It now clears the debug registers in the faulting
+context, warns once, and continues; a real single-step never reaches an
+unhandled-exception filter with a debugger attached, so nothing else is
+swallowed.
+
 ## 0.1.9 — 2026-09-13 (branch `tu1`)
 
 ### Added - field of view, live, from the game's own projection builder

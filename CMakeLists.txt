@@ -26,6 +26,7 @@ set(FABLE2_SOURCES
     src/fable2_keyremap.cpp
     src/fable2_diagnostics.cpp
     src/fable2_stage.cpp
+    src/fable2_gdb.cpp
     src/fable2_crashdump.cpp
     src/fable2_profiler.cpp
     src/fable2_titleupdate.cpp

@@ -34,6 +34,7 @@
     { "setting": "letterbox", "doc_phrase": "Keep aspect ratio" },
     { "setting": "cursor_hide_seconds", "doc_phrase": "Hide the pointer after" },
     { "setting": "fov", "doc_phrase": "Field of view" },
+    { "setting": "draw_distance", "doc_phrase": "Draw distance" },
     { "setting": "keyboard_control", "doc_phrase": "Keyboard and mouse" },
     { "setting": "mouse_look", "doc_phrase": "Mouse look" },
     { "setting": "mouse_sensitivity", "doc_phrase": "Mouse sensitivity" },

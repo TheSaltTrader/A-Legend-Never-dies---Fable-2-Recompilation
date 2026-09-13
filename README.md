@@ -278,6 +278,14 @@ Display
   the vertical angle every frame and re-derives the horizontal one, so the
   aspect ratio is untouched. Every camera is scaled by the same amount, so
   cutscenes and zoomed shots keep their framing.
+- **Draw distance** - how far away buildings, trees and props are still
+  drawn, as a percentage of the game's own distances (10-400, 100 = as
+  shipped). The distances are values in the game's `data\globals\globals.gdb`,
+  read once at start-up; off 100 the port mirrors `data\globals` next to the
+  executable (`shadow\globals\`: the scaled file plus hard links to the
+  other files there) and serves that folder in place of the original
+  through the runtime's file system. The game folder is never touched.
+  Restart-bound, and more distance costs GPU time.
 - **Keyboard and mouse** - drives the guest controller from the keyboard
   (Enter is Start, Space is A, WASD the left stick, arrows the d-pad).
   **Remap keys...** opens the Keyboard bindings screen: every controller

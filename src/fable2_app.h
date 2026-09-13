@@ -41,6 +41,7 @@
 #include "fable2_keyremap.h"
 #include "fable2_diagnostics.h"
 #include "fable2_stage.h"
+#include "fable2_gdb.h"
 #include "fable2_crashdump.h"
 #include "fable2_profiler.h"
 #include "fable2_titleupdate.h"
@@ -391,6 +392,13 @@ class Fable2App : public rex::ReXApp {
       const std::string mounted = REXCVAR_GET(game_data_root);
       fable2::InstallStageObserver(mounted.empty() ? settings_.ResolvedGamePath()
                                                    : std::filesystem::path(mounted));
+      // Draw distance off 100%: a scaled copy of globals.gdb, served in
+      // place of the game's own (fable2_gdb.cpp). The guest has not opened
+      // a file yet, so the redirect is in place before it asks.
+      fable2::InstallDrawDistance(
+          runtime()->kernel_state()->file_system(),
+          mounted.empty() ? settings_.ResolvedGamePath() : std::filesystem::path(mounted),
+          rex::filesystem::GetExecutableFolder() / "shadow", settings_.draw_distance);
     }
 
     // The window exists by now, so the comfort settings go straight on it.

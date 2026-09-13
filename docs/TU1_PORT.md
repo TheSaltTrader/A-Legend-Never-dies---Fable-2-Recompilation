@@ -171,6 +171,21 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 04:00 Draw distance: globals.gdb decoded (descriptors at
+  0x18 + header word 0x08; records from 0x28; values in id order, NOT by the
+  type word's member index - that is the C++ slot). Three experiments:
+  x0.1 in the resident blob in play = no change; x0.1 in the blob on the
+  title screen before the save loads = no change; x0.1 in the FILE (backup
+  + sha256-verified restore) = the far side of the market gone. Shipped as
+  `src/fable2_gdb.cpp`: `data\globals` mirrored under `<exe>/shadow/globals`
+  (scaled gdb + hard links), served through a HostPathDevice at
+  `\Device\Fable2Shadow` and a symbolic link on the FOLDER
+  `\Device\Harddisk0\Partition1\data\globals` (the resolver follows links
+  until none matches, so the game: and d: links both land on it). A link on
+  the file alone is never consulted: OpenFile resolves the directory, then
+  takes the child by name - the first build logged "served" and changed
+  nothing. Mounted outside `\Device\Harddisk0` because the runtime's null
+  device claims everything under it that the partition does not.
 - 2026-09-13 03:10 Field of view, for real this time: a cdb `ba w4` on the
   m11 of the live projection matrix (heap, row-major, zn 0.1 at m32) hit in
   sub_8219D690 (the 4x4 constructor), whose only tan-using caller is

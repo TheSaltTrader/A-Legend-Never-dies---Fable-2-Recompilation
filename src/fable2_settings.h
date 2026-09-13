@@ -226,6 +226,9 @@ struct Fable2Settings {
   // Vertical field of view in degrees; the game ships 60 (59.8 measured).
   // Applied live by the projection-builder hook (patch_hooks.cpp).
   int fov = 60;
+  // Draw distance as a percentage of the game's own (100). Served as a
+  // scaled copy of globals.gdb at start-up (fable2_gdb.cpp): restart-bound.
+  int draw_distance = 100;
 
   // Drive the guest pad from keyboard and mouse. Off by default in the
   // runtime, which is a surprising default for a PC port.
@@ -330,6 +333,7 @@ struct Fable2Settings {
         << "patch_high_tick_rate=" << (patch_high_tick_rate ? 1 : 0) << "\n"
         << "cursor_hide_seconds=" << cursor_hide_seconds << "\n"
         << "fov=" << fov << "\n"
+        << "draw_distance=" << draw_distance << "\n"
         << "mute=" << (mute ? 1 : 0) << "\n"
         << "audio_queue_frames=" << audio_queue_frames << "\n"
         << "keyboard_control=" << (keyboard_control ? 1 : 0) << "\n";
@@ -372,6 +376,7 @@ struct Fable2Settings {
     mouse_sensitivity = std::clamp(mouse_sensitivity, 0.01, 10.0);
     cursor_hide_seconds = std::clamp(cursor_hide_seconds, 0, 60);
     fov = std::clamp(fov, 40, 120);
+    draw_distance = std::clamp(draw_distance, 10, 400);
     if (readback != "none" && readback != "fast" && readback != "some" &&
         readback != "full")
       readback = "none";
@@ -440,6 +445,7 @@ struct Fable2Settings {
     else if (k == "audio_queue_frames") audio_queue_frames = std::atoi(v.c_str());
     else if (k == "cursor_hide_seconds") cursor_hide_seconds = std::atoi(v.c_str());
     else if (k == "fov") fov = std::atoi(v.c_str());
+    else if (k == "draw_distance") draw_distance = std::atoi(v.c_str());
     else if (k == "keyboard_control") keyboard_control = Truthy(v);
     else if (k.rfind("keybind_", 0) == 0) keybinds[k] = v;
     else if (k == "mouse_look") mouse_look = Truthy(v);

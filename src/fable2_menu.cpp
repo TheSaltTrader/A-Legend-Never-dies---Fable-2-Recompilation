@@ -1031,6 +1031,17 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       changed = true;
     }
 
+    RowStart("Draw distance",
+             "How far away buildings, trees and props are still drawn, as a "
+             "percentage of the game's own distances (100). Higher pushes the "
+             "pop-in further out and costs some GPU time; lower helps a weak "
+             "machine. The game reads these distances once while it starts, so "
+             "this takes effect after a restart.");
+    {
+      changed |= ImGui::SliderInt("##drawdist", &s.draw_distance, 10, 400, "%d%%");
+      RestartTag();
+    }
+
     RowStart("Hide the pointer after",
              "Seconds of mouse stillness over the window before the pointer "
              "disappears. 0 keeps it visible.");

@@ -1,63 +1,113 @@
-# Draw distance (level-of-detail pop-in) - investigation, 2026-09-13
+# Draw distance and field of view - how they work, 2026-09-13
 
-The user asked to increase draw distance with a slider, alongside a
-field-of-view slider. The FOV attempt (0.1.6/0.1.7) was REVERTED in 0.1.8: the
-constant at 0x82101034 that poking seemed to prove was the FOV does not drive
-the gameplay camera (60 and 90 degrees load to identical frames). Any new FOV
-attempt must start from the projection build, not that constant. This file
-records the draw-distance findings and the safe path.
+Both sliders exist now (0.1.9 field of view, 0.1.10 draw distance). This file
+records what was found, what was tried and failed, and how each is done, so
+the next person does not repeat the dead ends.
 
-## What the pop-in is
+## Field of view (live)
 
-Objects and their sharp textures appear close to the player because of the
-game's own level-of-detail and texture streaming, tuned for a 512 MB console.
-It is not the far clip plane: the camera's projection far plane is ~4993 units
-(read from the live projection matrices), far beyond where things pop in. So a
-far-plane change would not help.
+The gameplay camera's projection is built EVERY FRAME by one function,
+`sub_821B4B48`, with the camera object in r3:
 
-## Where the values live
+    lfs f0,648(r31) / lfs f13,520(r31)   previous and target horizontal angle
+    lfs f11,652(r31) / lfs f10,524(r31)  previous and target vertical angle
+    fmadds f8,f12,f1,f0                  f8  = lerp(prev, target, f1)  horizontal
+    fmadds f30,f9,f1,f11                 f30 = lerp(prev, target, f1)  vertical
+    fmul f7,f8,f31  (x 0.5)              <- hook fable2PatchFieldOfView HERE
+    bl 0x82294118                        tan(half)
+    ...
+    fdivs f1,f31,f9 / fdivs f6,f31,f6    m00 = 1/tan, m11 = 1/tan
+    bl 0x8219d690                        4x4 constructor -> camera + 272
 
-The per-object draw distances are fields in `game/data/globals/globals.gdb`,
-a binary database. Its field names are hashed to 32-bit ids with **FNV-1**
-(offset basis 0x811c9dc5, prime 0x01000193, multiply-then-xor), confirmed
-against the id bytes stored after each name in the symbol table:
+The angles are radians: 1.0444 vertical (59.84 degrees, not 60) and 1.593
+horizontal (91.3 degrees), i.e. the 16:9 aspect is baked into the pair, no
+division by an aspect anywhere. The hook scales the vertical angle by the
+setting over 60 and re-derives the horizontal one from the same tangent
+ratio, so the aspect is preserved exactly. It runs for every camera (the
+zoomed dialogue shots included) and scales rather than replaces, so their
+framing relative to gameplay is kept.
 
-| field | FNV-1 id | where |
-|---|---|---|
-| MaxDrawDistance | 0x171e1806 | id-sorted class tables, 12 occurrences |
-| MaxDrawDistanceOverride | 0xa9689dee | 6 occurrences |
-| LodFadeDistance | 0xe2687215 | 4 occurrences |
-| FadeInDistance | 0x74d853d3 | 2 occurrences |
-| RadiosityFadeDistance | 0x197e929c | 2 occurrences |
+How it was found: `projlist.py` (session scratchpad) lists every perspective
+matrix in guest memory; the heap copy with zn = 0.1 in m32 is the camera's.
+A cdb hardware write-breakpoint on its m11 hit in `sub_8219D690`, the matrix
+constructor; its call sites were scanned for the tan routine, and exactly one
+uses it. The constant at 0x82101034 that 0.1.6 wrote is NOT on this path
+(the A/B in 0.1.8 showed identical frames); it is some other 60.
 
-Each class block holds an ascending (binary-searchable) array of these field
-ids; the per-object *values* sit in a parallel array indexed by the id's rank.
-The header at 0x00 has section offsets (0x118a7, 0x154a7c, 0x6b870, ...).
+Lesson, paid for with two crashed sessions: cdb's `ba` breakpoints stay armed
+in the debug registers after `qd`, even after `bc *`; the next write raises
+a single-step exception (0x80000004) inside the game with no debugger to
+take it. Do not use data breakpoints on this game again unless the crash
+filter learns to clear DR7 and continue.
 
-## Why it is not done yet
+## Draw distance (restart-bound)
 
-Rewriting `globals.gdb` in place to multiply every draw-distance value means
-decoding the value-array layout exactly. A wrong offset corrupts the database
-and every object misbehaves, and this file is shared with the game the user is
-actively playing. That is not a change to make blind and unattended overnight.
+### Where the values live
 
-## The safe path (for the user's decision)
+`game/data/globals/globals.gdb` (3,016,809 bytes, big-endian):
 
-1. Decode the value array fully against a couple of known objects, verified by
-   reading a value the game clearly uses (e.g. a 206.7 near MaxDrawDistance).
-2. A tool that writes a PATCHED COPY of globals.gdb (never the original),
-   multiplying MaxDrawDistance / LodFadeDistance / FadeInDistance by a factor,
-   with the original kept and a one-line revert.
-3. A "Draw distance" slider that selects the factor and points the game at the
-   patched copy (a game-folder override), rebuilt when the slider changes.
+| offset | meaning |
+|---|---|
+| 0x00 | `GDB\0` |
+| 0x04 | size of the record section (0x118a7 - not used by the port) |
+| 0x08 | offset of the descriptor section, from 0x18 (0x154a7c) |
+| 0x0C | size of the descriptor section (0x6b870) |
+| 0x10 | count (9993), 0x14 zero |
+| 0x18 | 16 bytes the game rewrites at load |
+| 0x28 | records, up to 0x18 + word 0x08 |
+| 0x154a94 | descriptors (7,388) |
+| ~0x230000 | symbol table: `id, name\0` pairs |
 
-Alternatively, a runtime hook on the LOD-distance comparison (a global bias)
-would avoid touching the file, but needs the comparison site found first - the
-same live-value method that found FOV, once a LOD value is known to hunt for.
+Field ids are FNV-1 of the field name (basis 0x811c9dc5, prime 0x01000193,
+multiply then xor). A descriptor is `[count << 8 | flag][count ids,
+ascending, repeats allowed][count type words: type << 24 | C++ member
+index]`; types seen: 0 bool, 1 ?, 3 float, 4 string id, 5 enum, 6 reference
+(`parent`), 7 ?. A record is `[descriptor offset within the section][one
+32-bit value per field IN THE DESCRIPTOR'S ID ORDER]` - not by the member
+index, which is where the value goes in the game's C++ object. 71,845
+records. The class defaults (record 0x42d68) say MaxDrawDistance 64,
+BillboardDistance 70, LodFadeDistance 30; instance records override with
+80, 150, 400, 1024 and so on. 150 draw-distance floats in all.
 
-## Tools from this session (in the session scratchpad)
+### What does and does not work
 
-- `memscan.py` - read-only scan of the running game's guest memory (big-endian).
-- `projscan.py` - finds projection matrices, reads the FOV and near/far planes.
-- `pokeone.py` / `fovhunt.py` - write a value and screenshot-diff to confirm a
-  constant controls the picture (how the FOV constant was found).
+- The whole file is loaded into the guest heap (base varies between runs);
+  the header and the descriptor references are relocated in place, the
+  values are byte-identical to the file.
+- Scaling all 150 values x0.1 in the resident copy during play: no change.
+- Scaling them on the title screen, before the save loads: no change. The
+  numbers are copied into the object definitions while the game starts.
+- Scaling them in the FILE (backup, swap, sha256-verified restore): the
+  buildings and the far wall behind the Crucible arch are gone at x0.1.
+  That is the lever.
+
+### How the port does it
+
+`src/fable2_gdb.cpp`. `WriteScaledGlobals` walks the file with the layout
+above, refuses to write if either walk does not reach the end it expects,
+and scales MaxDrawDistance, MaxDrawDistanceOverride, BillboardDistance and
+LodFadeDistance (floats in 0.5..20000; sentinels and references are left
+alone). `InstallDrawDistance`, from the app's OnPostSetup (the runtime has
+mounted the game, the guest has not opened a file yet), mirrors
+`data\globals` into `<exe>/shadow/globals/`: the scaled globals.gdb plus
+hard links to the other six files (copies when the game folder is on another
+volume), mounts the mirror as a read-only HostPathDevice at
+`\Device\Fable2Shadow`, and registers a symbolic link from
+`\Device\Harddisk0\Partition1\data\globals` to it. The FOLDER, not the
+file: the runtime's OpenFile resolves a path's directory (where symbolic
+links apply) and then takes the child by name, so a link on the one file is
+never consulted - the first version did that, logged "served", and the game
+read its own copy. The runtime's resolver follows links until none matches,
+so `game:\...` and `d:\...` both arrive at the mirror; the device is
+mounted outside `\Device\Harddisk0` because the runtime's null device
+claims everything under it that the partition does not. At 100% nothing is
+mounted and the mirror is removed (removing hard links leaves the originals
+alone). The game folder is never written.
+
+### Tools (session scratchpad)
+
+`gdb_records.py` / `gdb_dd.py` decode the file; `gdb_poke.py` and
+`gdb_patch.py` scale the resident copy (the negative results above);
+`gdb_file_patch.py` + `gdb_file_test.sh` are the file experiment with the
+verified restore; `memscan.py`, `projlist.py`, `hostmap.py` (host RIP ->
+guest function through the exe's PPCFuncMappings table) served the FOV work.
