@@ -39,6 +39,7 @@
 #include "fable2_perf.h"
 #include "fable2_texnotify.h"
 #include "fable2_keyremap.h"
+#include "fable2_camera.h"
 #include "fable2_diagnostics.h"
 #include "fable2_stage.h"
 #include "fable2_crashdump.h"
@@ -382,6 +383,7 @@ class Fable2App : public rex::ReXApp {
     ArmTexpackStressSeam();
     DumpGuestImage();
     fable2::RaiseTimerResolution();
+    fable2::ApplyFieldOfView(settings_.fov);  // the saved field of view
     fable2::StartProfiler();  // FABLE2_PROFILE=1: sample the guest threads
     // Per-region texture warming needs to know which region is loading, and
     // the game says so through the audio bank it opens for it. The path the

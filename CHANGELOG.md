@@ -3,6 +3,18 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.6 — 2026-09-13 (branch `tu1`)
+
+### Added - a field-of-view slider
+
+The game keeps its vertical field of view as one constant, in radians, at
+guest address 0x82101034 (1.0471976, which is 60 degrees). It is read
+every frame and never written by the game, found by poking the running
+game until the whole picture moved. A "Field of view" slider (50 to 100
+degrees) writes the scaled value into that constant, so the view widens or
+narrows on the next frame with no restart; the saved value is applied at
+startup. Cutscenes and menus use their own cameras and are unaffected.
+
 ## 0.1.5 — 2026-09-13 (branch `tu1`)
 
 ### Removed - "Accurate depth", because it breaks the game

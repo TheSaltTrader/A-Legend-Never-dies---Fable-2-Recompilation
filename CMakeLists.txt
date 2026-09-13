@@ -24,6 +24,7 @@ set(FABLE2_SOURCES
     src/fable2_platform.cpp
     src/fable2_texnotify.cpp
     src/fable2_keyremap.cpp
+    src/fable2_camera.cpp
     src/fable2_diagnostics.cpp
     src/fable2_stage.cpp
     src/fable2_crashdump.cpp
