@@ -196,9 +196,13 @@ after_instruction = false
 # the same tan ratio, so the aspect is untouched. It runs every frame (the
 # matrix is rebuilt every frame), so the slider is live. Why not the constant
 # at 0x82101034 that 0.1.6 wrote: a proper A/B (frames at 60 and 90) showed
-# it never reached the camera.
+# it never reached the camera. r31 is the camera object (`mr r31,r3` at
+# entry): its near/far planes at +512/+516 tell the world camera (far 5000)
+# from the small far-60 scene built beside it every frame, and a camera at
+# fy = 2*atan(3/4) on an object other than the world camera's is the loading
+# map (the world camera itself takes that angle for a treasure) (0.1.16).
 [[midasm_hook]]
 address = 0x821B4B88
 name = "fable2PatchFieldOfView"
-registers = ["f8", "f30"]
+registers = ["f8", "f30", "r31"]
 after_instruction = false

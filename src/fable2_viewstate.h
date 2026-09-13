@@ -16,6 +16,13 @@ double SecondsSinceWorldCameraBuild();
 // camera is built only every other frame or so, and switching the
 // presenter on every one of those was a re-layout per frame (12 fps for
 // 15 s, 2026-09-13): the switch waits for half a second of steady frames.
-double SecondsOfSteadyWorldCamera();
+// True once a loading-map camera has been built more recently than a world
+// camera: the presenter shows 16:9 with bars from that frame on.
+bool LoadingCameraAfterWorld();
+// True while the game is in the world scene (two quick world-camera builds
+// enter it; a loading-map camera or a run of title/menu camera builds
+// leaves it; a still camera keeps it): the hook projects wide and the
+// presenter stretches, together.
+bool WorldCameraLive();
 
 }  // namespace fable2

@@ -267,13 +267,62 @@ void fable2PatchBankLoadSleep(PPCRegister& r3) {
 // goes through here (gameplay, cutscenes, the zoomed dialogue shots), and
 // scaling rather than replacing keeps their relative framing.
 namespace {
-std::atomic<int64_t> g_last_camera_build_ns{0};
-std::atomic<int64_t> g_world_run_start_ns{0};  // start of the current steady run
+std::atomic<int64_t> g_last_camera_build_ns{0};     // last WORLD camera build
+std::atomic<int64_t> g_last_loading_camera_ns{0};   // last loading-map camera
+// The SCENE the game is in, from its cameras. The game rebuilds a
+// projection only when it changes, so a still camera (a dialogue, a shop,
+// a pause) means no builds while the world is still drawn with the last
+// projection - the presenter must follow the scene, never a clock. A
+// loading-map camera makes the scene "loading" at once; two quick builds
+// (within 100 ms, nothing else between) of the 70x52.5 title/menu camera
+// make it "menu"; two quick builds of the world camera make it "world".
+// The loading screen builds the world camera once every half second or so
+// while the region streams in (build 49 trace): lone builds never make a
+// scene, and outside the world scene they keep the game's own projection.
+enum class Scene : int { kNone = 0, kLoading, kMenu, kWorld };
+std::atomic<int> g_scene{int(Scene::kNone)};
+int g_world_quick_builds = 0;   // hook thread only
+int g_menu_quick_builds = 0;
+int g_world_builds_in_loading = 0;  // world builds since the loading map appeared
+uint32_t g_world_object = 0;        // the object of the last world-camera build
+int64_t g_prev_world_build_ns = 0, g_prev_menu_build_ns = 0;
+constexpr int64_t kQuickBuildGapNs = 100000000;  // 100 ms
+const char* SceneName(Scene s) {
+  switch (s) {
+    case Scene::kLoading: return "loading";
+    case Scene::kMenu: return "menu";
+    case Scene::kWorld: return "world";
+    default: return "none";
+  }
+}
+void SetScene(Scene s) {
+  const int was = g_scene.exchange(int(s), std::memory_order_relaxed);
+  if (was != int(s))
+    REXLOG_INFO("[cam] scene {} -> {}", SceneName(Scene(was)), SceneName(s));
+}
 int64_t NowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
+// The cameras the hook has met lately: the object (r31 in sub_821B4B48), its
+// angles, its planes and how often it has been built. An entry not built
+// for two seconds is forgotten, so a reused object address starts afresh.
+struct SeenCamera {
+  uint32_t obj = 0;
+  double fx = 0, fy = 0;
+  float near_f = 0, far_f = 0;
+  uint32_t builds = 0;
+  int64_t last_ns = 0;
+};
+SeenCamera g_seen_cameras[8];
+constexpr int64_t kCameraForgetNs = 2000000000;
+// The loading map's camera: fy = 2 * atan(3/4) exactly, on an object that
+// is never the world camera's (four loads traced 2026-09-13: four fresh
+// addresses, the world object unchanged across them). The angle alone is
+// not enough: picking up a treasure zooms the WORLD camera to the same
+// angle. The world camera is fy = 60 degrees, rebuilt every frame.
+constexpr double kLoadingMapFy = 1.2870;
 }  // namespace
 
 double fable2::SecondsSinceWorldCameraBuild() {
@@ -282,15 +331,16 @@ double fable2::SecondsSinceWorldCameraBuild() {
   return double(NowNs() - last) * 1e-9;
 }
 
-double fable2::SecondsOfSteadyWorldCamera() {
-  const int64_t now = NowNs();
-  const int64_t last = g_last_camera_build_ns.load(std::memory_order_relaxed);
-  const int64_t start = g_world_run_start_ns.load(std::memory_order_relaxed);
-  if (!last || !start || now - last > 250000000) return 0.0;
-  return double(now - start) * 1e-9;
+bool fable2::LoadingCameraAfterWorld() {
+  return g_last_loading_camera_ns.load(std::memory_order_relaxed) >
+         g_last_camera_build_ns.load(std::memory_order_relaxed);
 }
 
-void fable2PatchFieldOfView(PPCRegister& f8, PPCRegister& f30) {
+bool fable2::WorldCameraLive() {
+  return g_scene.load(std::memory_order_relaxed) == int(Scene::kWorld);
+}
+
+void fable2PatchFieldOfView(PPCRegister& f8, PPCRegister& f30, PPCRegister& r31) {
   const int degrees = std::clamp(REXCVAR_GET(fable2_fov), 40, 120);
   const bool ultrawide = REXCVAR_GET(fable2_ultrawide);
   const double fx = f8.f64, fy = f30.f64;
@@ -298,31 +348,134 @@ void fable2PatchFieldOfView(PPCRegister& f8, PPCRegister& f30) {
   // left alone rather than turned into a bigger nonsense.
   if (!(fx > 0.01 && fx < 3.0 && fy > 0.01 && fy < 3.0)) return;
   const double ratio = std::tan(fx * 0.5) / std::tan(fy * 0.5);  // aspect
-  // World cameras only. The title screen has a camera too, and scaling it
-  // shrank the title art inside black borders (2026-09-13). Two tests,
-  // either one enough: no region has loaded yet (the stage observer
-  // numbers regions from their sound banks; 0 until the first), or the
-  // camera is not the game's 16:9 kind - the title and menu cameras are
-  // 70 x 52.5 degrees, a 4:3-like tangent ratio of 1.42, while every
-  // in-world camera (gameplay, cutscene, dialogue) carries 16:9 exactly.
-  const bool world_camera =
-      fable2::CurrentStage() > 0 && std::abs(ratio - 16.0 / 9.0) <= 0.05;
-  if (!world_camera) return;  // the front end and menus are left alone
+  const int64_t now = NowNs();
+
+  // The camera's near and far planes (+512 / +516, big-endian floats).
+  float near_f = 0, far_f = 0;
+  if (auto* memory = REX_KERNEL_MEMORY()) {
+    if (auto* p = memory->TranslateVirtual<uint8_t*>(r31.u32 + 512)) {
+      uint32_t a, b;
+      std::memcpy(&a, p, 4);
+      std::memcpy(&b, p + 4, 4);
+      a = _byteswap_ulong(a);
+      b = _byteswap_ulong(b);
+      std::memcpy(&near_f, &a, 4);
+      std::memcpy(&far_f, &b, 4);
+    }
+  }
+
+  // Which camera is this? Look it up, or take the oldest slot for a new one.
+  SeenCamera* cam = nullptr;
+  SeenCamera* oldest = &g_seen_cameras[0];
+  for (SeenCamera& s : g_seen_cameras) {
+    if (s.obj == r31.u32 && s.obj && now - s.last_ns < kCameraForgetNs) {
+      cam = &s;
+      break;
+    }
+    if (s.last_ns < oldest->last_ns) oldest = &s;
+  }
+  bool is_new = false, changed = false;
+  if (!cam) {
+    cam = oldest;
+    *cam = SeenCamera{};
+    cam->obj = r31.u32;
+    is_new = true;
+  } else {
+    changed = std::abs(fx - cam->fx) > 1e-3 || std::abs(fy - cam->fy) > 1e-3;
+  }
+  const int64_t gap_ms = cam->last_ns ? (now - cam->last_ns) / 1000000 : -1;
+  cam->fx = fx;
+  cam->fy = fy;
+  cam->near_f = near_f;
+  cam->far_f = far_f;
+  cam->builds++;
+  cam->last_ns = now;
+
+  const bool wide_ratio = std::abs(ratio - 16.0 / 9.0) <= 0.05;
+  const bool world_scale = far_f >= 1000.0f;
+  const bool loading_map = std::abs(fy - kLoadingMapFy) < 0.002 && r31.u32 != g_world_object;
+  const char* kind = loading_map ? "loading map"
+                     : (wide_ratio && world_scale) ? "world"
+                     : (!wide_ratio) ? "menu (4:3-like)"
+                                     : "small scene";
+
+  // [cam] trace: a line for a new camera, changed angles or a camera resumed
+  // after a pause; at most ten a second.
+  if (is_new || changed || gap_ms > 250) {
+    static int64_t t_sec = 0;
+    static int t_lines = 0;
+    if (now - t_sec > 1000000000) {
+      t_sec = now;
+      t_lines = 0;
+    }
+    if (t_lines++ < 10) {
+      REXLOG_INFO("[cam] {} obj 0x{:08X} stage {} fx {:.4f} fy {:.4f} ratio {:.3f} near {:.2f} far {:.1f} build #{} gap {} ms{}",
+                  kind, r31.u32, fable2::CurrentStage(), fx, fy, ratio, near_f, far_f, cam->builds,
+                  gap_ms, is_new ? " (new object)" : "");
+    }
+  }
+
+  // The loading map is a 3D scene with 2D art in it: left at the game's own
+  // projection, and the presenter is told to show it in 16:9 with bars at
+  // once (the HUD overlay reads LoadingCameraAfterWorld). Everything that is
+  // not the world - the title and menu cameras (70 x 52.5 degrees, a
+  // 4:3-like tangent ratio of 1.42) and the small far-60 scene built beside
+  // the world camera every frame - is left alone too.
+  if (loading_map) {
+    g_last_loading_camera_ns.store(now, std::memory_order_relaxed);
+    g_world_quick_builds = g_menu_quick_builds = 0;
+    g_world_builds_in_loading = 0;
+    SetScene(Scene::kLoading);
+    return;
+  }
+  if (!wide_ratio) {
+    // The title / main-menu camera. Two quick builds with no world build
+    // between them: the menus own the screen (a menu camera built beside
+    // a live world camera changes nothing).
+    const bool quick = g_prev_menu_build_ns && now - g_prev_menu_build_ns <= kQuickBuildGapNs &&
+                       g_prev_world_build_ns < g_prev_menu_build_ns;
+    g_menu_quick_builds = quick ? g_menu_quick_builds + 1 : 1;
+    g_prev_menu_build_ns = now;
+    if (g_menu_quick_builds >= 2 && Scene(g_scene.load(std::memory_order_relaxed)) != Scene::kMenu) {
+      g_world_quick_builds = 0;
+      SetScene(Scene::kMenu);
+    }
+    return;
+  }
+  if (!world_scale) {
+    // The small far-60 scene beside the world camera (the HUD). During a
+    // load the game renders the world for a couple of dozen frames behind
+    // the map, pauses, then shows it - and this camera is a NEW object the
+    // moment the world is shown (build 51 trace, both loads). That, not
+    // the warm-up builds, ends the loading scene.
+    if (is_new && Scene(g_scene.load(std::memory_order_relaxed)) == Scene::kLoading &&
+        g_world_builds_in_loading > 0)
+      SetScene(Scene::kWorld);
+    return;
+  }
   {
-    const int64_t now = NowNs();
-    const int64_t last = g_last_camera_build_ns.load(std::memory_order_relaxed);
-    if (!last || now - last > 250000000)  // a gap: a new steady run begins
-      g_world_run_start_ns.store(now, std::memory_order_relaxed);
+    const bool quick = g_prev_world_build_ns && now - g_prev_world_build_ns <= kQuickBuildGapNs;
+    g_world_quick_builds = quick ? std::min(g_world_quick_builds + 1, 1000000) : 1;
+    g_prev_world_build_ns = now;
+    g_world_object = r31.u32;
     g_last_camera_build_ns.store(now, std::memory_order_relaxed);
+    const Scene scene = Scene(g_scene.load(std::memory_order_relaxed));
+    if (scene == Scene::kLoading)
+      ++g_world_builds_in_loading;  // warm-up: the HUD camera's return ends it
+    else if (g_world_quick_builds >= 2 && scene != Scene::kWorld)
+      SetScene(Scene::kWorld);
+    // Outside the world scene (a lone build while the map is up) the
+    // game's own projection stands: the presenter shows bars, and the two
+    // must agree.
+    if (Scene(g_scene.load(std::memory_order_relaxed)) != Scene::kWorld) return;
   }
 
   // Ultrawide: a world camera projects at the display's aspect; the HUD
   // overlay has the presenter stretch the 16:9 frame to the window while a
   // world camera is live (present_letterbox off), and the two cancel into a
-  // correctly proportioned, wider picture. The front end, the loading map
-  // and every other camera-less frame keep 16:9 with bars - the user's
-  // rule. Only a display wider than 16:9 has anything to fill; on a 16:9
-  // one a saved "on" changes nothing (the menu does not offer it there).
+  // correctly proportioned, wider picture. Only a display wider than 16:9
+  // has anything to fill; on a 16:9 one a saved "on" changes nothing (the
+  // menu does not offer it there).
   double target = ratio;
   if (ultrawide) {
     const int aspect = REXCVAR_GET(fable2_display_aspect_x1000);

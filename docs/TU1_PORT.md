@@ -171,6 +171,20 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 14:00 Cameras by what they are (0.1.16). A [cam] trace in the
+  projection hook (r31 = the camera object; near/far at +512/+516) showed
+  the world camera (16:9, far 5000, every frame), a far-60 camera built
+  right after it every frame (the HUD/menu panels' camera - the hook had
+  been rescaling it, hence the vendor screen's shrunken 4:3 panel), the
+  70x52.5 title/menu cameras and the loading map's camera (fy = 2*atan(3/4),
+  a new object built once per load). The stage gate was dropped: a save
+  loaded from the main menu never reports its region (the bank open is not
+  seen until the next gate or reload), so two sessions ran with no FOV and
+  no ultrawide. The presenter now flips on the loading camera's frame and
+  on the first world frame (250 ms hold). Plugin: "some" readback copies
+  every resolve exactly, deferred (the Crucible gate swirl flashed white
+  4x/s from a stale first copy being uploaded over the fresh render).
+  The spirit dog is the game's own.
 - 2026-09-13 13:50 The frame-rate collapse: same-save A/B at the lake, 16:9,
   100% = 33 fps, 400% = 30 fps, both with ~5,000 resolve-readback waits per
   5 s (2.4 s). Not the draw distance and not the dump: the run's config

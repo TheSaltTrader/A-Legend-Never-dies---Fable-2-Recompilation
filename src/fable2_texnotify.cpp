@@ -165,21 +165,55 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
       static int last_want = -1;
       const Fable2Settings* st = g_hud_settings;
       if (st && st->ultrawide && aspect > 1800) {
-        // Stretch only after half a second of steady world-camera frames,
-        // and hold each state at least half a second: every switch is a
-        // presenter re-layout, and switching per frame right after a load
-        // (the camera comes every other frame there) cost 12 fps for 15 s.
+        // Edge to edge in the world scene, bars in the loading and menu
+        // scenes (patch_hooks.cpp keeps the scene from the cameras it sees;
+        // a still camera during a dialogue keeps its scene, so nothing
+        // flips while the wide world is on screen). Each state is held a
+        // quarter second: a switch is a presenter re-layout, and flapping
+        // per frame once cost 12 fps.
         static std::chrono::steady_clock::time_point last_switch{};
         static std::chrono::steady_clock::time_point last_check{};
         const auto now = std::chrono::steady_clock::now();
-        const bool steady = fable2::SecondsSinceWorldCameraBuild() < 0.25 &&
-                            fable2::SecondsOfSteadyWorldCamera() >= 0.5;
-        const int want = steady ? 0 : 1;
-        const bool held = now - last_switch < std::chrono::milliseconds(500);
+        // Inside the world scene the presenter never switches: the save
+        // screen and the treasure popup draw the world as a captured picture
+        // with 2D art on top, and a draw-count gate (builds 52-54) squeezed
+        // them to 16:9 - the user's rule is that nothing in the world is
+        // resized. The plugin's per-frame draw counts are still logged
+        // below, to look for a signature of the map and Start menus.
+        static const bool have_draw_stat = rex::cvar::GetFlagInfo("gpu_frame_depth_draws") != nullptr;
+        const int32_t depth_draws =
+            have_draw_stat ? rex::cvar::Query<int32_t>("gpu_frame_depth_draws") : -1;
+        {
+          // [scene] the frame's draw counts, logged when either moves by a
+          // quarter (at most ten a second), with the 3D share.
+          static int32_t last_depth = -1000, last_all = -1000;
+          static std::chrono::steady_clock::time_point bucket_sec{};
+          static int bucket_lines = 0;
+          const int32_t all_draws = have_draw_stat ? rex::cvar::Query<int32_t>("gpu_frame_draws") : -1;
+          auto moved = [](int32_t a, int32_t b) {
+            const int32_t m = std::max(std::abs(a), std::abs(b));
+            return std::abs(a - b) * 4 > m;
+          };
+          if (moved(depth_draws, last_depth) || moved(all_draws, last_all)) {
+            if (now - bucket_sec > std::chrono::seconds(1)) { bucket_sec = now; bucket_lines = 0; }
+            if (bucket_lines++ < 10)
+              REXLOG_INFO("[scene] frame depth-tested draws {} of {} ({}% 3D), world camera {}", depth_draws,
+                          all_draws, all_draws > 0 ? depth_draws * 100 / all_draws : 0,
+                          fable2::WorldCameraLive() ? "live" : "not live");
+            last_depth = depth_draws;
+            last_all = all_draws;
+          }
+        }
+        const bool world = fable2::WorldCameraLive();
+        const int want = world ? 0 : 1;
+        const bool held = now - last_switch < std::chrono::milliseconds(250);
         if (want != last_want && !held) {
           last_want = want;
           last_switch = now;
           rex::cvar::SetFlagByName("present_letterbox", want ? "true" : "false");
+          REXLOG_INFO("[ultrawide] presenter -> {} ({:.3f} s since a world camera build)",
+                      want ? "16:9 with bars" : "edge to edge",
+                      fable2::SecondsSinceWorldCameraBuild());
         } else if (last_want >= 0 && now - last_check > std::chrono::milliseconds(500)) {
           // Any other settings change re-applies the letterbox and would
           // undo this (seen with the black-texture fix): re-assert, but

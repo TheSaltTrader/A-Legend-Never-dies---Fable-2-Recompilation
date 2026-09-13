@@ -1446,9 +1446,9 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     RowStart("Black texture fix",
              "Fable II's best-known emulation bug: the hero's and the dog's "
              "textures turn black once the hero grows up. The fix is to read "
-             "those textures back from the GPU. 'Some' reads back only what "
-             "needs it, which is what the unofficial Xenia fork for this game "
-             "does by hand; 'Full' waits for the whole GPU on every resolve - "
+             "those textures back from the GPU. 'Some' copies every rendered "
+             "texture back once its GPU work is done, without waiting for it "
+             "(a frame or two late); 'Full' waits for the whole GPU on every resolve - "
              "the lake ran at 33 fps instead of 60 with it - and is a "
              "diagnostic, not a setting to play with. Start at Some.");
     {

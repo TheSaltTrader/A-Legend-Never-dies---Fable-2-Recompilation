@@ -279,16 +279,22 @@ Display
   picture has correct proportions and a wider view. The title screen, the main
   menus and 2D screens such as the loading map keep 16:9 with bars: a frame
   is stretched only while a world camera was built behind it (its projection
-  already made it right), everything else is letterboxed. The HUD, subtitles
-  and menu text over the world are drawn in 16:9 and come out stretched. Live.
+  already made it right), everything else is letterboxed; the presenter
+  follows the scene the cameras describe (loading map, title menus, world)
+  and, in the world, whether the frame drew the 3D world at all: the pause
+  menu and the shop (2D only) show in 16:9 with bars, a chest popup or a
+  dialogue with the world behind it stays wide, and each switch falls on
+  the game's own scene cut. The HUD and text drawn over the world are in
+  the 16:9 frame and come out stretched with it. Live.
 - **Hide the pointer after** - seconds of mouse stillness before the pointer
   hides; 0 keeps it visible.
 - **Field of view** - how wide the camera sees, in degrees (vertical); the
   game runs at 60. Live: a hook in the game's one perspective builder scales
   the vertical angle every frame and re-derives the horizontal one, so the
-  aspect ratio is untouched. Every camera inside a region is scaled by the
-  same amount, so cutscenes and zoomed shots keep their framing; the title
-  screen and the main menu are left alone.
+  aspect ratio is untouched. Every world camera (far plane 1000 or more,
+  16:9) is scaled by the same amount, so cutscenes and zoomed shots keep
+  their framing; the title screen, the main menu, the loading map and the
+  small camera the HUD and menu panels are seen through are left alone.
 - **Draw distance** - how far away buildings, trees and props are still
   drawn, as a percentage of the game's own distances (10-400, 100 = as
   shipped). The distances are values in the game's `data\globals\globals.gdb`,
@@ -350,7 +356,9 @@ Enhancements
 - **Black texture fix** - the graduated readback (none / fast / some / full;
   full waits for the whole GPU on every resolve and halves the frame rate at
   the lake - a diagnostic, not a setting to play with)
-  for the hero and dog turning black at adulthood; `some` is the fix.
+  for the hero and dog turning black at adulthood; `some` is the fix: every
+  render-to-texture result is copied back exactly once its GPU work is done,
+  without waiting for it.
 - **Dither the output** - dither the 10 bpc output down to 8 bpc.
 
 Textures

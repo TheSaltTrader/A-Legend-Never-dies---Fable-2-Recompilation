@@ -3,6 +3,129 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.16 — 2026-09-13 (branch `tu1`)
+
+### Fixed - the field-of-view hook now knows a camera by what it is
+
+The hook recognised a world camera by "a region has loaded" (the stage
+observer) plus the 16:9 angle. Loading a save straight into a region
+never reports a region load - only a later gate or reload does - so two
+whole sessions ran with no field of view and no ultrawide, and the user
+saw the loss when a settings change made them look. A camera trace
+(`[cam]` lines, build 48) showed what the game actually builds: the world
+camera (16:9, far plane 5000, rebuilt every frame), a small far-60 camera
+built right after it every frame (the HUD and menu panels are 3D objects
+seen through it), the title and menu cameras (70 x 52.5 degrees) and the
+loading map's camera (16:9, far 5000, exactly 2*atan(3/4) vertical, on an
+object that is never the world camera's - the angle alone is not enough,
+the world camera takes it for a treasure reveal). Three things fall out
+of that:
+
+- The world camera is 16:9 with a far plane of 1000 or more, whatever the
+  stage observer has seen. Field of view and ultrawide work from the first
+  frame of a loaded save.
+- The far-60 camera is left alone. The hook had been rescaling it too, so
+  at 75 degrees the HUD and the shop panels were a quarter smaller, and in
+  ultrawide the vendor screen came out as a 4:3 panel with its item list
+  overflowing to the right.
+- The presenter follows the SCENE the cameras describe, never a clock.
+  The game rebuilds a projection only when it changes: a dialogue, a shop
+  or a pause is a still camera - no builds for a second or more while the
+  wide world is still on screen - and every timing rule tried (a quarter
+  second, a tenth) flipped the presenter to bars in the middle of it and
+  squeezed the picture (the "16:9 transition" when talking to a vendor).
+  The loading screen also builds the world camera once every half second
+  while the region streams in, and a first cut flipped on each of those
+  (the map "resized a few times"). Now: a loading-map camera makes the
+  scene "loading" the frame it appears, two quick builds of the title/menu
+  camera make it "menu", two quick builds of the world camera make it
+  "world"; the hook projects wide only in the world scene, the presenter
+  stretches only in the world scene, and a still camera keeps its scene.
+  The map stays 16:9 throughout at its normal size (the game renders the
+  world for a couple of dozen frames behind the map before showing it; the
+  HUD's own small camera is recreated the moment the world is shown, and
+  that is what ends the loading scene), the world comes back edge to edge
+  on its first frames, and nothing moves during dialogues. Each presenter
+  state is still held a quarter second. The scene changes are logged
+  (`[cam] scene world -> loading`).
+- Inside the world scene the presenter never switches. A draw-count gate
+  was tried on the way (the plugin now publishes each frame's draw counts,
+  `gpu_frame_draws` / `gpu_frame_depth_draws`, set in IssueSwap before the
+  presenter gets the frame): a frame with almost no depth-tested draws was
+  taken for a 2D menu and shown in bars - but the save screen and the
+  treasure popup draw the world as a captured picture with the art on top,
+  and were squeezed. The user's rule stands: nothing in the world is
+  resized. The counts stay as a diagnostic (`[scene]` lines when they move
+  by a quarter). Known: the map screen and the Start menu are drawn into
+  the 16:9 frame while the world scene holds, so they come out stretched
+  like the HUD; nothing in the cameras or the draw counts tells them from
+  a dialogue yet.
+
+In ultrawide the HUD, the shop and dialogue screens are drawn into the
+16:9 frame and come out stretched with it; that is the one thing this
+approach cannot fix, and it is documented.
+
+### Changed - the "Some" black-texture fix copies every render back, exactly
+
+The cullis-gate swirl at the Crucible flashed white a few times a second:
+a 6 s screen recording showed the swirl alternating between the game's
+art and a blank version with a blue plane across the floor. "Some"
+copied a render-to-texture result to the CPU side only the first time it
+saw that address, so anything re-rendered there was stale on the CPU and,
+whenever the game's CPU touched that page, the stale copy was uploaded
+over the fresh render. Now every resolve reaches guest memory exactly:
+the first at an address synchronously (within the per-frame budget), each
+later one when its own GPU work has completed, at the next frame's opening
+submission, never waiting; a newer render into the same readback slot
+supersedes an older pending copy; readback buffers replaced or evicted
+while a copy may be in flight are released only once that submission has
+completed (they used to be released at once). "Fast" and "Full" are
+unchanged.
+
+That left a one-or-two-frame window between a render and its copy
+landing, and a screen recording caught what it costs: a distant tree
+cluster (an impostor the game renders to a texture) flashing white and
+purple for a frame - the lake's purple flashes. The game's CPU touches the
+same memory page in that window (the next impostor is allocated beside
+the one just rendered), the page is marked dirty, and the next GPU use
+re-uploaded the whole page from the CPU copy, old bytes and all. A resolve
+whose copy is still pending now registers its byte range with the shared
+memory, and an upload overlapping it copies the page in pieces around
+those bytes, so the GPU keeps its fresh render there; the protection is
+lifted when the copy lands or is superseded. With resolution scaling on
+(the user's 2x) there is a second path: a resolve lands in the scaled
+buffer and its pages are marked "scaled resolved"; a CPU write to such a
+page used to clear the marks for the whole pages, and the next texture
+load took the unscaled guest copy - the impostor pool's magenta fill -
+for a frame (the magenta trees, 14:01 recording). Pages holding a
+protected range now keep their marks. Plugin pair: rexgpu-xenos.dll 6,577,152 bytes (sha256 0174e7eb...) with rexruntime.dll 11,031,552 bytes (395147ec..., unchanged since 0.1.15).
+
+Not a bug: the translucent blue dog with sparkles at the Crucible is the
+game's own spirit dog (a Full-readback run looked the same, and the user
+confirmed it from the story).
+
+### Known
+
+- White or magenta flashes on distant trees and hills while moving still
+  happen at "Some", not at "Full" (tested back to back, 14:15). At Full the
+  copy is taken the instant a render finishes; at Some it lands a frame
+  later, and the game's CPU reads that memory in between - most likely to
+  build the impostor's smaller mip levels, which then come out white - and
+  writes the result itself, so protecting the page cannot help. The proper
+  fix is a readback that waits only when the CPU actually reads a fresh
+  render (a read watch in the runtime); until then Full removes the
+  flashes at a frame-rate cost (33 fps at the lake) and Some is fast with
+  occasional flashes. The frames are logged for it (`[scene]`,
+  `gpu_frame_draws`).
+- The map screen and the Start menu are drawn into the 16:9 frame while
+  the world scene holds, so in ultrawide they come out stretched like the
+  HUD; nothing in the cameras or the draw counts tells them from a
+  dialogue yet.
+- The stage observer does not see the region of a save loaded from the
+  main menu (the region bank open is not reported until the next gate or
+  an in-game reload), so per-region texture warming starts late in such a
+  session. Nothing else depends on it any more.
+
 ## 0.1.15 — 2026-09-13 (branch `tu1`)
 
 ### Fixed - the frame-rate collapse was the Black texture fix at "full"
