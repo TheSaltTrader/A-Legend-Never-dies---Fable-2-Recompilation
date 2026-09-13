@@ -273,6 +273,11 @@ Display
 - **Keep aspect ratio** - letterbox instead of stretching the image to the window.
 - **Hide the pointer after** - seconds of mouse stillness before the pointer
   hides; 0 keeps it visible.
+- **Field of view** - how wide the camera sees, in degrees (vertical); the
+  game runs at 60. Live: a hook in the game's one perspective builder scales
+  the vertical angle every frame and re-derives the horizontal one, so the
+  aspect ratio is untouched. Every camera is scaled by the same amount, so
+  cutscenes and zoomed shots keep their framing.
 - **Keyboard and mouse** - drives the guest controller from the keyboard
   (Enter is Start, Space is A, WASD the left stick, arrows the d-pad).
   **Remap keys...** opens the Keyboard bindings screen: every controller

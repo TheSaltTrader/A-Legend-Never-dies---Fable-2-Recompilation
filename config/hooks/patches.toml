@@ -169,3 +169,36 @@ address = 0x82CC8898
 name = "fable2PatchBankLoadSleep"
 registers = ["r3"]
 after_instruction = false
+
+# --- Field of view -----------------------------------------------------------
+# Not a community patch: ours (2026-09-13). The only perspective builder in the
+# game is sub_821B4B48 (found with a hardware write-breakpoint on the live
+# projection matrix: its m11 is written from sub_8219D690, the 4x4 constructor,
+# whose one tan-using caller is this function). It blends two angles - the
+# camera's target field of view at +520/+524 and the previous one at +648/+652,
+# horizontal then vertical, radians - halves them, calls the tan routine
+# 0x82294118 for each and hands 1/tan to the constructor. Read back from the
+# image:
+#
+#   0x821B4B80  fmadds f8,f12,f1,f0     <- f8  = horizontal FOV (lerped)
+#   0x821B4B84  fmadds f30,f9,f1,f11    <- f30 = vertical FOV (lerped)
+#   0x821B4B88  fmul   f7,f8,f31        <- hooked BEFORE: both angles rescaled
+#   0x821B4B8C  frsp   f1,f7
+#   0x821B4B90  bl     0x82294118       <- tan(horizontal / 2)
+#   ...
+#   0x821B4BD4  fdivs  f1,f31,f9        <- m00 = 1 / tan
+#   0x821B4C10  fdivs  f6,f31,f6        <- m11 = 1 / tan
+#   0x821B4C20  bl     0x8219d690       <- matrix constructor
+#
+# The stock vertical angle is 1.0444 rad (59.8 deg); the horizontal one is
+# derived from it and the 16:9 aspect (91.3 deg). The hook scales the vertical
+# angle by the player's setting over 60 and re-derives the horizontal one from
+# the same tan ratio, so the aspect is untouched. It runs every frame (the
+# matrix is rebuilt every frame), so the slider is live. Why not the constant
+# at 0x82101034 that 0.1.6 wrote: a proper A/B (frames at 60 and 90) showed
+# it never reached the camera.
+[[midasm_hook]]
+address = 0x821B4B88
+name = "fable2PatchFieldOfView"
+registers = ["f8", "f30"]
+after_instruction = false

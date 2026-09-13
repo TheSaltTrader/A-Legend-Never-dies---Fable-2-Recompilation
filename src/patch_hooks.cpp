@@ -11,6 +11,8 @@
 #include <rex/ppc/context.h>
 #include <rex/system/kernel_state.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <set>
@@ -55,6 +57,11 @@ REXCVAR_DEFINE_BOOL(fable2_fast_bank_load, false, "Fable II",
 // spinning through no-ops. See patches.toml for the profile that found it.
 REXCVAR_DEFINE_BOOL(fable2_gpu_wait_yield, false, "Fable II",
                     "Yield the CPU while the render thread waits for the GPU");
+
+// Ours (2026-09-13): vertical field of view in degrees, 60 = as shipped.
+// Applied by the projection-builder hook every frame, so it is live.
+REXCVAR_DEFINE_INT32(fable2_fov, 60, "Fable II",
+                     "Vertical field of view in degrees (60 = the game's own)");
 
 namespace {
 
@@ -236,5 +243,32 @@ void fable2PatchBankLoadSleep(PPCRegister& r3) {
   std::lock_guard<std::mutex> lock(mutex);
   if (seen.size() < 40 && seen.insert({thread, ms}).second) {
     REXLOG_INFO("Sleep {} ms on '{}' (first time; left alone)", ms, thread);
+  }
+}
+
+// Field of view. sub_821B4B48 has just blended this frame's horizontal (f8)
+// and vertical (f30) angles, radians, and is about to halve them and take the
+// tan of each for the perspective matrix (see patches.toml). Scale the
+// vertical angle by setting/60 and re-derive the horizontal one from the same
+// tan ratio, so the aspect ratio the game chose is untouched. Every camera
+// goes through here (gameplay, cutscenes, the zoomed dialogue shots), and
+// scaling rather than replacing keeps their relative framing.
+void fable2PatchFieldOfView(PPCRegister& f8, PPCRegister& f30) {
+  const int degrees = std::clamp(REXCVAR_GET(fable2_fov), 40, 120);
+  if (degrees == 60) return;
+  const double fx = f8.f64, fy = f30.f64;
+  // A nonsense angle (uninitialised camera, the odd frame during a load) is
+  // left alone rather than turned into a bigger nonsense.
+  if (!(fx > 0.01 && fx < 3.0 && fy > 0.01 && fy < 3.0)) return;
+  const double ratio = std::tan(fx * 0.5) / std::tan(fy * 0.5);  // aspect
+  const double ny = std::clamp(fy * (degrees / 60.0), 0.05, 3.0);
+  const double nx = 2.0 * std::atan(ratio * std::tan(ny * 0.5));
+  f8.f64 = nx;
+  f30.f64 = ny;
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    REXLOG_INFO("Patch: field of view {} deg: vertical {:.4f} -> {:.4f} rad, horizontal {:.4f} -> {:.4f} rad",
+                degrees, fy, ny, fx, nx);
   }
 }

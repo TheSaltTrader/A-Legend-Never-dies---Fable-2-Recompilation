@@ -171,6 +171,18 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 03:10 Field of view, for real this time: a cdb `ba w4` on the
+  m11 of the live projection matrix (heap, row-major, zn 0.1 at m32) hit in
+  sub_8219D690 (the 4x4 constructor), whose only tan-using caller is
+  sub_821B4B48 - it lerps the camera's angles (obj+520/+524 target,
+  +648/+652 previous, f1 = blend), halves them, calls tan 0x82294118 twice.
+  Hook `fable2PatchFieldOfView` at 0x821B4B88 (registers f8 = horizontal,
+  f30 = vertical, radians; f30 is a local in the generated function and the
+  codegen passes it). Stock vertical angle is 1.0444 rad = 59.84 deg, not
+  60. Lesson paid for twice: cdb data breakpoints leave the debug registers
+  armed after `qd` (with `bc *` too); the next write raises 0x80000004 in
+  the game with no debugger attached and it dies. Never `ba` this game
+  again without a single-step handler in the crash filter.
 - 2026-09-12 10:40 `tools/relocate.py` written (window match with branch and
   address fields masked); it reproduces Canary's two verified TU1 sites from
   the disc addresses, which is the check that it works. setjmp/longjmp, the

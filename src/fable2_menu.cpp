@@ -1021,6 +1021,16 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
              "Letterbox instead of stretching the image to the window.");
     changed |= ImGui::Checkbox("##letterbox", &s.letterbox);
 
+    RowStart("Field of view",
+             "How wide the camera sees, in degrees (vertical). The game runs "
+             "at 60; higher shows more of the world at the edges, lower zooms "
+             "in. Applies immediately. Every camera is scaled by the same "
+             "amount, so cutscenes and zoomed shots keep their framing.");
+    if (ImGui::SliderInt("##fov", &s.fov, 40, 120, "%d deg")) {
+      SetCvar("fable2_fov", std::to_string(s.fov));
+      changed = true;
+    }
+
     RowStart("Hide the pointer after",
              "Seconds of mouse stillness over the window before the pointer "
              "disappears. 0 keeps it visible.");

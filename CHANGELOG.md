@@ -3,6 +3,23 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.9 — 2026-09-13 (branch `tu1`)
+
+### Added - field of view, live, from the game's own projection builder
+
+The camera's projection is built every frame by one function
+(sub_821B4B48): it blends this frame's horizontal and vertical angles,
+halves them, takes the tangent of each and hands 1/tan to the matrix
+constructor. Found with a hardware write-breakpoint on the live projection
+matrix, not by guessing at constants. A hook at the blend's end scales the
+vertical angle by the slider over 60 and re-derives the horizontal one from
+the same tangent ratio, so the 16:9 aspect the game chose is kept. The
+slider (Display, 40-120 degrees) applies immediately, and the saved value
+reaches the hook at start-up through the tuning table (`fable2_fov`;
+`FABLE2_TUNE=fable2_fov=90` is the A/B). Verified the way 0.1.8 demanded:
+frames after the same save load at 60 and at 100 degrees differ, and the
+log carries the hook's own line with the angles it changed.
+
 ## 0.1.8 — 2026-09-13 (branch `tu1`)
 
 ### Removed - the field-of-view slider (0.1.6, 0.1.7): it never changed the camera
