@@ -171,6 +171,15 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 11:30 Second device loss, on 0.1.11 with DRED on: Fairfax ->
+  Ravenscar at 11:18:15, the 5 s load pause, nvlddmkm 153 at :27 and :29,
+  DEVICE_HUNG reported 11:18:33. Breadcrumbs: ops 1599-1600 CopyTextureRegion,
+  1601 ResourceBarrier, 1602 DrawIndexedInstanced <- never completed, of
+  4563; no page fault. Pack OFF at the time (F9 off at 11:16:53, dumping
+  on), so the copies are the game's own texture loads. Both hangs sit
+  10-20 s after a region load; the 44 fps flat segments before it are
+  Fairfax, not a hitch. Plugin: draws tagged with shader hashes and a ring
+  of executed draws by DRED op index; the next loss names the shader pair.
 - 2026-09-13 06:30 The user's first play on 0.1.10 (Bowerlake, then the
   market at night) ended at 05:49:01 in a lost D3D12 device: DEVICE_HUNG
   0x887A0006, 20 s after the region load, nvlddmkm event 153 ("Error

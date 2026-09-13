@@ -3,6 +3,24 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.12 — 2026-09-13 (branch `tu1`)
+
+### Changed - a GPU hang now names the draw's shaders
+
+The second device loss of the day (Ravenscar, 10 s after the region
+loaded, the pack off) was recorded by 0.1.11: the command that never
+finished was a DrawIndexedInstanced, op 1602 of 4563, after two texture
+copies and a barrier, no page fault. Direct3D's record stops at the op
+type. The plugin now tags every draw with its vertex and pixel shader
+hashes as it records the command list, counts the same ops the
+breadcrumbs count while executing it, and keeps the last 16,384 draws in a
+ring; on a loss it prints the draws around the hung op, the hung one
+marked, with index count and primitive type. With the shader hashes known
+the translated shaders can be dumped (`dump_shaders`) and read for the
+loop or the instruction that does not terminate. No cost to speak of:
+24 bytes per draw in the deferred stream and one ring write. Plugin
+pair: rexgpu-xenos.dll 6,556,672 B (2026-09-13 11:26) with the unchanged rexruntime.dll 11,031,552 B (06:05).
+
 ## 0.1.11 — 2026-09-13 (branch `tu1`)
 
 ### Changed - pack uploads on a per-frame budget; GPU hangs now leave evidence
