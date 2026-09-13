@@ -3,6 +3,23 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.14 — 2026-09-13 (branch `tu1`)
+
+### Fixed - the texture dump no longer refills the disk
+
+An hour of play with Dump while playing on and Draw distance at 400% wrote
+101,493 raw dump files, 67 GB, and filled the drive (builds failed, saves
+were at risk). The dump remembered what it had written only within the
+session, keyed by the texture's address as well as its content, so every
+session re-dumped whatever it loaded and a texture met at a new address
+became a new file. The plugin now keys raw dumps by the pack's own
+address-free identity (shape and content hash), seeds that set from the
+files already in the folder the first time it dumps there, and writes
+only content it has never seen; the per-session cap stays. The captures
+from that hour were deleted with the user's agreement (67,887 files,
+36.5 GB); the dumps from before it, the decoded PNGs and the pack are
+untouched. Plugin pair: rexgpu-xenos.dll 6,563,328 B (2026-09-13 12:27) with the unchanged rexruntime.dll 11,031,552 B.
+
 ## 0.1.13 — 2026-09-13 (branch `tu1`)
 
 ### Fixed - the field of view no longer touches the title screen and menus

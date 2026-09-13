@@ -171,6 +171,15 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 13:10 Disk full twice: the texture dump. 193,458 raw files
+  (99.8 GB), 101,493 of them from one hour of play with dumping on at 400%
+  draw distance - the dump's dedupe was per session and keyed by address.
+  Deleted the captures since 12:00 with the user's agreement (67,887 files,
+  36.5 GB; my own 1,686 test captures, 4.6 GB, went first). Plugin fix:
+  patch_texpack_dump_dedupe.py. Also found in the same run: at 400% the
+  render thread spends up to 2.4 s of every 5 s in resolve-readback fence
+  waits (8-11k per 5 s) - the 15 fps the user saw; readback batching is
+  the next performance item.
 - 2026-09-13 12:00 Ultrawide (fill the screen): the FOV hook takes the
   horizontal angle from the window aspect (app publishes
   fable2_display_aspect_x1000 from ImGui's DisplaySize once per change) and
