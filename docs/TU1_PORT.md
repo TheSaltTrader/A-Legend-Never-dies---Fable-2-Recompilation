@@ -75,6 +75,20 @@ the first suspect; if something misbehaves around register saves, v65.
 
 ## Log
 
+- 2026-09-12 19:25 PROFILE (Bowerstone Market, save spot, 2x): GameThread
+  guest 23% / syscalls 70% (NtYieldExecution -> ZwDelayExecution: it waits
+  for the frame by yielding; hottest guest fn sub_82CC38E8 = the yield
+  wrapper, then sub_8221EA28 15%). 3D Engine guest 93%, sub_82BA1FA8 = 60%:
+  the GPU-progress poll (reads the GPU pointer at [[r29+0x2A90]], 5000-tick
+  timeout, sub_82BA75F0 = the hang check) with an 8-nop delay loop. Yield
+  hook at 0x82BA1FE4 built and measured: neutral (57-59 fps on/off, thread
+  still 100% on CPU) - shipped off. Leak check 18:52 -> 19:13: private
+  4990 -> 4996 MB, no leak. Upscaler run: 28,589 pack files, 39 GB, scale 2,
+  method lanczos (not the AI upscaler), 27 min; C: has 29 GB free with the
+  32 GB dump beside it. The plugin's swap warning reads `swap source is
+  unscaled (1280x720)`: the title presents from a 720p resolve, so
+  supersampling is folded back to 720p at the game's own resolve (SSAA and
+  sharper shadow maps, not more output pixels).
 - 2026-09-12 19:00 LOG CENSUS of a two-hour play session (v0.1.1/0.1.2):
   3,856 `BaseHeap::AllocFixed attempting to reserve an already reserved
   range` errors, all inside ONE second (18:33:36, one thread) - the game

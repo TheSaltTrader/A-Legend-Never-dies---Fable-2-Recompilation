@@ -13,6 +13,8 @@
 
 #include <cstring>
 
+#include <windows.h>
+
 // Xenia's "60 FPS". The game selects a frame divider; 2 = 30 fps, 1 = 60.
 REXCVAR_DEFINE_BOOL(fable2_60fps, false, "Fable II",
                     "Run at 60 fps instead of the shipped 30");
@@ -40,6 +42,11 @@ REXCVAR_DEFINE_BOOL(fable2_high_tick_rate, false, "Fable II",
 // Not a community patch: ours (2026-09-12). See patches.toml for the site.
 REXCVAR_DEFINE_BOOL(fable2_skip_boot_logos, false, "Fable II",
                     "Start without the Microsoft and Lionhead logo videos");
+
+// Ours (2026-09-12): the render thread's GPU progress poll yields instead of
+// spinning through no-ops. See patches.toml for the profile that found it.
+REXCVAR_DEFINE_BOOL(fable2_gpu_wait_yield, false, "Fable II",
+                    "Yield the CPU while the render thread waits for the GPU");
 
 namespace {
 
@@ -153,4 +160,19 @@ void fable2PatchSkipBootLogos(PPCRegister& r3) {
   static bool logged = false;
   LogOnce(logged, "boot logo list", r3.u32, 0);
   r3.u32 = 0;
+}
+
+// GPU progress poll: one scheduler slice per delay-loop iteration instead
+// of eight no-ops. SwitchToThread returns at once when nothing else is
+// ready, so an idle machine loses no latency; a busy one stops seeing a core
+// pinned by a wait. r11 is the loop counter and is left alone.
+void fable2PatchGpuWaitYield(PPCRegister& r11) {
+  (void)r11;
+  if (!REXCVAR_GET(fable2_gpu_wait_yield)) return;
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    REXLOG_INFO("Patch: GPU progress poll yields instead of spinning");
+  }
+  SwitchToThread();
 }

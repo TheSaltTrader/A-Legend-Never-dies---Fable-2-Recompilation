@@ -126,3 +126,25 @@ address = 0x822F4EAC
 name = "fable2PatchSkipBootLogos"
 registers = ["r3"]
 after_instruction = false
+
+# --- Yield in the GPU progress poll -----------------------------------------
+# Not a community patch. The profiler (FABLE2_PROFILE=1, Bowerstone Market,
+# 2026-09-12) put 60% of the "3D Engine" thread inside sub_82BA1FA8, the
+# game's "is the GPU still making progress" poll, whose only pause is this
+# delay loop before it reads the GPU's pointer:
+#
+#   0x82BA1FB8  li r11, 4
+#   0x82BA1FC4  mr r31, r31   x8            <- eight no-ops
+#   0x82BA1FE4  addic. r11, r11, -1          <- hooked BEFORE
+#   0x82BA1FE8  bne 0x82BA1FC4
+#   0x82BA1FF0  lbz r11, 0x2ABD(r29) ...     <- then the real check
+#
+# The caller loops on this function while the GPU finishes the frame, so
+# the thread burned a whole core to wait. The hook gives the core away for
+# one scheduler slice per iteration; the function's own 5000-tick timeout
+# measures wall time, so a slower spin changes nothing it decides.
+[[midasm_hook]]
+address = 0x82BA1FE4
+name = "fable2PatchGpuWaitYield"
+registers = ["r11"]
+after_instruction = false

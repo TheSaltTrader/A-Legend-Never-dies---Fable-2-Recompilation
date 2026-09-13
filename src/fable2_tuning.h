@@ -203,6 +203,13 @@ struct Fable2Tuning {
     // (the player asked to be able to keep the logos, 2026-09-12).
     out.push_back({"fable2_skip_boot_logos", s.skip_logos ? "true" : "false",
                    "start without the Microsoft and Lionhead logo videos"});
+    // Ours: the render thread's GPU progress poll yields (patch_hooks.cpp).
+    // OFF: measured neutral (Bowerstone Market, profiled, 2026-09-12 - 57-59
+    // fps either way, and SwitchToThread returns at once, so the thread
+    // stayed on the CPU; the burn moved from no-ops into a syscall). Kept as
+    // the documented negative; FABLE2_TUNE=fable2_gpu_wait_yield=true tries it.
+    out.push_back({"fable2_gpu_wait_yield", "false",
+                   "yield instead of spinning while waiting for the GPU"});
     out.push_back({"fable2_high_tick_rate",
                    s.patch_high_tick_rate ? "true" : "false",
                    "[Xenia/Guy] 15 Hz -> 30 Hz tick rate"});

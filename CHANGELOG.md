@@ -61,6 +61,30 @@ and names the pid. A scripted check launched beside the player's own
 session put a second window on their screen; they played in it, and the
 probe's own stop at the end of its run looked exactly like a crash.
 
+### Measured - where the CPU goes, and a hook that did not help
+
+A profiled load of Bowerstone Market (`FABLE2_PROFILE=1`) says the port is
+not CPU-bound: the game thread runs guest code 23 percent of the time and
+yields the rest waiting for the frame, and the render thread spends 60
+percent inside one function, the game's own "is the GPU still making
+progress" poll, whose only pause is eight no-ops. That is the console's
+design: the thread spins while the GPU finishes the frame. A hook that
+yields the core in that loop (`fable2_gpu_wait_yield`, patch_hooks.cpp)
+was built and measured against the same run with it off: 57 to 59 fps
+either way, and the thread stayed on the CPU because a yield with nothing
+else ready returns at once. It ships off, as a documented negative;
+`FABLE2_TUNE=fable2_gpu_wait_yield=true` turns it on for an experiment.
+The lever that moves frame rate remains the GPU: supersampling - and the
+plugin's own warning, read with its numbers this time, says what that
+buys: `swap source is unscaled (1280x720)`. The game presents from a
+1280x720 texture it resolves itself, so the supersampled frame is folded
+back to 720p before the window sees it; the extra scale is antialiasing
+(and sharper shadow maps), not output resolution. 2x is the sweet spot on
+this card; 3x paid nine times the pixels for the same 720p output.
+
+Memory over a 21-minute idle session: private bytes 4990 to 4996 MB,
+handles 1406 to 1394, threads 71 to 70, GPU memory 7.4 GB flat. No leak.
+
 ### Verified - saving works
 
 A manual save from the game menu rewrote Hero000 (chaptersave, herosave,
