@@ -171,6 +171,12 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 16:30 Readback on demand (0.1.17). The runtime's data-provider
+  TODO implemented (no-access pages, providers called on the faulting
+  thread with the global lock released while they wait, access restored
+  after); the plugin watches every deferred resolve range and lands the
+  copy when the CPU touches it (CallInThreadSafe -> worker: EndSubmission,
+  CheckSubmissionFence(that submission), memcpy, release). Measured in Bowerstone Market, same save, same 150 s walk with camera turns: this pair 54-59 fps with the GPU 65-73% busy, identical to 0.1.16's pair (54-60, 65-74%), no crash markers.
 - 2026-09-13 14:00 Cameras by what they are (0.1.16). A [cam] trace in the
   projection hook (r31 = the camera object; near/far at +512/+516) showed
   the world camera (16:9, far 5000, every frame), a far-60 camera built

@@ -313,9 +313,13 @@ void ReportFrameRate() {
   for (size_t i = 0; i < count; ++i)
     if (ms[i] > p50 * 2.0f) ++hitches;
 
+  // The game's own GPU share (PDH "GPU Engine" counters for this process, as
+  // the HUD shows it) rides along, so a log tells GPU-bound from CPU-bound.
+  const PerfSample sample = GetPerfSample();
   REXLOG_INFO("[perf] {:.1f} fps ({} frames in {:.1f}s)  frame ms: p50 {:.1f}  "
-              "p99 {:.1f}  worst {:.1f}  hitches {}",
-              double(count) / secs, count, secs, p50, p99, worst, hitches);
+              "p99 {:.1f}  worst {:.1f}  hitches {}  gpu {}%",
+              double(count) / secs, count, secs, p50, p99, worst, hitches,
+              sample.gpu_valid ? int(sample.gpu_percent + 0.5f) : -1);
   count = 0;
 }
 }  // namespace

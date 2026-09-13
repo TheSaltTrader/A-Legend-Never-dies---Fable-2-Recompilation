@@ -3,6 +3,69 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.17 — 2026-09-13 (branch `tu1`)
+
+### Added - readback on demand (built, measured, switched off)
+
+0.1.16 left the impostor flashes as known, with the theory that the
+game's CPU reads a render-to-texture result before its copy lands. The
+mechanism to test that now exists. The runtime has what its author left
+as a TODO: data providers.
+A range of guest memory can be watched for ANY access (its pages set
+no-access in the three guest views); on the first access the registered
+provider is called on the faulting thread, may release the global lock
+while it waits, and the pages get their access back when it returns. The
+plugin registers one: a resolve whose copy is deferred watches its range,
+and if the game's CPU touches that memory before the copy has landed, the
+GPU worker is asked (a thread-safe call queue, drained between passes) to
+submit the pending work, wait for exactly that submission, land the copy
+and release the pages, while the faulting thread waits for it. Copies
+that land on their own release their pages too. So the CPU waits only
+for renders it actually reads.
+
+Two measurements then decided its fate. In Bowerstone Market, same save,
+same 150 s walk with full camera turns: the 0.1.16 pair 58-60 fps with the
+GPU 65-74% busy, the on-demand pair 21 fps with the GPU a quarter busy -
+protecting and releasing three guest views per deferred resolve is a
+page-protection storm on a 32-thread process. And in four minutes of
+walking and turning there the provider counted zero CPU touches of any
+deferred render; the only touches (60) were the save thumbnail. The
+game's CPU does not read impostor renders, so this cannot be the flash
+fix. It ships switched off (`readback_resolve_on_demand`, default false,
+hot-reloadable) and costs nothing while off. What "Full" changes for the
+flashes is then the GPU drain after every resolve, which points at an
+ordering hazard on the GPU side (render-target reuse), not at readback
+data; `readback_resolve_drain_small_kb` (0 = off) makes "Some" drain
+only after resolves of at most N KB, an experiment for that hunt.
+The plugin's 5 s fence line carries `on-demand readback N x ms (M
+touches)` when on. Measured in Bowerstone Market, same save, same 150 s walk with camera turns: this pair 54-59 fps with the GPU 65-73% busy, identical to 0.1.16's pair (54-60, 65-74%), no crash markers. Plugin pair: rexgpu-xenos.dll 6590976 bytes (sha256 bd0fc7ce...) with rexruntime.dll 11035136 bytes (7d1f4c5c..., the runtime changed: data providers and physical_heap()).
+
+### Fixed - a readback copy into memory the game had just freed crashed the port
+
+Found by the test run of the change above (16:20): the GPU worker waited
+about five seconds in the synchronous path of a first-seen resolve (a
+region load compiling pipelines), the game freed the resolve target in
+the meantime - freed guest pages are made no-access - and the copy into
+guest memory faulted in a view the runtime's handler leaves alone. The
+hazard was in every readback copy since 0.1.15's deferred landing and in
+"full" since forever; a long stall just made it likely, and the scripted
+walk reproduced it twice at the same second. Every copy into guest memory
+now goes through one helper that takes the global critical region (the
+release path takes it too, so a free cannot slip in between), asks the
+physical heap whether every page of the range is still committed, and
+only then copies; a skipped copy is counted (`readback copies into freed
+memory skipped N` in the 5 s fence line). A first cut with a structured
+exception handler around the memcpy never caught the fault (the handler
+frame was not reached) - the check is the fix, not the handler.
+
+### Notes
+
+- The in-game texture upscale finished (47,855 pack files, 62 GB) and the
+  disk hit 0 bytes during a DLL deploy; the truncated copies were restored
+  from the running game's own files, and this port's plugin build
+  intermediates were deleted for room. `pack.txt` is a manifest, not an
+  index: the plugin scans the folder, so files written after it count.
+
 ## 0.1.16 — 2026-09-13 (branch `tu1`)
 
 ### Fixed - the field-of-view hook now knows a camera by what it is
