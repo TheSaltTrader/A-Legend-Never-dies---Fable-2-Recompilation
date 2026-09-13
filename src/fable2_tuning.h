@@ -222,6 +222,14 @@ struct Fable2Tuning {
     // the documented negative; FABLE2_TUNE=fable2_gpu_wait_yield=true tries it.
     out.push_back({"fable2_gpu_wait_yield", "false",
                    "yield instead of spinning while waiting for the GPU"});
+    // Plugin: pack uploads past a per-frame byte budget wait for later
+    // frames. OFF: measured a loss (same build, save load into Bowerstone
+    // Market, first 5 s in the world: 24 MB -> 52.6 fps, p99 70 ms, 15
+    // hitches; off -> 54.5 fps, p99 45 ms, 8 hitches; 2026-09-13). The pack
+    // copies were never the hitch. FABLE2_TUNE=texture_pack_upload_budget_mb=24
+    // tries it again.
+    out.push_back({"texture_pack_upload_budget_mb", "0",
+                   "pack upload bytes per frame before the rest wait (0 = no limit)"});
     out.push_back({"fable2_high_tick_rate",
                    s.patch_high_tick_rate ? "true" : "false",
                    "[Xenia/Guy] 15 Hz -> 30 Hz tick rate"});

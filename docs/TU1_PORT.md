@@ -171,6 +171,22 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 06:30 The user's first play on 0.1.10 (Bowerlake, then the
+  market at night) ended at 05:49:01 in a lost D3D12 device: DEVICE_HUNG
+  0x887A0006, 20 s after the region load, nvlddmkm event 153 ("Error
+  occurred on GPUID: 100") at 05:48:56 and :58, the UI thread's frame
+  5.1 s, then the plugin's fatal path (abort from the presenter). Both
+  sliders were at their defaults; the F9 toggling was two minutes earlier.
+  First device loss in every log under out/. The plugin read DRED on the
+  loss but had never enabled it (only with the debug layer): nothing
+  recorded. Plugin now: DRED on its own switch; a per-frame budget for pack
+  uploads exists but ships OFF - the same-build A/B (save load into the
+  market, first 5 s) measured 24 MB as a loss (52.6 fps / p99 70 / 15
+  hitches vs 54.5 / 45 / 8), the copies were never the hitch (warming is
+  disk-only; the GPU work is the per-texture uploads in the frames the
+  game loads them, and they are quick). Texture dumping switched on in the
+  user's settings so night-time art gets captured (3,109 dumped textures
+  still await upscaling; never-dumped ones cannot be counted).
 - 2026-09-13 04:30 Sweep on 0.1.10 (regressions, unresolved functions,
   security, leaks, performance), all scripted, the user asleep:
   * Regression run (150 s in Bowerstone Market from the console save): 0

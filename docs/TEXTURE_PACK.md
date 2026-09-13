@@ -72,6 +72,28 @@ before. **Whether the game opens those banks per region rather than all at
 boot has not been observed yet** - every open is logged at debug level as
 `[stage] open #N` for exactly that check.
 
+## Pack uploads on a per-frame budget (2026-09-13)
+
+Warming only pre-reads a stage's files into the OS page cache; the GPU
+uploads happen in `ApplyTexpackResolve`, one per texture, in the frame the
+game loads that texture. A region entry loads hundreds at once, so the
+first seconds of Bowerstone Market pushed about 1 GB of upscaled pixels
+through a few frames. `texture_pack_upload_budget_mb` caps that: a texture
+whose copy would overrun the frame's budget is queued (`g_texpack_pending`)
+and keeps showing its guest data, and `BeginSubmission` drains the queue a
+budget's worth per frame - the deferred command list is reset just before
+that call, so the copies land in the submission that drains them; a
+texture removes itself from the queue in its destructor. It ships at 0
+(off): the same-build A/B on the save load into the market measured 24 MB
+as a LOSS (first 5 s: 52.6 fps / p99 70 ms / 15 hitches against 54.5 /
+45 / 8 with it off, later windows equal) - the copies were never the
+hitch, deferral only spreads two-frame intervals. The seam stays for a
+retry: `FABLE2_TUNE=texture_pack_upload_budget_mb=24`.
+The same night the device was lost to DEVICE_HUNG in that market; DRED
+(breadcrumbs + page faults) is now on by default (`d3d12_dred`) so a
+repeat names the command. `patches/scripts/patch_texpack_budget_dred.py`,
+then `_fix.py` (the cvar defines chain `.lifecycle(...)` as their terminator).
+
 ## The pack is content-addressed (2026-09-12)
 
 A session with the finished 28,587-file pack made ZERO replacements: no

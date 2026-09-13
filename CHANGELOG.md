@@ -3,6 +3,32 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.11 — 2026-09-13 (branch `tu1`)
+
+### Changed - pack uploads on a per-frame budget; GPU hangs now leave evidence
+
+A night-time walk into Bowerstone Market ended in a lost graphics device
+(DEVICE_HUNG, the driver's two-second watchdog) 20 s after the region
+loaded, with two NVIDIA driver errors logged just before. The game's log
+could not say which command hung: the plugin reads Direct3D's removed-
+device data (DRED) on a loss but only switched it on together with the
+full debug layer, which is too slow to play under. DRED now has its own
+switch (`d3d12_dred`, on), so the next loss names the command list, the
+operation that did not complete, and any page fault.
+
+The plugin also gained a per-frame budget for pack uploads
+(`texture_pack_upload_budget_mb`): uploads past it wait, the guest texture
+showing meanwhile, and drain a budget's worth per frame. It ships OFF.
+The idea was that a region entry stacks hundreds of megabytes of upscaled
+pixels into a few frames; the same-build A/B (save load into Bowerstone
+Market, first 5 s in the world) says the copies were never the hitch:
+24 MB gave 52.6 fps, p99 70 ms, 15 hitches, off gave 54.5 fps, p99 45 ms,
+8 hitches, and the later windows were no better. Deferring only spread
+two-frame intervals over more frames. Kept as the seam
+`FABLE2_TUNE=texture_pack_upload_budget_mb=24`, documented as the negative
+it measured. (Warming, for the record, only pre-reads files into the OS
+cache; the "1084 MB" in its log line is disk, not GPU.) Plugin pair: rexgpu-xenos.dll 6,553,088 B and rexruntime.dll 11,031,552 B, both built 2026-09-13 06:05 from the shared tree; the previous pair is in RexBlue\win-amd64\bin\dll_backup_20260913_budget\.
+
 ## 0.1.10 — 2026-09-13 (branch `tu1`)
 
 ### Added - draw distance, from the game's own object database
