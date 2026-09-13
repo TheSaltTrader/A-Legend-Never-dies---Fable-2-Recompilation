@@ -181,6 +181,12 @@ struct Fable2Tuning {
     // "full" is the blunt instrument that costs a lot of performance.
     out.push_back({"readback_resolve", s.readback,
                    "readback for the hero/dog black-texture bug"});
+    if (s.readback_drain_small_kb > 0) {
+      // The flash experiment (settings file only): a GPU drain after small
+      // resolves with "some", where "full" drains after every one.
+      out.push_back({"readback_resolve_drain_small_kb", std::to_string(s.readback_drain_small_kb),
+                     "flash experiment: GPU drain after small resolves"});
+    }
 
     // Memexport readback OFF. The SDK's default is on, and on this title it
     // was the frame: the game exports from shaders about five times a frame,

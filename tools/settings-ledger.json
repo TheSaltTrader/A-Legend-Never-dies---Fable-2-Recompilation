@@ -80,6 +80,7 @@
     { "setting": "patch_720p", "doc_phrase": "Render at 1280 wide" },
     { "setting": "patch_disable_msaa", "doc_phrase": "Disable MSAA" },
     { "setting": "patch_high_tick_rate", "doc_phrase": "30 Hz tick rate" },
-    { "setting": "patch_disable_texture_morph", "doc_phrase": "Disable texture morphing" }
+    { "setting": "patch_disable_texture_morph", "doc_phrase": "Disable texture morphing" },
+    { "setting": "readback_drain_small_kb", "doc_phrase": "readback_drain_small_kb" }
   ]
 }

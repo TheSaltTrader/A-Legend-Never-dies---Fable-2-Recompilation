@@ -171,6 +171,13 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 17:55 The frame-rate campaign (0.1.18): six market walks, one
+  tuning change each - not GPU-bound at 2x (54% share; 35% at 1x; same 60
+  cap), FSR/anisotropy free, ROV path 33.7 fps vs RTV 54 (auto = RTV). The
+  [hitch] census: 4 frames over 25 ms in 70 s of walking, all at the region
+  entry (46-61 textures / 30 MB decoded per frame). The title screen
+  re-decodes a 3.6 MB texture per frame, the loading map 18 MB per frame.
+  Experiment key readback_drain_small_kb for the flash hunt.
 - 2026-09-13 16:30 Readback on demand (0.1.17). The runtime's data-provider
   TODO implemented (no-access pages, providers called on the faulting
   thread with the global lock released while they wait, access restored

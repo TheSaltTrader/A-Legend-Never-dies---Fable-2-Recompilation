@@ -358,9 +358,10 @@ Enhancements
   the lake - a diagnostic, not a setting to play with)
   for the hero and dog turning black at adulthood; `some` is the fix: every
   render-to-texture result is copied back exactly once its GPU work is done,
-  without waiting for it - and if the game's CPU reaches for one before the
-  copy has landed, that thread waits for exactly that copy (readback on
-  demand), so the impostor flashes are gone without Full's cost.
+  without waiting for it. An experiment line for the settings file, not in
+  the menus: `readback_drain_small_kb=64` makes `some` wait for the GPU after
+  every render-to-texture of at most 64 KB (the impostor flashes vanish at
+  `full`, which waits after every one); 0 is off.
 - **Dither the output** - dither the 10 bpc output down to 8 bpc.
 
 Textures

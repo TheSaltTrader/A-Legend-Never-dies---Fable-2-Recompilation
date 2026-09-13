@@ -3,6 +3,52 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.18 — 2026-09-13 (branch `tu1`)
+
+### Measured - where the frame rate goes, with the numbers
+
+Six scripted walks in Bowerstone Market (the same save, 110 s of walking
+with full camera turns, the 60 fps patch and 2x resolution scale), one
+tuning change each, the game's own GPU share on the [perf] line:
+
+| variant | mean fps | GPU share |
+|---|---|---|
+| the play settings | 54.0 (60 after the load) | 54% |
+| resolution scale 1 | 54.0 | 35% |
+| present effect bilinear instead of FSR | 54.1 | 54% |
+| render-target path ROV | 33.7 | 68% |
+| render-target path RTV (what "auto" picks) | 54.1 | 54% |
+| anisotropic override off | 54.0 | 54% |
+
+So the market is not GPU-bound at 2x on this card, FSR and the sampler
+forcing are free, and the only lever that moves the GPU share (1x) gains
+nothing because the 60 fps cap is already reached. The "means" include
+the loading windows; steady state is 58-60.
+
+### Added - the hitch census
+
+The plugin now writes one `[hitch]` line for any guest frame over 25 ms
+and over 1.8x the last window's median, saying what that frame did:
+textures decoded (count and guest bytes), shared-memory uploads, waits
+for pipeline creation at submission end, synchronous resolve readbacks,
+draws. Its first census, the same market walk: after the region loaded,
+FOUR frames over 25 ms in 70 s, all 25-28 ms, all in the first seconds,
+each decoding 46-61 textures (29-33 MB) and uploading 16-20 MB while the
+region streamed in. The walk itself was steady. The title screen
+re-decodes a 3.6 MB texture every frame and the loading map 15 textures
+(18 MB) every frame - CPU-written textures, harmless at their 30 fps but
+worth knowing. What the user sees as dips lives elsewhere (heavy areas,
+first visits, high draw distance) and the census will name them there.
+
+### Added - the flash experiment, from the settings file
+
+`readback_drain_small_kb=N` in `fable2_settings.cfg` (not in the menus)
+makes Black texture fix "some" wait for the GPU after every
+render-to-texture of at most N KB. The impostor flashes vanish at "full",
+which drains after every resolve; if they vanish with a small N too, the
+hazard is in the small (impostor) resolves and the cost is bounded. 0 (the
+default) is off. Plugin pair: rexgpu-xenos.dll 6595072 bytes (sha256 ae94ef9a...) with rexruntime.dll 11035136 bytes (7d1f4c5c..., unchanged since 0.1.17).
+
 ## 0.1.17 — 2026-09-13 (branch `tu1`)
 
 ### Added - readback on demand (built, measured, switched off)
