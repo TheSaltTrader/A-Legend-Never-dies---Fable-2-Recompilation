@@ -32,6 +32,7 @@
     { "setting": "fps", "doc_phrase": "Frame rate" },
     { "setting": "vsync", "doc_phrase": "V-Sync" },
     { "setting": "letterbox", "doc_phrase": "Keep aspect ratio" },
+    { "setting": "ultrawide", "doc_phrase": "Picture width" },
     { "setting": "cursor_hide_seconds", "doc_phrase": "Hide the pointer after" },
     { "setting": "fov", "doc_phrase": "Field of view" },
     { "setting": "draw_distance", "doc_phrase": "Draw distance" },

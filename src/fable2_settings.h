@@ -226,6 +226,9 @@ struct Fable2Settings {
   // Vertical field of view in degrees; the game ships 60 (59.8 measured).
   // Applied live by the projection-builder hook (patch_hooks.cpp).
   int fov = 60;
+  // Ultrawide: the world projected at the window's aspect and shown edge to
+  // edge (patch_hooks.cpp); Keep aspect ratio is ignored while on. Live.
+  bool ultrawide = false;
   // Draw distance as a percentage of the game's own (100). Served as a
   // scaled copy of globals.gdb at start-up (fable2_gdb.cpp): restart-bound.
   int draw_distance = 100;
@@ -333,6 +336,7 @@ struct Fable2Settings {
         << "patch_high_tick_rate=" << (patch_high_tick_rate ? 1 : 0) << "\n"
         << "cursor_hide_seconds=" << cursor_hide_seconds << "\n"
         << "fov=" << fov << "\n"
+        << "ultrawide=" << (ultrawide ? 1 : 0) << "\n"
         << "draw_distance=" << draw_distance << "\n"
         << "mute=" << (mute ? 1 : 0) << "\n"
         << "audio_queue_frames=" << audio_queue_frames << "\n"
@@ -445,6 +449,7 @@ struct Fable2Settings {
     else if (k == "audio_queue_frames") audio_queue_frames = std::atoi(v.c_str());
     else if (k == "cursor_hide_seconds") cursor_hide_seconds = std::atoi(v.c_str());
     else if (k == "fov") fov = std::atoi(v.c_str());
+    else if (k == "ultrawide") ultrawide = Truthy(v);
     else if (k == "draw_distance") draw_distance = std::atoi(v.c_str());
     else if (k == "keyboard_control") keyboard_control = Truthy(v);
     else if (k.rfind("keybind_", 0) == 0) keybinds[k] = v;

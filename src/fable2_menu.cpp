@@ -1018,14 +1018,46 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     changed |= ImGui::Checkbox("##vsync", &s.vsync);
 
     RowStart("Keep aspect ratio",
-             "Letterbox instead of stretching the image to the window.");
+             "Letterbox instead of stretching the image to the window. Ignored "
+             "while Ultrawide is on.");
     changed |= ImGui::Checkbox("##letterbox", &s.letterbox);
+
+    {
+      // Offered only on a display wider than 16:9 (published by the HUD
+      // overlay from the window's size); a 16:9 display has nothing to fill.
+      const int aspect = rex::cvar::Query<int>("fable2_display_aspect_x1000");
+      const bool wide = aspect > 1800;
+      RowStart("Picture width",
+               wide ? "16:9 keeps the game's own framing with bars at the sides. "
+                      "Ultrawide projects the world at your display's aspect and "
+                      "shows it edge to edge, with correct proportions and a wider "
+                      "view. The title screen, the main menus and 2D screens such as "
+                      "the loading map keep 16:9 with bars. The HUD, subtitles and "
+                      "menu text over the world are drawn in 16:9 and come out "
+                      "stretched. Applies immediately."
+                    : "Your display is 16:9, so there is nothing to fill: the game's "
+                      "own framing is used. Ultrawide becomes available on a wider "
+                      "display.");
+      ImGui::BeginDisabled(!wide);
+      int mode = (wide && s.ultrawide) ? 1 : 0;
+      bool picked = ImGui::RadioButton("16:9##pw", &mode, 0);
+      ImGui::SameLine();
+      picked |= ImGui::RadioButton("Ultrawide##pw", &mode, 1);
+      ImGui::EndDisabled();
+      if (picked && (mode == 1) != s.ultrawide) {
+        s.ultrawide = mode == 1;
+        SetCvar("fable2_ultrawide", s.ultrawide ? "true" : "false");
+        SetCvar("present_letterbox", (s.letterbox && !s.ultrawide) ? "true" : "false");
+        changed = true;
+      }
+    }
 
     RowStart("Field of view",
              "How wide the camera sees, in degrees (vertical). The game runs "
              "at 60; higher shows more of the world at the edges, lower zooms "
-             "in. Applies immediately. Every camera is scaled by the same "
-             "amount, so cutscenes and zoomed shots keep their framing.");
+             "in. Applies immediately. Every camera in the world is scaled by "
+             "the same amount, so cutscenes and zoomed shots keep their "
+             "framing; the title screen and menus are left alone.");
     if (ImGui::SliderInt("##fov", &s.fov, 40, 120, "%d deg")) {
       SetCvar("fable2_fov", std::to_string(s.fov));
       changed = true;
@@ -1601,7 +1633,10 @@ void ApplyLiveSettings(const Fable2Settings& s, rex::ui::Window* window) {
   // overlay even though it belongs to the GPU plugin.
   SetCvar("swap_post_effect", s.antialias);
   SetCvar("present_dither", s.present_dither ? "true" : "false");
-  SetCvar("present_letterbox", s.letterbox ? "true" : "false");
+  // Ultrawide owns the letterbox while it is on (the HUD overlay decides per
+  // frame); only 16:9 takes the Keep aspect ratio box.
+  SetCvar("present_letterbox", (s.letterbox && !s.ultrawide) ? "true" : "false");
+  SetCvar("fable2_ultrawide", s.ultrawide ? "true" : "false");
   SetCvar("vsync", s.vsync ? "true" : "false");
   SetCvar("mnk_mode", s.keyboard_control ? "true" : "false");
   // The pack path, so F9 and the checkbox both take effect without a

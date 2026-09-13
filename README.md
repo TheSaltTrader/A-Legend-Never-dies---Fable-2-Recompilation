@@ -271,13 +271,24 @@ Display
   ran; above 60 is untested on this title.
 - **V-Sync** - caps presentation to the display.
 - **Keep aspect ratio** - letterbox instead of stretching the image to the window.
+  Ignored while Ultrawide is on.
+- **Picture width** - 16:9 (the default) or Ultrawide, offered only on a display
+  wider than 16:9. Ultrawide: the world is
+  projected at the window's aspect (the field-of-view hook derives the
+  horizontal angle from it) and the frame is shown edge to edge, so the 3D
+  picture has correct proportions and a wider view. The title screen, the main
+  menus and 2D screens such as the loading map keep 16:9 with bars: a frame
+  is stretched only while a world camera was built behind it (its projection
+  already made it right), everything else is letterboxed. The HUD, subtitles
+  and menu text over the world are drawn in 16:9 and come out stretched. Live.
 - **Hide the pointer after** - seconds of mouse stillness before the pointer
   hides; 0 keeps it visible.
 - **Field of view** - how wide the camera sees, in degrees (vertical); the
   game runs at 60. Live: a hook in the game's one perspective builder scales
   the vertical angle every frame and re-derives the horizontal one, so the
-  aspect ratio is untouched. Every camera is scaled by the same amount, so
-  cutscenes and zoomed shots keep their framing.
+  aspect ratio is untouched. Every camera inside a region is scaled by the
+  same amount, so cutscenes and zoomed shots keep their framing; the title
+  screen and the main menu are left alone.
 - **Draw distance** - how far away buildings, trees and props are still
   drawn, as a percentage of the game's own distances (10-400, 100 = as
   shipped). The distances are values in the game's `data\globals\globals.gdb`,

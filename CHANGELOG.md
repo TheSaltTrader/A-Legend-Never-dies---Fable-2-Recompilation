@@ -3,6 +3,51 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.13 — 2026-09-13 (branch `tu1`)
+
+### Fixed - the field of view no longer touches the title screen and menus
+
+The projection hook scaled every camera, and the title screen has one:
+with the slider above 60 the title art shrank inside black borders (the
+user's "ultrawide but not full screen"; the boot log had said so all
+along - the first camera the hook changed was a 52.5-degree one). The
+hook now applies only while a region is loaded (the stage observer that
+numbers regions from their sound banks is 0 until the first) and only to
+cameras of the game's 16:9 kind: the title and menu cameras are 70 x 52.5
+degrees, a 4:3-like tangent ratio, and are skipped - at boot and after
+quitting to the menu. Gameplay, cutscene and dialogue cameras inside a
+region are scaled as before.
+
+### Added - Ultrawide (fill the screen)
+
+For monitors wider than 16:9. The projection hook already builds each
+camera from a vertical and a horizontal angle; with the switch on it
+derives the horizontal one from the window's aspect (published by the app
+as `fable2_display_aspect_x1000`) instead of the game's 16:9, and the
+presenter's letterbox is turned off so the 16:9 frame is stretched edge to
+edge - the projection and the stretch cancel, leaving a correctly
+proportioned, wider view. The front end - title screen and main menus -
+stays 16:9, and so does every 2D screen such as the loading map, the
+user's rule (a first cut projected the title wide too, and the front
+end flipped between filled and boxed as its screens came and went): the
+HUD overlay stretches a frame only after half a second of steady
+world-camera frames (right after a load the camera comes every other
+frame, and switching on each of those re-laid the presenter out every
+frame: 12 fps for 15 s and a loading screen that resized twice), holds
+each state at least half a second, and letterboxes everything else,
+switching the presenter's letterbox on the transition. Offered only on a
+display wider
+than 16:9, as a "Picture width" choice of 16:9 or Ultrawide; a 16:9
+display shows the row disabled with the reason. Known and accepted: the
+game's 2D layer (HUD, subtitles, menu text) is drawn in 16:9 space and
+comes out stretched horizontally, and the frame's 1280x720 (2x internal)
+spreads over the full width, slightly softer than the 16:9 picture. Keep
+aspect ratio is ignored while Ultrawide is on; 16:9 restores that choice.
+Any other settings change used to re-apply the letterbox from that box
+and undo Ultrawide until the next screen transition (found by the user
+with the black-texture fix); the live-settings path respects the switch
+now and the overlay corrects the cvar whenever it finds it changed.
+
 ## 0.1.12 — 2026-09-13 (branch `tu1`)
 
 ### Changed - a GPU hang now names the draw's shaders

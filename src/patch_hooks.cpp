@@ -11,7 +11,12 @@
 #include <rex/ppc/context.h>
 #include <rex/system/kernel_state.h>
 
+#include "fable2_stage.h"
+#include "fable2_viewstate.h"
+
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -62,6 +67,14 @@ REXCVAR_DEFINE_BOOL(fable2_gpu_wait_yield, false, "Fable II",
 // Applied by the projection-builder hook every frame, so it is live.
 REXCVAR_DEFINE_INT32(fable2_fov, 60, "Fable II",
                      "Vertical field of view in degrees (60 = the game's own)");
+
+// Ours (2026-09-13): ultrawide. The world is projected at the window's
+// aspect instead of the game's 16:9 and presented edge to edge; the app
+// publishes the window's aspect every frame it changes.
+REXCVAR_DEFINE_BOOL(fable2_ultrawide, false, "Fable II",
+                    "Project the world at the window's aspect ratio and show it edge to edge");
+REXCVAR_DEFINE_INT32(fable2_display_aspect_x1000, 1778, "Fable II",
+                     "The window's width over height x 1000, published by the app");
 
 namespace {
 
@@ -253,22 +266,78 @@ void fable2PatchBankLoadSleep(PPCRegister& r3) {
 // tan ratio, so the aspect ratio the game chose is untouched. Every camera
 // goes through here (gameplay, cutscenes, the zoomed dialogue shots), and
 // scaling rather than replacing keeps their relative framing.
+namespace {
+std::atomic<int64_t> g_last_camera_build_ns{0};
+std::atomic<int64_t> g_world_run_start_ns{0};  // start of the current steady run
+int64_t NowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+}  // namespace
+
+double fable2::SecondsSinceWorldCameraBuild() {
+  const int64_t last = g_last_camera_build_ns.load(std::memory_order_relaxed);
+  if (!last) return 1e9;
+  return double(NowNs() - last) * 1e-9;
+}
+
+double fable2::SecondsOfSteadyWorldCamera() {
+  const int64_t now = NowNs();
+  const int64_t last = g_last_camera_build_ns.load(std::memory_order_relaxed);
+  const int64_t start = g_world_run_start_ns.load(std::memory_order_relaxed);
+  if (!last || !start || now - last > 250000000) return 0.0;
+  return double(now - start) * 1e-9;
+}
+
 void fable2PatchFieldOfView(PPCRegister& f8, PPCRegister& f30) {
   const int degrees = std::clamp(REXCVAR_GET(fable2_fov), 40, 120);
-  if (degrees == 60) return;
+  const bool ultrawide = REXCVAR_GET(fable2_ultrawide);
   const double fx = f8.f64, fy = f30.f64;
   // A nonsense angle (uninitialised camera, the odd frame during a load) is
   // left alone rather than turned into a bigger nonsense.
   if (!(fx > 0.01 && fx < 3.0 && fy > 0.01 && fy < 3.0)) return;
   const double ratio = std::tan(fx * 0.5) / std::tan(fy * 0.5);  // aspect
-  const double ny = std::clamp(fy * (degrees / 60.0), 0.05, 3.0);
-  const double nx = 2.0 * std::atan(ratio * std::tan(ny * 0.5));
+  // World cameras only. The title screen has a camera too, and scaling it
+  // shrank the title art inside black borders (2026-09-13). Two tests,
+  // either one enough: no region has loaded yet (the stage observer
+  // numbers regions from their sound banks; 0 until the first), or the
+  // camera is not the game's 16:9 kind - the title and menu cameras are
+  // 70 x 52.5 degrees, a 4:3-like tangent ratio of 1.42, while every
+  // in-world camera (gameplay, cutscene, dialogue) carries 16:9 exactly.
+  const bool world_camera =
+      fable2::CurrentStage() > 0 && std::abs(ratio - 16.0 / 9.0) <= 0.05;
+  if (!world_camera) return;  // the front end and menus are left alone
+  {
+    const int64_t now = NowNs();
+    const int64_t last = g_last_camera_build_ns.load(std::memory_order_relaxed);
+    if (!last || now - last > 250000000)  // a gap: a new steady run begins
+      g_world_run_start_ns.store(now, std::memory_order_relaxed);
+    g_last_camera_build_ns.store(now, std::memory_order_relaxed);
+  }
+
+  // Ultrawide: a world camera projects at the display's aspect; the HUD
+  // overlay has the presenter stretch the 16:9 frame to the window while a
+  // world camera is live (present_letterbox off), and the two cancel into a
+  // correctly proportioned, wider picture. The front end, the loading map
+  // and every other camera-less frame keep 16:9 with bars - the user's
+  // rule. Only a display wider than 16:9 has anything to fill; on a 16:9
+  // one a saved "on" changes nothing (the menu does not offer it there).
+  double target = ratio;
+  if (ultrawide) {
+    const int aspect = REXCVAR_GET(fable2_display_aspect_x1000);
+    if (aspect > 1800) target = aspect / 1000.0;
+  }
+  const double scale = degrees / 60.0;
+  if (degrees == 60 && target == ratio) return;
+  const double ny = std::clamp(fy * scale, 0.05, 3.0);
+  const double nx = 2.0 * std::atan(target * std::tan(ny * 0.5));
   f8.f64 = nx;
   f30.f64 = ny;
   static bool logged = false;
   if (!logged) {
     logged = true;
-    REXLOG_INFO("Patch: field of view {} deg: vertical {:.4f} -> {:.4f} rad, horizontal {:.4f} -> {:.4f} rad",
-                degrees, fy, ny, fx, nx);
+    REXLOG_INFO("Patch: field of view {} deg{}: vertical {:.4f} -> {:.4f} rad, horizontal {:.4f} -> {:.4f} rad (aspect {:.3f})",
+                degrees, ultrawide ? ", ultrawide" : "", fy, ny, fx, nx, target);
   }
 }

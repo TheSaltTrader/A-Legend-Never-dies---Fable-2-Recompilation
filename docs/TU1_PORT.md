@@ -171,6 +171,15 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 12:00 Ultrawide (fill the screen): the FOV hook takes the
+  horizontal angle from the window aspect (app publishes
+  fable2_display_aspect_x1000 from ImGui's DisplaySize once per change) and
+  flips present_letterbox off for world cameras / on for menu cameras on the
+  transition. Settings `ultrawide`, menu row under Display, live.
+- 2026-09-13 11:45 The user found the "ultrawide but not full screen"
+  title screen: the field-of-view hook scaled the title camera (52.5 deg)
+  too. Fixed by gating the hook on fable2::CurrentStage() > 0 and on the
+  camera's tangent ratio being 16:9 (menu cameras are 70 x 52.5 deg).
 - 2026-09-13 11:30 Second device loss, on 0.1.11 with DRED on: Fairfax ->
   Ravenscar at 11:18:15, the 5 s load pause, nvlddmkm 153 at :27 and :29,
   DEVICE_HUNG reported 11:18:33. Breadcrumbs: ops 1599-1600 CopyTextureRegion,

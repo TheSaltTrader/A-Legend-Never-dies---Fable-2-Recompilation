@@ -165,7 +165,9 @@ struct Fable2Tuning {
 
     out.push_back({"present_dither", s.present_dither ? "true" : "false",
                    "dither the 10bpc output down to 8bpc"});
-    out.push_back({"present_letterbox", s.letterbox ? "true" : "false",
+    // Ultrawide stretches the frame to the window (the projection hook makes
+    // the picture right for it and letterboxes menus itself, live).
+    out.push_back({"present_letterbox", (s.letterbox && !s.ultrawide) ? "true" : "false",
                    "keep the guest aspect ratio instead of stretching"});
 
     // -1 means "leave the game's own samplers alone", so it is only sent when
@@ -211,6 +213,8 @@ struct Fable2Tuning {
     // sets the same cvar live.
     out.push_back({"fable2_fov", std::to_string(s.fov),
                    "vertical field of view in degrees (60 = as shipped)"});
+    out.push_back({"fable2_ultrawide", s.ultrawide ? "true" : "false",
+                   "project the world at the window's aspect, shown edge to edge"});
     // Ours: the audio loader's 400 ms sleep per sound bank (patch_hooks.cpp).
     // Always on; FABLE2_TUNE=fable2_fast_bank_load=false is the A/B.
     out.push_back({"fable2_fast_bank_load", "true",

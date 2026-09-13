@@ -10,10 +10,12 @@
 #include <rex/logging.h>
 
 #include <cstdlib>
+#include <string>
 
 #include "fable2_menu.h"  // Fonts()
 #include "fable2_perf.h"
 #include "fable2_settings.h"
+#include "fable2_viewstate.h"
 
 namespace fable2 {
 namespace {
@@ -142,7 +144,56 @@ void TextureNotifyOverlay::OnDraw(ImGuiIO& io) {
 }
 
 void PerfHudOverlay::OnDraw(ImGuiIO& io) {
-  (void)io;
+  // The window's aspect, for the ultrawide projection (patch_hooks.cpp reads
+  // fable2_display_aspect_x1000). Once per change, not per frame.
+  {
+    static int last_aspect = 0;
+    const int aspect = io.DisplaySize.y > 0.0f
+                           ? int(io.DisplaySize.x / io.DisplaySize.y * 1000.0f + 0.5f)
+                           : 0;
+    if (aspect > 0 && aspect != last_aspect) {
+      last_aspect = aspect;
+      rex::cvar::SetFlagByName("fable2_display_aspect_x1000", std::to_string(aspect));
+    }
+    // Ultrawide presentation, per frame: a frame with a WORLD camera behind
+    // it (built within the last quarter second; its projection is already
+    // made for this display) is stretched edge to edge; the title, the main
+    // menus, the loading map and every other camera-less frame keep 16:9
+    // with bars - the user's rule. Only while the switch is on; otherwise
+    // the tuning and the menu own the cvar.
+    {
+      static int last_want = -1;
+      const Fable2Settings* st = g_hud_settings;
+      if (st && st->ultrawide && aspect > 1800) {
+        // Stretch only after half a second of steady world-camera frames,
+        // and hold each state at least half a second: every switch is a
+        // presenter re-layout, and switching per frame right after a load
+        // (the camera comes every other frame there) cost 12 fps for 15 s.
+        static std::chrono::steady_clock::time_point last_switch{};
+        static std::chrono::steady_clock::time_point last_check{};
+        const auto now = std::chrono::steady_clock::now();
+        const bool steady = fable2::SecondsSinceWorldCameraBuild() < 0.25 &&
+                            fable2::SecondsOfSteadyWorldCamera() >= 0.5;
+        const int want = steady ? 0 : 1;
+        const bool held = now - last_switch < std::chrono::milliseconds(500);
+        if (want != last_want && !held) {
+          last_want = want;
+          last_switch = now;
+          rex::cvar::SetFlagByName("present_letterbox", want ? "true" : "false");
+        } else if (last_want >= 0 && now - last_check > std::chrono::milliseconds(500)) {
+          // Any other settings change re-applies the letterbox and would
+          // undo this (seen with the black-texture fix): re-assert, but
+          // not more than twice a second.
+          last_check = now;
+          const char* wanted = last_want ? "true" : "false";
+          if (rex::cvar::GetFlagByName("present_letterbox") != wanted)
+            rex::cvar::SetFlagByName("present_letterbox", wanted);
+        }
+      } else {
+        last_want = -1;
+      }
+    }
+  }
   // Counted here rather than on a timer: this runs once per PRESENTED frame, so
   // it measures frames the player actually saw.
   PerfFrameTick();
