@@ -1,9 +1,11 @@
 # Draw distance (level-of-detail pop-in) - investigation, 2026-09-13
 
-The user asked to increase draw distance with a slider, alongside the
-field-of-view slider that shipped in 0.1.6. FOV was a single global constant
-and was straightforward; draw distance is not, and this records why and what
-the safe path is, so the next session can decide with the user.
+The user asked to increase draw distance with a slider, alongside a
+field-of-view slider. The FOV attempt (0.1.6/0.1.7) was REVERTED in 0.1.8: the
+constant at 0x82101034 that poking seemed to prove was the FOV does not drive
+the gameplay camera (60 and 90 degrees load to identical frames). Any new FOV
+attempt must start from the projection build, not that constant. This file
+records the draw-distance findings and the safe path.
 
 ## What the pop-in is
 

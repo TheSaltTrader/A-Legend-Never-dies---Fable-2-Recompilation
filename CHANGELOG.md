@@ -3,6 +3,20 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.8 — 2026-09-13 (branch `tu1`)
+
+### Removed - the field-of-view slider (0.1.6, 0.1.7): it never changed the camera
+
+The slider wrote the game's 60-degree constant at guest 0x82101034, and the
+write was real (it read back as 90 degrees live, and the log said so). But
+the proof was wrong: with the value set before the save loads, frames taken
+after the load at 60 and at 90 degrees show identical framing. The constant
+is not what the gameplay camera projects with; the early screenshot
+difference that seemed to show it was a scene change. Both commits are
+reverted, the game folder is back to what 0.1.5 shipped, and the finding is
+kept in docs/DRAW_DISTANCE.md for the next attempt (the camera's own
+projection is derived elsewhere).
+
 ## 0.1.5 — 2026-09-13 (branch `tu1`)
 
 ### Removed - "Accurate depth", because it breaks the game
