@@ -223,9 +223,6 @@ struct Fable2Settings {
   // Seconds of mouse stillness over the window before the pointer hides.
   // 0 = never hide. Borrowed from re:Blue, which does the same thing.
   int cursor_hide_seconds = 5;
-  // Vertical field of view in degrees; the game ships 60. Written into the
-  // game's FOV constant at runtime (fable2_camera.cpp), live, not restart-bound.
-  int fov = 60;
 
   // Drive the guest pad from keyboard and mouse. Off by default in the
   // runtime, which is a surprising default for a PC port.
@@ -329,7 +326,6 @@ struct Fable2Settings {
         << (patch_disable_texture_morph ? 1 : 0) << "\n"
         << "patch_high_tick_rate=" << (patch_high_tick_rate ? 1 : 0) << "\n"
         << "cursor_hide_seconds=" << cursor_hide_seconds << "\n"
-        << "fov=" << fov << "\n"
         << "mute=" << (mute ? 1 : 0) << "\n"
         << "audio_queue_frames=" << audio_queue_frames << "\n"
         << "keyboard_control=" << (keyboard_control ? 1 : 0) << "\n";
@@ -371,7 +367,6 @@ struct Fable2Settings {
     audio_queue_frames = std::clamp(audio_queue_frames, 4, 64);
     mouse_sensitivity = std::clamp(mouse_sensitivity, 0.01, 10.0);
     cursor_hide_seconds = std::clamp(cursor_hide_seconds, 0, 60);
-    fov = std::clamp(fov, 40, 120);
     if (readback != "none" && readback != "fast" && readback != "some" &&
         readback != "full")
       readback = "none";
@@ -439,7 +434,6 @@ struct Fable2Settings {
     else if (k == "mute") mute = Truthy(v);
     else if (k == "audio_queue_frames") audio_queue_frames = std::atoi(v.c_str());
     else if (k == "cursor_hide_seconds") cursor_hide_seconds = std::atoi(v.c_str());
-    else if (k == "fov") fov = std::atoi(v.c_str());
     else if (k == "keyboard_control") keyboard_control = Truthy(v);
     else if (k.rfind("keybind_", 0) == 0) keybinds[k] = v;
     else if (k == "mouse_look") mouse_look = Truthy(v);

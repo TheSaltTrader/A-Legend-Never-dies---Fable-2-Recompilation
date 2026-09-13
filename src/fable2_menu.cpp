@@ -6,7 +6,6 @@
 
 #include "fable2_saveimport.h"
 #include "fable2_titleupdate.h"
-#include "fable2_camera.h"
 
 #include <algorithm>
 #include <array>
@@ -1236,19 +1235,6 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     // loading screen and a shadow smear following the hero (2026-09-13). A
     // setting that breaks the game is not a choice to put in front of a
     // player; the tuning sends false whatever an old settings file says.
-
-    RowStart("Field of view",
-             "How wide the camera sees, in degrees (vertical). The game runs "
-             "at 60; higher shows more of the world at the edges. Applies "
-             "immediately. Cutscenes and menus use their own cameras and are "
-             "unaffected.");
-    {
-      if (ImGui::SliderInt("##fov", &s.fov, fable2::kFovMinDegrees,
-                           fable2::kFovMaxDegrees, "%d deg")) {
-        fable2::ApplyFieldOfView(s.fov);
-        changed = true;
-      }
-    }
 
     RowStart("Fuzzy alpha test",
              "The plugin's own workaround for alpha-test flicker, where a pixel "
