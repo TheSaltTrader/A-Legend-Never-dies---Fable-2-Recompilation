@@ -3,6 +3,19 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.2 — 2026-09-13 (branch `tu1`)
+
+### Fixed - a game folder given on the command line is remembered
+
+The restart after the v0.2.0 to v0.2.1 update opened the setup screen. No
+setting had been lost: the settings file had never held the game folder,
+because every launch had carried it on the command line (a shortcut, a
+script), and a start without those arguments had nothing to go on. The
+folder is now written into the settings the first time it arrives on the
+command line (and whenever a different one does), so a plain double-click
+and any restart find the game where it was. The setup screen still comes
+back with Shift held at launch, or when the folder has gone.
+
 ## 0.2.1 — 2026-09-13 (branch `tu1`)
 
 ### Fixed - the restart after an update keeps how the game was launched

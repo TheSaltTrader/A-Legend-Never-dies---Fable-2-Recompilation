@@ -154,6 +154,23 @@ class Fable2App : public rex::ReXApp {
       const rex::PathConfig& defaults,
       std::function<void(rex::PathConfig)> resume) override {
     const bool path_from_cli = !REXCVAR_GET(game_data_root).empty();
+    // A folder given on the command line is remembered, so a later start
+    // without it - a plain double-click, or the restart after an update
+    // from a build that forwarded no arguments - finds the game where it
+    // was and does not ask again. The setup screen still comes back with
+    // Shift, or when the folder has gone. Found by the updater's first
+    // tests: the settings file had never held the folder, because every
+    // launch carried it on the command line, so the restart asked for it.
+    if (path_from_cli) {
+      const std::string cli_root = REXCVAR_GET(game_data_root);
+      const bool usable = fable2::InspectFolder(std::filesystem::path(cli_root)).Usable();
+      if (usable && (!settings_.configured || settings_.game_path != cli_root)) {
+        settings_.game_path = cli_root;
+        settings_.configured = true;
+        settings_.Save();
+        REXLOG_INFO("Game folder from the command line remembered in the settings: {}", cli_root);
+      }
+    }
     const bool game_ok =
         fable2::InspectFolder(settings_.ResolvedGamePath()).Usable();
 
