@@ -34,7 +34,9 @@ tiled over the menu, and later across the Oakfield sky. Two different things:
   in `pack/exclude.txt`: an id there is never packed, and every pack file
   carrying the same content hash is moved to `pack/excluded/` - the plugin
   serves the same picture from any file with the hash, so excluding one id
-  left seven others showing it. `tools/contact_sheet.py`-style review of the
+  left seven others showing it - and a bare id line covers every content
+  hash of that id (the sheet exists in three byte-variants; 27 files
+  retired in all). `tools/contact_sheet.py`-style review of the
   first packable dumps in dump order (boot and menu come first) is how the
   sheet was found.
 

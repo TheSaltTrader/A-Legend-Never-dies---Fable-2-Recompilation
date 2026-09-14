@@ -24,7 +24,8 @@ spinner sheet itself, a real texture the game draws in a way a 2x copy
 breaks, is kept out by the pack tool's new `pack/exclude.txt`: an id listed
 there is never packed, and every file carrying the same content hash is
 moved to `pack/excluded/`, because the plugin serves the same picture from
-any of them.
+any of them; a bare id (16 hex digits) covers every content hash of it,
+which the spinner sheet needed - it exists in three byte-variants.
 
 ### Added - a RAM readout on the on-screen readouts
 
