@@ -3,6 +3,40 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.20 — 2026-09-13 (branch `tu1`)
+
+### Changed - the pack tool decides before it decodes, and holds paths, not pixels
+
+The AI re-encode of the whole pack this evening began the way the old
+phase 1 always did: decode all 196,344 dumps in pure Python, only then ask
+which are art, and keep every decoded image in memory until phase 2. Eight
+percent in it held 3.7 GB and was heading for some 45 GB and two and a
+half hours. Phase 1 now turns render targets, fonts and HUD away by shape
+and format before decoding, reuses the decoded PNG beside each raw dump
+when it exists (the decoder last changed on 2026-09-05 and every PNG is
+younger, so the bytes are the same), and keeps only the path until the AI
+chunk that needs the pixels. Restarted with that, phase 1 took thirty
+seconds and phase 2 ran in 1.1 GB. The output is byte-identical to the old
+tool's (117 of 117 on a 400-texture sample). The "Real-ESRGAN not
+installed" note the pip loader printed at the top of every AI run is gone:
+the AI path never used that loader, and the note read as the AI pass being
+skipped.
+
+### Fixed - continuing a stopped run no longer keeps the previous pack's files
+
+A run at new settings rewrites the manifest first and then overwrites the
+pack file by file. Stopped halfway, the next run saw a manifest matching
+its settings and marked incomplete, and continued it (0.1.19's rule),
+counting every file already in the folder as done - including the ones the
+OLD settings had made. Files older than the manifest of a stopped run are
+now redone, and the "already in the pack" count no longer counts a texture
+twice when its decoded PNG is in the dump folder. Both are tested on a
+subset: 117 Lanczos files, a manifest saying an AI run stopped after 10,
+and the continuation redoes exactly 107.
+
+Ninja Gaiden 2 v1.0.15 carries the same tool changes, plus the fix for its
+bundled upscaler never being looked at.
+
 ## 0.1.19 — 2026-09-13 (branch `tu1`)
 
 ### Added - the AI upscaler ships with the port, and is the default

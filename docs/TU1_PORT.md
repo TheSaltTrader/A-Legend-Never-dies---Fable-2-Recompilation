@@ -75,6 +75,16 @@ the first suspect; if something misbehaves around register saves, v65.
 
 ## Log
 
+- 2026-09-13 19:10 0.1.20: the full AI re-encode (70,514 textures, x4plus at 2x,
+  strength 0.75) exposed the pack tool's phase 1: it decoded all 196,344 dumps in
+  pure Python before asking which were art and held every image until phase 2
+  (3.7 GB at 8%, heading for ~45 GB). Now non-art is refused by shape first, the
+  decoded PNG beside a dump is reused, and phase 2 opens per chunk; phase 1 went
+  from hours to 30 s, output byte-identical (117/117). Found while there: 0.1.19's
+  continue-an-incomplete-pack rule kept the PREVIOUS settings' files when the
+  stopped run was a redo (they are older than its manifest - now redone). Same
+  tool changes shipped in NG2 v1.0.15, whose v1.0.14 had bundled the engine
+  without either consumer looking at tools/upscaler.
 - 2026-09-13 00:xx v0.1.3: the pack is content-addressed (plugin), the
   resolve-at-load path records the stage, and the post-logo blank screen
   is gone: `FABLE2_PROFILE=all` showed 'Front end audio loading' 99.6% in
