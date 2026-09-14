@@ -675,15 +675,20 @@ has a citation, which is the bar for being there at all.
 
 ```
 fable2recomp/
-  assets/default.xex          the XEX alone, what codegen reads
-  game/                       the whole extracted disc, what the build runs against
+  assets/default.xex          the XEX alone, what codegen reads (never committed)
+  game/                       the whole extracted disc, what the build runs against (never committed)
   config/functions.toml       function-boundary overrides (hand-found, then a generated block)
   config/fnptr_exclude.txt   addresses scan_fnptrs.py must never register
-  generated/default/          codegen output (500+ files, ~290 MB)
-  src/                        the host application
-  tools/                      analysis and build scripts
+  config/hooks/patches.toml   the hook table (60 fps, field of view, draw distance, ...)
+  generated/default/          codegen output (500+ files, ~290 MB; never committed)
+  src/                        the host application: settings, menus, texture tools, updater
+  src/fable2_update.*         the in-game updater - docs/UPDATER.md
+  patches/                    this port's changes to the ReXGlue SDK source, as scripts
+  tools/                      analysis, build, packaging and test scripts
+  tools/upscaler/             the AI upscaler engine (third party; shipped, never committed)
+  docs/                       the port log (TU1_PORT.md) and the feature notes
   fable2_manifest.toml        the codegen manifest
-  out/build/win-amd64-*/      build output
+  out/build/win-amd64-*/      build output; an update stages itself in update/ beside the exe
 ```
 
 ## Building and running
@@ -707,6 +712,23 @@ it. That is the entire triage method — build `RelWithDebInfo` before debugging
 A bare `--flag` does **not** set a boolean cvar in this runtime; it is accepted
 and silently ignored. Write `--fullscreen=true`.
 
+### Cutting a release
+
+```
+python tools/make_release.py --build       # stages ../Releases/vX.Y.Z and zips it
+git commit ... && git tag -a vX.Y.Z -m "..."
+git push origin tu1:main && git push origin vX.Y.Z
+gh release create vX.Y.Z --title "A Legend Never Dies vX.Y.Z" --notes-file notes.md ../Releases/fable2recomp-vX.Y.Z-win-amd64.zip
+```
+
+The packager refuses a version without a `CHANGELOG.md` section, an
+executable older than the sources, a DLL that is not the deployed SDK pair,
+and anything that looks like game data; `tools/lodestone_census.py --package
+../Releases/vX.Y.Z` checks the staged folder again. Installed copies see the
+new release at their next launch - the updater reads the tag and the
+`-win-amd64.zip` asset, so both names are part of the contract. The whole
+mechanism, its tests and what they found: `docs/UPDATER.md`.
+
 ## Tools
 
 | tool | what it does |
@@ -727,6 +749,10 @@ and silently ignored. Write `--fullscreen=true`.
 | `gstrings.py` | strings with their guest addresses |
 | `scan_missed.py` | diagnostic only — see the warning below |
 | `build.cmd`, `run.cmd` | build and launch |
+| `make_release.py` | stage a version folder under `../Releases` and zip it; `--update FOLDER` puts this build over an install, keeping the player's files; refuses game data, stale builds, a mismatched SDK pair |
+| `upscale_textures.py`, `ai_upscale.py`, `get_upscaler.py` | the texture pack tool (dump -> pack; Lanczos or the shipped Real-ESRGAN engine), its engine driver, and the per-folder engine download - `docs/TEXTURE_PACK.md` |
+| `lodestone_census.py` | the settings census: every field in `fable2_settings.h` is reachable or declared, documented, round-trips, and delivers its cvar; `--package` checks a staged release |
+| `update_e2e_test.ps1`, `remember_folder_test.ps1` | scripted runs of the in-game updater against the real releases, and of the remembered game folder - `docs/UPDATER.md` |
 
 `scan_missed.py` is kept only for diagnosis. **Scanning `.text` for things that
 look like function prologues does not work**: `.text` contains pointer tables,
@@ -997,12 +1023,21 @@ translation unit.
 
 ## Known gaps
 
-- Nothing has been run yet. Reaching a build is not reaching a frame.
-- The 20 Bink videos are untested (see above for why they are expected to work).
-- No DLC. The GOTY disc carries the two expansions on-disc, so unlike NG2 there
-  is probably no STFS licence work to do — unverified.
-- `$SystemUpdate/` on the disc is the *dashboard* update, not a game title
-  update, and is not used.
-- No settings UI. `ng2recomp` grew a pre-boot setup screen and an F10 overlay
-  that are worth porting once the game runs; the SDK's own cvar browser is on
-  F4 in the meantime.
+Updated 2026-09-13; the first-day list ("nothing has been run yet") is
+history, and the Status table at the top says what runs.
+
+- With the Black texture fix at `some`, a distant building or tree can flash
+  white or magenta for a frame while the camera moves. `full` cures it at a
+  cost in frame rate. The cause is a GPU-side ordering hazard around the
+  plugin's deferred readbacks, still being chased; the hidden
+  `readback_drain_small_kb` setting is the A/B for it.
+- In an ultrawide window the map and the Start menu stretch to the window's
+  width. The world, the loading map and the title menus follow the scene
+  machine in `patch_hooks.cpp`; those two need a signature of their own.
+- The stage observer misses the region name after a save is loaded.
+- A release unzipped into a brand-new folder starts fresh: there is no
+  settings file there to inherit. Updating in place - by the game itself or
+  by unzipping over an install - keeps everything.
+- The v0.2.0 executable's own restart after an update forwards no command
+  line (fixed from 0.2.1): a 0.2.0 install launched from a script may see
+  the setup screen once, after its first update.

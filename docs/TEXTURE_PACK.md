@@ -13,6 +13,22 @@ processes only what is missing, records what a pack was made with
 (the whole Python process tree lives in a job object), and survives the
 settings menu being closed - see the 0.0.11 changelog.
 
+**Status 2026-09-13 (0.1.19, 0.1.20):** the AI engine (Real-ESRGAN
+ncnn-vulkan, x4plus) ships under `tools/upscaler` and is the default at
+detail strength 0.75. Phase 1 of a full run refuses non-art by shape and
+format BEFORE decoding, reuses the decoded PNG beside each raw dump, and
+keeps paths rather than images until the AI chunk needs the pixels: the
+196,000-dump full re-encode went from hours of pure-Python decoding (and a
+run heading for some 45 GB of RAM) to thirty seconds, with output
+byte-identical to the old tool's on a 400-texture sample. Continuing a run
+that stopped halfway now redoes pack files older than that run's manifest -
+they were made by the run before it, at other settings - and the
+recovered-PNG pass no longer counts a packed texture twice. The pack on this
+machine: 70,514 textures, x4plus at 2x, strength 0.75, re-encoded the evening
+of 2026-09-13 (phase 2 ran at 4.5 textures a second on the 5090; the engine
+is not GPU-bound at that size, and `-j 1:3:3` measured 15-20% faster under
+load, unproven enough to leave alone).
+
 ## Switching the pack while a scene loads (fixed 2026-09-11)
 
 F9 and the settings checkbox change the pack path live, and the plugin
