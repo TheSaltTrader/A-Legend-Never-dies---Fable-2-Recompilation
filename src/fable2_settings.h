@@ -286,9 +286,17 @@ struct Fable2Settings {
   }
 
   void Save() const {
-    std::ofstream out(Path(), std::ios::trunc);
+    // Written to a sibling file and renamed over the real one. Opening the
+    // settings file itself with trunc wiped it BEFORE the write, so a write
+    // that then failed - the disk filled during a texture run on 2026-09-13 -
+    // left a stump that every later launch read as "no texture folder" and
+    // defaults for everything after it. A failed write now leaves the old
+    // file whole, and says so.
+    const std::filesystem::path target = Path();
+    const std::filesystem::path temp = target.string() + ".tmp";
+    std::ofstream out(temp, std::ios::trunc);
     if (!out) {
-      REXLOG_WARN("Settings: cannot write {}", Path().string());
+      REXLOG_WARN("Settings: cannot write {}", temp.string());
       return;
     }
     // EVERY key Apply() understands must be written here. They drifted apart
@@ -361,7 +369,23 @@ struct Fable2Settings {
         << "configured=" << (configured ? 1 : 0) << "\n"
         << "update_check=" << (update_check ? 1 : 0) << "\n"
         << "update_skip=" << update_skip << "\n";
-    REXLOG_INFO("Settings: saved {}", Path().string());
+    out.flush();
+    const bool written = out.good();
+    out.close();
+    std::error_code ec;
+    if (!written) {
+      REXLOG_WARN("Settings: writing {} failed (disk full?); the previous file is kept",
+                  temp.string());
+      std::filesystem::remove(temp, ec);
+      return;
+    }
+    std::filesystem::rename(temp, target, ec);
+    if (ec) {
+      REXLOG_WARN("Settings: could not replace {}: {}", target.string(), ec.message());
+      std::filesystem::remove(temp, ec);
+      return;
+    }
+    REXLOG_INFO("Settings: saved {}", target.string());
   }
 
   // Ranges come from the cvar dump, not from guesswork. Clamping here means

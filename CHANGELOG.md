@@ -3,6 +3,19 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.3 — 2026-09-13 (branch `tu1`)
+
+### Fixed - a failed settings write no longer wipes the settings
+
+The settings file was opened with truncate and then written, so a write
+that failed part-way left a stump, and the next launch read whatever keys
+had made it and defaults for the rest. That happened this afternoon when
+the disk filled during a texture run: from then on every launch read the
+file with the texture folder empty, and the game played without its pack
+until the folder was set again. The file is now written beside itself and
+renamed over the old one only when the write succeeded; a failed write
+keeps the previous file whole and says so in the log.
+
 ## 0.2.2 — 2026-09-13 (branch `tu1`)
 
 ### Fixed - a game folder given on the command line is remembered
