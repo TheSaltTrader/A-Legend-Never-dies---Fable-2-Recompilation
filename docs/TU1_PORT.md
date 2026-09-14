@@ -75,6 +75,16 @@ the first suspect; if something misbehaves around register saves, v65.
 
 ## Log
 
+- 2026-09-13 22:47 0.2.0 -> 0.2.2: PUBLISHED at github.com/TheSaltTrader/
+  A-Legend-Never-dies---Fable-2-Recompilation (the local-only rule ended by the
+  user's decision; history rewritten first to untrack the third-party upscaler
+  engine 0.1.19 had committed). 0.2.0 = the in-game updater (src/fable2_update.*,
+  WinHTTP + tar.exe; settings update_check/update_skip) and tools/make_release.py.
+  Three scripted end-to-end runs proved check, download, install, restart and
+  clean-up; they also found the restart dropping the command line (0.2.1 forwards
+  it) and the settings never holding the game folder because every launch passed
+  it on the command line (0.2.2 remembers it). Test scripts live in the session
+  scratchpad: update_e2e_test.ps1, remember_folder_test.ps1.
 - 2026-09-13 19:10 0.1.20: the full AI re-encode (70,514 textures, x4plus at 2x,
   strength 0.75) exposed the pack tool's phase 1: it decoded all 196,344 dumps in
   pure Python before asking which were art and held every image until phase 2
