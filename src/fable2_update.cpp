@@ -333,8 +333,14 @@ int CompareVersions(const std::string& a, const std::string& b) {
 
 std::string CurrentVersion() {
   if (const char* pretend = std::getenv("FABLE2_UPDATE_PRETEND_VERSION"); pretend && *pretend) {
-    REXLOG_WARN("[update] FABLE2_UPDATE_PRETEND_VERSION={}: pretending this build is that version",
-                pretend);
+    // Said once: this is asked every frame the panel is up, and the first
+    // test wrote the warning 378 times.
+    static const bool said = [pretend] {
+      REXLOG_WARN("[update] FABLE2_UPDATE_PRETEND_VERSION={}: pretending this build is that version",
+                  pretend);
+      return true;
+    }();
+    (void)said;
     return pretend;
   }
   return FABLE2_VERSION;
@@ -603,7 +609,30 @@ bool LaunchDetached(const fs::path& exe, const std::string& args) {
 bool RelaunchSelf(const fs::path& exe_dir) {
   const fs::path exe = exe_dir / "fable2.exe";
   SetEnvironmentVariableA("FABLE2_WAIT_PID", std::to_string(GetCurrentProcessId()).c_str());
-  const bool ok = LaunchDetached(exe, "");
+  // The developer switches must not follow us into the new process: with
+  // them inherited, a pretend-old build would update itself forever.
+  SetEnvironmentVariableA("FABLE2_UPDATE_PRETEND_VERSION", nullptr);
+  SetEnvironmentVariableA("FABLE2_UPDATE_AUTO", nullptr);
+  // The new process gets this one's own arguments. A launch from a shortcut
+  // or a script carries the game folder (--game_data_root) and the log file
+  // on the command line, and a restart without them opened the setup screen
+  // as if the game had never been configured (found by the first test).
+  std::wstring args = GetCommandLineW() ? GetCommandLineW() : L"";
+  if (!args.empty()) {
+    size_t end = 0;
+    if (args[0] == L'"') {
+      end = args.find(L'"', 1);
+      end = (end == std::wstring::npos) ? args.size() : end + 1;
+    } else {
+      end = args.find(L' ');
+      if (end == std::wstring::npos)
+        end = args.size();
+    }
+    args.erase(0, end);
+    while (!args.empty() && args[0] == L' ')
+      args.erase(0, 1);
+  }
+  const bool ok = LaunchDetached(exe, Narrow(args));
   SetEnvironmentVariableA("FABLE2_WAIT_PID", nullptr);
   if (ok)
     REXLOG_INFO("[update] started the new {}; this process is quitting", exe.string());
@@ -619,8 +648,10 @@ void WaitForPreviousInstance() {
   if (!pid || pid == GetCurrentProcessId())
     return;
   HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
-  if (!h)
-    return;   // already gone
+  if (!h) {
+    REXLOG_INFO("[update] previous instance {} had already exited", pid);
+    return;
+  }
   const DWORD r = WaitForSingleObject(h, 10000);
   CloseHandle(h);
   REXLOG_INFO("[update] previous instance {} {}", pid,
@@ -778,6 +809,30 @@ void UpdateOverlay::OnDraw(ImGuiIO& io) {
     error = error_;
   }
   const std::string current = CurrentVersion();
+
+  // Developer switch for a scripted end-to-end test: FABLE2_UPDATE_AUTO=1
+  // presses Update now and Restart now itself, so the whole path - check,
+  // download, install, hand-over, clean-up - runs with nobody at the mouse.
+  // Never set outside a test; it is read once and said in the log.
+  static const bool auto_accept = [] {
+    const char* v = std::getenv("FABLE2_UPDATE_AUTO");
+    const bool on = v && *v && *v != '0';
+    if (on)
+      REXLOG_WARN("[update] FABLE2_UPDATE_AUTO is set: the update panel presses its own buttons");
+    return on;
+  }();
+  if (auto_accept && state == State::kAvailable) {
+    REXLOG_INFO("[update] auto: Update now");
+    StartDownload();
+    return;
+  }
+  if (auto_accept && state == State::kInstalled) {
+    REXLOG_INFO("[update] auto: Restart now");
+    SetState(State::kIdle);
+    if (on_restart_)
+      on_restart_();
+    return;
+  }
 
   ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always,
                           ImVec2(0.5f, 0.5f));

@@ -3,6 +3,21 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.1 — 2026-09-13 (branch `tu1`)
+
+### Fixed - the restart after an update keeps how the game was launched
+
+The first end-to-end run of the updater (a build pretending to be v0.1.0
+against the real v0.2.0 release: check, 77 MB download in three seconds, 30
+files installed, four moved aside, restart, clean-up) found the restarted
+game opening the setup screen as if it had never been configured. The
+relaunch had dropped the command line: a launch from a shortcut or a script
+carries the game folder and the log file there, and the settings file -
+which an update never touches - records only what the setup screen was
+told. The new process now gets the old one's own arguments. Also: the
+developer switch that pretends an older version said so once per frame
+(378 lines in one test); once now.
+
 ## 0.2.0 — 2026-09-13 (branch `tu1`)
 
 ### Added - published, with an updater
