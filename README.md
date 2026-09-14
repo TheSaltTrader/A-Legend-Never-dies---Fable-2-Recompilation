@@ -713,6 +713,26 @@ it. That is the entire triage method — build `RelWithDebInfo` before debugging
 A bare `--flag` does **not** set a boolean cvar in this runtime; it is accepted
 and silently ignored. Write `--fullscreen=true`.
 
+### Driving the game from outside
+
+The port carries a synthetic controller inside its own process, merged into
+player 1 (`src/fable2_autoskip.cpp`). Two ways to use it:
+
+- `FABLE2_PAD_SCRIPT="12:a,16:down,18:a"` - presses at fixed seconds after
+  boot, for scripted runs (`tools/play_probe.py` adds keyboard input and
+  screenshots on top).
+- `pad_script.txt` beside the executable, while the game runs: one command
+  per line, read and deleted within a tenth of a second, run in order a tenth
+  of a second apart. Buttons `a b x y start back up down left right lb rb`
+  with an optional `:hold_seconds` (0.2 s default), sticks `l:x,y[:secs]` and
+  `r:x,y[:secs]` in -1 to 1 (0.5 s default), triggers `lt[:secs]` `rt[:secs]`,
+  `wait:secs`, `release`. The game writes `pad_script.accepts` (with its PID)
+  beside the executable while it runs, so a tool knows the folder listens; a
+  real press on the pad clears the queue; every command is logged as
+  `[padfile] ...`. AI Vision's `hand_padscript` tool writes this file. Neither
+  needs focus, a driver, or a free player slot, which is why they exist: a
+  virtual pad becomes player 2 the moment a real one is connected.
+
 ### Cutting a release
 
 ```

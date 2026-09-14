@@ -75,6 +75,12 @@ the first suspect; if something misbehaves around register saves, v65.
 
 ## Log
 
+- 2026-09-14 00:45 0.2.5: the synthetic pad reads pad_script.txt beside the exe
+  while the game runs (commands with hold times, sticks, triggers, waits; the
+  file is consumed; a real press clears the queue; pad_script.accepts with the
+  PID announces the channel). Built for AI Vision's hands, whose virtual pad is
+  player 2 next to a real one; proven live through AI Vision's eye/padfile.py:
+  title, Continue, save, a 3 s stick walk into the market square.
 - 2026-09-14 00:00 0.2.3/0.2.4: the AI pack's first real session found the
   settings file truncated by a failed write (Save now writes a sibling and
   renames), the readback drain experiment key killing the frame rate (1.7-2.2 s

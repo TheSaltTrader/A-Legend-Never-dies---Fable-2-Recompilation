@@ -3,6 +3,26 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.5 — 2026-09-14 (branch `tu1`)
+
+### Added - a live pad-script file, so a tool can drive the game while it runs
+
+The synthetic controller that skips intros and runs scripted walks
+(`FABLE2_PAD_SCRIPT`, fixed at launch) now also reads `pad_script.txt`
+beside the executable while the game runs: one command per line, consumed
+the moment it is read, polled ten times a second. Buttons (`a`, `b`, `x`,
+`y`, `start`, `back`, the d-pad, `lb`, `rb`, each with an optional hold in
+seconds), the sticks (`l:x,y:secs`, `r:x,y:secs`, -1 to 1), the triggers
+(`lt`, `rt`), `wait:secs` and `release`, run in order with a tenth of a
+second between them. The game announces the channel with
+`pad_script.accepts` beside the executable (present while it runs), so a
+tool never writes into a folder that will not read. A real press on the
+pad clears the queue - the person always wins - and every command is logged
+as `[padfile] ...`. Built for AI Vision's hands, which drove games through
+a virtual controller that a real pad demotes to player 2; this goes
+straight into the guest's input as player 1, needs no driver, no focus and
+no device slot.
+
 ## 0.2.4 — 2026-09-14 (branch `tu1`)
 
 ### Fixed - the texture pack no longer serves a render target's previous occupant
