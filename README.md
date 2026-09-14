@@ -353,6 +353,10 @@ Enhancements
   applies to the swap image.
 - **Anisotropic filtering** - leave the game's own samplers alone, or force a level.
 - **Graphics engine** - DirectX 12 or Vulkan; Vulkan needs a plugin built with it.
+- **AI upscaler** - Real-ESRGAN (ncnn-vulkan, the x4plus model) ships at
+  `tools/upscaler/` and is the Textures page's default at detail strength
+  0.75; a local model on the GPU, no key, no network. Lanczos remains the
+  fallback and the 2x choice of scale stands (4x costs about 250 GB).
 - **Black texture fix** - the graduated readback (none / fast / some / full;
   full waits for the whole GPU on every resolve and halves the frame rate at
   the lake - a diagnostic, not a setting to play with)

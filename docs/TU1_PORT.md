@@ -171,6 +171,12 @@ the first suspect; if something misbehaves around register saves, v65.
   `FABLE2_IMAGE`: every registered size came from the disc image. Reset
   `functions.toml` to the seven forwarders and restarted with the variable
   set (the 8-byte thunks at 0x82C11BD8..0x82C11BEC now walk to their `b`).
+- 2026-09-13 18:40 The AI upscaler bundled (0.1.19): tools/upscaler = ACME's
+  Real-ESRGAN ncnn-vulkan + models (gitignored); the in-game AI option had
+  silently fallen back to Lanczos for want of it. Trial montages
+  (scratchpad ai_trial): AI wins on hard surfaces, loses on grass at 1.0;
+  0.75 default. Full 2x AI re-encode of the 70,514-file pack started
+  18:35 (decode 196k dumps, then the ncnn pass), in place.
 - 2026-09-13 17:55 The frame-rate campaign (0.1.18): six market walks, one
   tuning change each - not GPU-bound at 2x (54% share; 35% at 1x; same 60
   cap), FSR/anisotropy free, ROV path 33.7 fps vs RTV 54 (auto = RTV). The

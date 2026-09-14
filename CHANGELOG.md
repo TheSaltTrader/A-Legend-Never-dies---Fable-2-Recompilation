@@ -3,6 +3,32 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.1.19 — 2026-09-13 (branch `tu1`)
+
+### Added - the AI upscaler ships with the port, and is the default
+
+The Textures page has offered Real-ESRGAN ("AI") since the pack tool
+existed, but the engine was never beside the tools in this tree, so every
+run - the in-game one of this afternoon included - fell back to Lanczos
+and said so only in its log. The engine the ACME Texture Upscaler project
+settled on now sits at `tools/upscaler/` (Real-ESRGAN ncnn-vulkan, the
+x4plus model and its siblings; a local model on the GPU, no key, no
+network; BSD-3, third-party, kept out of git and copied into the
+install instead). AI at detail strength 0.75 is the default; a trial on
+eight Bowerstone Market textures put it clearly ahead on hard surfaces
+(plank grain, rivets, edges) and behind Lanczos on soft organic ones at
+full strength (grass turns to speckle), which is what the strength blend
+is for. The x4plus network runs at 4x and the tool resizes to 2x; 4x
+packs are not worth their disk (about 250 GB here) or memory.
+
+### Fixed - the pack tool no longer redoes everything for an incomplete pack
+
+A run stopped halfway leaves the manifest at `complete=0`, and "only
+missing" then redid every texture - 196,000 dumps for a pack that only
+lacked 22,659. Same settings now continue the pack; only different
+settings force a redo. That is how the Lanczos pack was completed
+(70,514 files) before the AI re-encode replaced it in place.
+
 ## 0.1.18 — 2026-09-13 (branch `tu1`)
 
 ### Measured - where the frame rate goes, with the numbers

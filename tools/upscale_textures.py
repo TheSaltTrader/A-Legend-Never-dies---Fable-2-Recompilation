@@ -666,15 +666,21 @@ def main():
     if args.only_missing:
         m = read_manifest(pack)
         if m:
+            # Same settings: continue the pack, complete or not. A run stopped
+            # halfway (the disk filled under the in-game run of 2026-09-13)
+            # leaves complete=0, and redoing 196,000 dumps for that is hours
+            # and a full disk again; only DIFFERENT settings force a redo.
             same = (m.get("scale") == str(args.scale) and m.get("upscaler") == upscaler_name
-                    and abs(float(m.get("strength", "0")) - strength) < 0.005
-                    and m.get("complete") == "1")
+                    and abs(float(m.get("strength", "0")) - strength) < 0.005)
             if not same:
                 print("NOTE: the pack was made at %sx with %s (strength %s, complete=%s); "
                       "the settings now are %dx with %s (strength %.2f) - redoing every texture"
                       % (m.get("scale"), m.get("upscaler"), m.get("strength"), m.get("complete"),
                          args.scale, upscaler_name, strength), flush=True)
                 args.only_missing = False
+            elif m.get("complete") != "1":
+                print("NOTE: the pack is marked incomplete (a run stopped halfway); same "
+                      "settings, so continuing it - only what is missing gets made", flush=True)
     # What is already in the pack, for --only-missing. A pack of thousands
     # takes half an hour with the AI; the handful dumped since take minutes,
     # and redoing everything to get them was the only option before this.

@@ -24,3 +24,6 @@ fable2.toml
 
 # DLL backups kept beside the build when the runtime pair is swapped
 dll_backup_*/
+
+# third-party AI upscaler engine + models (ACME's copy; not ours to commit)
+tools/upscaler/
