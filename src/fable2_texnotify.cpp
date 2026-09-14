@@ -17,6 +17,18 @@
 #include "fable2_settings.h"
 #include "fable2_viewstate.h"
 
+// [ultrawide] The plugin scales the 2D HUD's pixel-to-clip x by this while the
+// world is drawn edge to edge: 16:9 over the display aspect, so the HUD keeps
+// its proportions inside a centred 16:9 band. "0" turns it off.
+static std::string Hud2DFactor(bool world_edge_to_edge) {
+  if (!world_edge_to_edge) return "0";
+  const int aspect = rex::cvar::Query<int>("fable2_display_aspect_x1000");
+  if (aspect <= 1790) return "0";  // 16:9 or narrower: nothing to compress
+  char b[32];
+  std::snprintf(b, sizeof(b), "%.5f", 1777.8 / double(aspect));
+  return b;
+}
+
 namespace fable2 {
 namespace {
 
@@ -211,6 +223,7 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
           last_want = want;
           last_switch = now;
           rex::cvar::SetFlagByName("present_letterbox", want ? "true" : "false");
+          rex::cvar::SetFlagByName("fable2_uw_2d_k", Hud2DFactor(want == 0));
           REXLOG_INFO("[ultrawide] presenter -> {} ({:.3f} s since a world camera build)",
                       want ? "16:9 with bars" : "edge to edge",
                       fable2::SecondsSinceWorldCameraBuild());
@@ -222,8 +235,12 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
           const char* wanted = last_want ? "true" : "false";
           if (rex::cvar::GetFlagByName("present_letterbox") != wanted)
             rex::cvar::SetFlagByName("present_letterbox", wanted);
+          const std::string k = Hud2DFactor(last_want == 0);
+          if (rex::cvar::GetFlagByName("fable2_uw_2d_k") != k)
+            rex::cvar::SetFlagByName("fable2_uw_2d_k", k);
         }
       } else {
+        if (last_want != -1) rex::cvar::SetFlagByName("fable2_uw_2d_k", "0");
         last_want = -1;
       }
     }

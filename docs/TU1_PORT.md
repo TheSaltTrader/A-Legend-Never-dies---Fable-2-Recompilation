@@ -107,6 +107,49 @@ the first suspect; if something misbehaves around register saves, v65.
   game's 3D thread (spinning for GPU progress) and the command thread.
   wait_reg_mem_yield_ms (s73, default 2): 2 vs 1000 ms measured EQUAL
   (48.3 vs 48.8 mean) - not the lever. Next: per-function host profile.
+  15:35 0.2.6 RELEASED (commit 6d4e702, tag v0.2.6, gh release with the
+  zip; the tag pushed to tu1 and main). Build 73 (unreleased): the profiler
+  adds "host fn (self)" and "host fn (incl)" per report - leaf samples and
+  every stack frame grouped by containing function through dbghelp - so the
+  plugin's share names its functions; awaiting a market run (machine with
+  the NG2 session).
+  16:05 s74 (patch_gpu_perf1.py): every register write looked its register
+  up only to feed a debug line the info level never printed - gated behind
+  gpu_log_unknown_registers (default off): scripted market walk 51-54 ->
+  57-59 fps. "uploads N MB" on the fence line: 5.1 GB per 5 s = ~18 MB a
+  frame copied on the command thread (RequestRanges 13% of the profile) -
+  the next lever (parallel copy). s75: deferred-command-list kind counts +
+  upload copy counts on the fence line.
+  16:20 s76 counters (gpu_dcl_census, costs frames - gated): ~47,000 D3D12
+  calls a frame = 4 root-CBV sets + 1 index-buffer set + 1 draw per draw
+  (5,000 draws), 1,800 barriers; uploads = ~1,000 copies a frame of 17 KB
+  average (18 MB), so a copy pool (s77, shared_memory_upload_threads) is
+  NEUTRAL (measured) - the per-copy bookkeeping, not the memcpy, is the
+  cost. 2D CENSUS: Fable II's HUD shaders hold no ortho matrix; they carry
+  c8 = (2/1280, -2/720, -1, 1) (pixel-to-clip); post-process quads use c255
+  and pre-transformed vertices. s77: fable2_uw_2d_k scales c8.x and c8.z per
+  draw; the app sets it to 16:9/display-aspect while the world is edge to
+  edge (fable2_texnotify.cpp Hud2DFactor) - HUD proportions kept at
+  ultrawide. s74 (55-58) vs s77 (52-55) back to back = a real 3 fps cost
+  somewhere in s75-s77; bisecting by build.
+  16:40 FOUND: the HUD block read the four c8 values back from the upload
+  buffer - write-combined memory, uncached reads - on every draw using
+  register 8: 3 fps. s78b tests the values in the register file and writes
+  only the scaled ones: 55-58 fps with the HUD compression active (s78a,
+  the block compiled out, 55-59). LESSON: never read back from an upload
+  buffer mapping in a per-draw path.
+  16:55 the d-pad prompt stayed oval after s78b. First guess wrong: it is
+  NOT a constant-less pre-transformed draw - a viewport-narrowing path for
+  those (s79, reverted) logged every such draw in the market and all were
+  post-processing (the bloom mip chain at 256/128/64 and the composite,
+  each reading GPU-written memory). The census had the answer: the widget
+  is a 3D model drawn depth-off with its OWN perspective projection at
+  c0..c3, c0 = (6.303,0,0,0), c1 = (0,0,11.2,0): 11.2/6.303 = 16:9
+  hard-coded, while the world's projection follows the display aspect.
+  s79 (patch_uw_2d_persp.py) multiplies c0.x by fable2_uw_2d_k for every
+  depth-off draw with that signature: buttons round, widget inside the
+  band (hud_s79c_03.png), market walk 55-58. 0.2.7 cut from s79c +
+  app build 75.
 
 - 2026-09-14 00:45 0.2.5: the synthetic pad reads pad_script.txt beside the exe
   while the game runs (commands with hold times, sticks, triggers, waits; the

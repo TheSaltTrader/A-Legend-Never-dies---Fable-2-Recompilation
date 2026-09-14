@@ -3,6 +3,47 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.7 — 2026-09-14 (branch `tu1`)
+
+### Fixed - the HUD no longer stretches at ultrawide
+
+The health bar, prompts and text are drawn by shaders that carry one
+pixel-to-clip constant (c8 = 2/1280, -2/720, -1, 1; the game has no UI
+matrix). While the world is drawn edge to edge, the app now hands the plugin
+a factor (16:9 over the display aspect, `fable2_uw_2d_k`) and the plugin
+scales that constant's x for every draw that carries it, so the HUD keeps
+its proportions in a centred 16:9 band. Full-screen effects use other
+constants and are untouched. The values are tested in the register file, not
+read back from the upload buffer: that read-back is write-combined memory
+and cost 3 fps until it was moved.
+
+The d-pad prompt (the shaded buttons) is not a 2D draw: it is a small 3D
+model drawn with the depth test off and its own perspective projection at
+c0..c3, with a hard-coded 16:9 aspect (y scale 11.2 over x scale 6.303)
+while the world's projection follows the display. The plugin now multiplies
+that projection's x scale by the same factor for every depth-off draw whose
+projection has that 16:9 signature, so the buttons are round again and sit
+in the band. Verified on screenshots at 3840x1600; the market walk stays at
+55-58 fps.
+
+### Improved - town frame rate (+4 fps in Bowerstone Market)
+
+Every register write looked its register up only to feed a debug line the
+info level never printed, about a fifth of the command thread's own time;
+the lookup now runs only with `gpu_log_unknown_registers`. Scripted market
+walk 51-54 to 55-58 fps at ultrawide, FOV 75, 2x.
+
+### Added - diagnostics for the next round
+
+`gpu_dcl_census` counts the Direct3D 12 commands replayed per kind (about
+47,000 a frame in the market: four root constant-buffer sets, an index
+buffer set and a draw per draw), the fence line shows the upload volume and
+copy count (about 18 MB in 1,000 copies a frame), `fable2_2d_census` logs
+each vertex shader's 2D/3D classification, `shared_memory_upload_threads`
+(measured neutral, default 3 but harmless) and `wait_reg_mem_yield_ms`
+(neutral). The in-app profiler now lists host functions, self and
+inclusive, per report.
+
 ## 0.2.6 — 2026-09-14 (branch `tu1`)
 
 ### Fixed - the pack served other textures' pictures: 14,631 poisoned files retired

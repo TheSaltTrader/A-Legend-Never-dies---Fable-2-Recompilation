@@ -37,6 +37,7 @@ struct Target {
   std::unordered_map<uint64_t, uint32_t> leaf;       // rip -> samples
   std::unordered_map<uint64_t, uint32_t> guest_fn;   // host entry of first sub_ frame -> samples
   std::unordered_map<uint64_t, uint32_t> waiter;     // first frame above ntdll/kernel32 -> samples
+  std::unordered_map<uint64_t, uint32_t> frame_hit;  // every frame's rip -> samples (inclusive)
   uint32_t samples = 0;         // on-CPU samples: the thread ran since the last look
   uint32_t blocked = 0;         // wall-clock samples where it had not run at all
   uint64_t last_cycles = 0;
@@ -257,6 +258,46 @@ void RefreshTargets(const std::vector<std::string>& wanted, std::vector<Target>&
   CloseHandle(snap);
 }
 
+// The start of the function containing rip (dbghelp), cached: report time
+// groups thousands of distinct addresses every ten seconds.
+uint64_t FunctionStart(uint64_t rip) {
+  static std::unordered_map<uint64_t, uint64_t> cache;
+  auto it = cache.find(rip);
+  if (it != cache.end()) return it->second;
+  alignas(SYMBOL_INFO) char sbuf[sizeof(SYMBOL_INFO) + 256] = {};
+  auto* sym = reinterpret_cast<SYMBOL_INFO*>(sbuf);
+  sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+  sym->MaxNameLen = 255;
+  DWORD64 disp = 0;
+  uint64_t start = rip;
+  if (SymFromAddr(GetCurrentProcess(), rip, &disp, sym)) start = rip - disp;
+  cache.emplace(rip, start);
+  return start;
+}
+
+// Host (non-guest) samples of a map, grouped by containing function.
+void TopHostFunctions(const Target& t, const std::unordered_map<uint64_t, uint32_t>& m,
+                      const char* what, size_t count) {
+  std::unordered_map<uint64_t, uint32_t> by_fn;
+  for (const auto& p : m) {
+    const ModuleClass c = ClassOf(p.first);
+    if (c == kGenerated || c == kUnknown) continue;
+    by_fn[FunctionStart(p.first)] += p.second;
+  }
+  if (by_fn.empty()) return;
+  std::vector<std::pair<uint64_t, uint32_t>> v(by_fn.begin(), by_fn.end());
+  std::partial_sort(v.begin(), v.begin() + std::min(count, v.size()), v.end(),
+                    [](const auto& a, const auto& b) { return a.second > b.second; });
+  std::string line;
+  for (size_t i = 0; i < std::min(count, v.size()); ++i) {
+    char b[512];
+    std::snprintf(b, sizeof(b), "%s%s %.1f%%", i ? ", " : "", Describe(v[i].first).c_str(),
+                  100.0 * v[i].second / t.samples);
+    line += b;
+  }
+  REXLOG_INFO("[profile]   {}: {}", what, line);
+}
+
 void Report(Target& t, double secs) {
   if (t.samples + t.blocked == 0) return;
   // A thread asleep in a wait is somewhere, but it is not USING the core.
@@ -294,6 +335,8 @@ void Report(Target& t, double secs) {
   };
   top(t.guest_fn, "guest fn", 14);
   top(t.leaf, "leaf", 12);
+  TopHostFunctions(t, t.leaf, "host fn (self)", 16);
+  TopHostFunctions(t, t.frame_hit, "host fn (incl)", 16);
   // For samples sitting in a system call: who called it. "ntdll 90%" says
   // the thread waits; this says on what - a fence, the guest's WAIT_REG_MEM
   // poll, the ring buffer event - which is the difference between "the GPU is
@@ -305,6 +348,7 @@ void Report(Target& t, double secs) {
   t.leaf.clear();
   t.guest_fn.clear();
   t.waiter.clear();
+  t.frame_hit.clear();
   t.samples = 0;
   t.blocked = 0;
   t.no_guest_frame = 0;
@@ -350,6 +394,7 @@ void SamplerMain(std::vector<std::string> wanted) {
       if (n <= 0) continue;
       ++t.samples;
       ++t.leaf[frames[0]];
+      for (int i = 0; i < n; ++i) ++t.frame_hit[frames[i]];
       const ModuleClass leaf_class = ClassOf(frames[0]);
       ++t.by_module[leaf_class];
       if (leaf_class == kNtdll || leaf_class == kKernel32 || leaf_class == kOther) {
