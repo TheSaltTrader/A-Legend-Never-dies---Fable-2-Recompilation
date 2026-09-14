@@ -239,13 +239,15 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
   const bool show_fps = forced || s->hud_fps;
   const bool show_cpu = forced || s->hud_cpu;
   const bool show_cpu_bar = forced || s->hud_cpu_bar;
+  const bool show_ram = forced || s->hud_ram;
+  const bool show_ram_bar = forced || s->hud_ram_bar;
   const bool show_gpu = forced || s->hud_gpu;
   const bool show_vram = forced || s->hud_vram;
   const bool show_gpu_bar = forced || s->hud_gpu_bar;
   const bool show_vram_bar = forced || s->hud_vram_bar;
   const bool hidden = g_hud_hidden.load(std::memory_order_acquire);
   if (!(forced || (s->hud_enabled && !hidden)) ||
-      (!show_fps && !show_cpu && !show_gpu && !show_vram))
+      (!show_fps && !show_cpu && !show_ram && !show_gpu && !show_vram))
     return;
 
   const PerfSample p = GetPerfSample();
@@ -297,6 +299,23 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
       ImGui::SameLine();
       ImGui::TextColored(label, " %.1f of %.0f cores", busy_cores, cores);
       if (show_cpu_bar) ReadoutBar(p.cpu_percent / 100.0f, c);
+    }
+    if (show_ram) {
+      // This process's working set against the machine's RAM. Green by
+      // request - the bar is a level, not a verdict - until the machine is
+      // nearly out (85%), where the amber and red of the other readouts
+      // take over: that is when Windows starts paging the texture cache.
+      ImGui::TextColored(label, "RAM");
+      ImGui::SameLine();
+      if (p.ram_valid) {
+        const float frac = p.ram_total_mb > 0.0f ? p.ram_mb / p.ram_total_mb : 0.0f;
+        const ImVec4 green(0.30f, 0.86f, 0.42f, 1.0f);
+        const ImVec4 c = frac < 0.85f ? green : (frac < 0.95f ? warn : bad);
+        ImGui::TextColored(c, "%.1f / %.0f GB", p.ram_mb / 1024.0f, p.ram_total_mb / 1024.0f);
+        if (show_ram_bar) ReadoutBar(frac, c);
+      } else {
+        ImGui::TextColored(label, "    n/a");
+      }
     }
     if (show_gpu) {
       ImGui::TextColored(label, "GPU");

@@ -13,6 +13,31 @@ processes only what is missing, records what a pack was made with
 (the whole Python process tree lives in a job object), and survives the
 settings menu being closed - see the 0.0.11 changelog.
 
+**Status 2026-09-14 (0.2.4): the pack keeps off memory the GPU wrote, and
+`pack/exclude.txt` exists.** The first full session with the AI pack showed
+the main menu's loading spinner - a 512x512 sheet of 25 animation frames -
+tiled over the menu, and later across the Oakfield sky. Two different things:
+
+- *The sky.* The dump index held the spinner's exact bytes under eight
+  texture ids of one shape. A texture whose memory the GPU writes (a resolve
+  destination) was being hashed before the readback of that frame's render
+  target had landed - with the "some" readback the copy lands a frame later -
+  so the plugin hashed the previous occupant of the memory and, looking the
+  hash up by content, served its picture. Plugin pair s62 leaves any texture
+  whose pages are valid-and-GPU-written alone: not replaced, not dumped (a
+  scripted market walk left 70,000 such loads alone in three minutes). Its
+  own readback copies also land without invalidating the pages
+  (`BeginSelfCopy`/`EndSelfCopy`), since the GPU buffer already holds the
+  bytes.
+- *The menu.* The spinner sheet is a real texture the game draws in a way a
+  2x copy breaks (the whole sheet shows where one frame should). It is listed
+  in `pack/exclude.txt`: an id there is never packed, and every pack file
+  carrying the same content hash is moved to `pack/excluded/` - the plugin
+  serves the same picture from any file with the hash, so excluding one id
+  left seven others showing it. `tools/contact_sheet.py`-style review of the
+  first packable dumps in dump order (boot and menu come first) is how the
+  sheet was found.
+
 **Status 2026-09-13 (0.1.19, 0.1.20):** the AI engine (Real-ESRGAN
 ncnn-vulkan, x4plus) ships under `tools/upscaler` and is the default at
 detail strength 0.75. Phase 1 of a full run refuses non-art by shape and

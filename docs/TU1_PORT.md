@@ -75,6 +75,16 @@ the first suspect; if something misbehaves around register saves, v65.
 
 ## Log
 
+- 2026-09-14 00:00 0.2.3/0.2.4: the AI pack's first real session found the
+  settings file truncated by a failed write (Save now writes a sibling and
+  renames), the readback drain experiment key killing the frame rate (1.7-2.2 s
+  of waits per 5 s; set to 0), and the pack serving the menu spinner sheet in
+  the Oakfield sky. Plugin pair s62: textures on GPU-written memory are never
+  replaced or dumped, and the plugin's own readback copies land without
+  invalidating pages. pack/exclude.txt by id and content. A RAM readout on
+  the F8 readouts. Scripted A/B on the market walk: s61 45 fps, s62 42, same
+  slow-frame profile - the readback path is out of the frame; the scene's own
+  cost remains.
 - 2026-09-13 22:47 0.2.0 -> 0.2.2: PUBLISHED at github.com/TheSaltTrader/
   A-Legend-Never-dies---Fable-2-Recompilation (the local-only rule ended by the
   user's decision; history rewritten first to untrack the third-party upscaler

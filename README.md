@@ -354,9 +354,10 @@ Enhancements
 - **Skip intro videos** - presses A through a chapter's cinematic with a
   synthetic controller; any genuine input disarms it.
 - **On-screen readouts** - FPS, CPU (this process, across all cores, with
-  the same figure in cores), GPU load and video memory in the corner, each
-  switchable, with a bar under the CPU, GPU and VRAM numbers (each
-  switchable too). Shown at every launch; F8 hides them for the session and
+  the same figure in cores), RAM (this process's working set against the
+  machine's memory, with a green bar), GPU load and video memory in the
+  corner, each switchable, with a bar under the CPU, RAM, GPU and VRAM
+  numbers (each switchable too). Shown at every launch; F8 hides them for the session and
   is not remembered. FPS is the game's own frame rate (frames it finished), with
   the host's present rate beside it, smaller; the window repaints far more
   often than the game draws, and only the first number says whether the game

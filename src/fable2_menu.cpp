@@ -1308,12 +1308,16 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
         ImGui::SameLine();
         changed |= ImGui::Checkbox("CPU##hudcpu", &s.hud_cpu);
         ImGui::SameLine();
+        changed |= ImGui::Checkbox("RAM##hudram", &s.hud_ram);
+        ImGui::SameLine();
         changed |= ImGui::Checkbox("GPU##hudgpu", &s.hud_gpu);
         ImGui::SameLine();
         changed |= ImGui::Checkbox("VRAM##hudvram", &s.hud_vram);
         // Second line: the cell clips whatever sits past VRAM on the first
         // (seen in play, 2026-09-12).
         changed |= ImGui::Checkbox("CPU bar##hudcpubar", &s.hud_cpu_bar);
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("RAM bar##hudrambar", &s.hud_ram_bar);
         ImGui::SameLine();
         changed |= ImGui::Checkbox("GPU bar##hudgpubar", &s.hud_gpu_bar);
         ImGui::SameLine();

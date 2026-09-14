@@ -67,3 +67,6 @@ Order matters. `rexglue_setup_target` re-copies the installed SDK's DLLs on
 every app build, so staging first accomplishes nothing. `stage_sdk.py --check`
 reports whether what is next to `fable2.exe` is ours or stock, by reading
 marker strings out of the binaries rather than trusting that a copy ran.
+| `patch_readback_selfcopy.py` | s62: `SharedMemory::BeginSelfCopy/EndSelfCopy/AnyPageGpuWritten`; the plugin's own readback copy lands without invalidating the pages or firing the texture watches | apply once |
+| `patch_readback_quietlog.py` | s62: the `[gpu]` window line reports `readback copies landed quietly N` | apply once |
+| `patch_texpack_gpuwritten.py` | s62: the pack lookup (creation and resolve-at-load) and the dump skip textures whose pages the GPU wrote; logs `N texture loads left alone` | apply once |

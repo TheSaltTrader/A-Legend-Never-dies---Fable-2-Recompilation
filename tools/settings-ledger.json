@@ -71,6 +71,8 @@
     { "setting": "hud_fps", "doc_phrase": "On-screen readouts" },
     { "setting": "hud_cpu", "doc_phrase": "On-screen readouts" },
     { "setting": "hud_cpu_bar", "doc_phrase": "On-screen readouts" },
+    { "setting": "hud_ram", "doc_phrase": "On-screen readouts" },
+    { "setting": "hud_ram_bar", "doc_phrase": "On-screen readouts" },
     { "setting": "hud_gpu", "doc_phrase": "On-screen readouts" },
     { "setting": "hud_vram", "doc_phrase": "On-screen readouts" },
     { "setting": "hud_gpu_bar", "doc_phrase": "On-screen readouts" },

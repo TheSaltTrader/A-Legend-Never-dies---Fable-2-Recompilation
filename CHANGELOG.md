@@ -3,6 +3,45 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.4 — 2026-09-14 (branch `tu1`)
+
+### Fixed - the texture pack no longer serves a render target's previous occupant
+
+With the pack on, the main menu showed a grid of clockwork icons over the
+menu, and in Oakfield the same sheet lay across the sky. The sheet is the
+loading spinner's 25 animation frames; the dump index held its exact bytes
+under eight different texture ids of one shape, which is what happens when
+a texture's memory is hashed before the game has written it: with the
+"some" readback the copy of a resolved render target lands a frame later,
+so the plugin hashed the previous occupant and, looking the hash up by
+content, served its picture. Two rules in the GPU plugin (pair s62): a
+texture whose memory the GPU wrote - a render target, never art - is neither
+replaced nor dumped (a scripted market walk left 70,000 such loads alone in
+three minutes), and the plugin's own readback copies land without
+invalidating the pages, since the GPU buffer already holds those bytes
+(5,000 to 6,000 quiet copies per five seconds; readback waits 0). The
+spinner sheet itself, a real texture the game draws in a way a 2x copy
+breaks, is kept out by the pack tool's new `pack/exclude.txt`: an id listed
+there is never packed, and every file carrying the same content hash is
+moved to `pack/excluded/`, because the plugin serves the same picture from
+any of them.
+
+### Added - a RAM readout on the on-screen readouts
+
+Under the CPU number: this process's working set against the machine's
+memory, with a green bar (amber and red only when the machine is nearly
+out). Switchable like the others.
+
+### Measured - what limits the frame rate now
+
+On the same scripted market walk, camera turning, 2x, "some": the previous
+plugin averaged 45 fps and s62 42, with identical slow-frame profiles (about
+40 textures and 13 MB of uploads per slow frame - the game streaming as the
+camera turns - and 6,400 draws a frame). The readback path is no longer in
+the frame: the waits went from 1.7-2.2 s per 5 s (the drain-small
+experiment key left at 64) to zero at 0. What remains is the scene's own
+cost on the game's thread; draw distance is the lever for that.
+
 ## 0.2.3 — 2026-09-13 (branch `tu1`)
 
 ### Fixed - a failed settings write no longer wipes the settings

@@ -172,6 +172,8 @@ struct Fable2Settings {
   bool hud_fps = true;
   bool hud_cpu = true;       // this process's CPU, across all cores
   bool hud_cpu_bar = true;   // a bar under the CPU number
+  bool hud_ram = true;       // this process's working set against the machine's RAM
+  bool hud_ram_bar = true;   // a bar under the RAM number (green)
   bool hud_gpu = true;
   bool hud_gpu_bar = true;   // a bar under the GPU number
   bool hud_vram = true;
@@ -331,6 +333,8 @@ struct Fable2Settings {
         << "hud_fps=" << (hud_fps ? 1 : 0) << "\n"
         << "hud_cpu=" << (hud_cpu ? 1 : 0) << "\n"
         << "hud_cpu_bar=" << (hud_cpu_bar ? 1 : 0) << "\n"
+        << "hud_ram=" << (hud_ram ? 1 : 0) << "\n"
+        << "hud_ram_bar=" << (hud_ram_bar ? 1 : 0) << "\n"
         << "hud_gpu=" << (hud_gpu ? 1 : 0) << "\n"
         << "hud_vram=" << (hud_vram ? 1 : 0) << "\n"
         << "hud_gpu_bar=" << (hud_gpu_bar ? 1 : 0) << "\n"
@@ -463,6 +467,8 @@ struct Fable2Settings {
     else if (k == "hud_fps") hud_fps = Truthy(v);
     else if (k == "hud_cpu") hud_cpu = Truthy(v);
     else if (k == "hud_cpu_bar") hud_cpu_bar = Truthy(v);
+    else if (k == "hud_ram") hud_ram = Truthy(v);
+    else if (k == "hud_ram_bar") hud_ram_bar = Truthy(v);
     else if (k == "hud_gpu") hud_gpu = Truthy(v);
     else if (k == "hud_vram") hud_vram = Truthy(v);
     else if (k == "hud_gpu_bar") hud_gpu_bar = Truthy(v);

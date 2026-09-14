@@ -216,6 +216,22 @@ void SampleLoop() {
 
     PerfSample s;
     s.cpu_percent = cpu.Sample();
+    {
+      // This process's working set against the machine's RAM: the texture
+      // cache and a 2x pack live here, and "the game is using 20 GB" is a
+      // thing worth seeing before Windows starts paging.
+      PROCESS_MEMORY_COUNTERS_EX pmc{};
+      pmc.cb = sizeof(pmc);
+      MEMORYSTATUSEX ms{};
+      ms.dwLength = sizeof(ms);
+      if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                               sizeof(pmc)) &&
+          GlobalMemoryStatusEx(&ms) && ms.ullTotalPhys) {
+        s.ram_mb = float(double(pmc.WorkingSetSize) / (1024.0 * 1024.0));
+        s.ram_total_mb = float(double(ms.ullTotalPhys) / (1024.0 * 1024.0));
+        s.ram_valid = true;
+      }
+    }
 
     const auto now = std::chrono::steady_clock::now();
     const uint32_t frames = g_frames.load();

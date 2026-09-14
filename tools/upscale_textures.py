@@ -628,6 +628,68 @@ def read_manifest(pack):
     return out
 
 
+EXCLUDE_LIST = "exclude.txt"
+
+
+def read_exclusions(pack):
+    """Ids listed in pack/exclude.txt (one per line, # comments): never
+    packed, whatever their shape says. A texture the game draws in a way a
+    larger copy breaks - the main menu's loading spinner is a 5x5 sheet of
+    animation frames, and the game showed the whole sheet tiled over the
+    menu when it was replaced at 2x - is kept out by name here, and any file
+    a previous run wrote for it is moved to pack/excluded/ so the plugin
+    never serves it again."""
+    ids = set()
+    try:
+        with open(os.path.join(pack, EXCLUDE_LIST)) as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    ids.add(line[:-4] if line.lower().endswith(".tex") else line)
+    except OSError:
+        pass
+    return ids
+
+
+def excluded_hashes(excluded):
+    """The content hashes of the excluded ids (the part after the dash)."""
+    return {tid.split("-", 1)[1] for tid in excluded if "-" in tid}
+
+
+def is_excluded(tid, excluded, hashes):
+    """By id-and-hash, by bare id (a line of 16 hex digits: that texture under
+    any content hash - the menu spinner sheet exists in three byte-variants),
+    or by content: the plugin serves the same picture from any file carrying
+    the hash, so the same bytes at another address are excluded too."""
+    if tid in excluded:
+        return True
+    if "-" in tid:
+        head, tail = tid.split("-", 1)
+        return head in excluded or tail in hashes
+    return False
+
+
+def retire_excluded(pack, excluded):
+    """Move pack files of excluded ids - and of every id carrying the same
+    content hash - into pack/excluded/. Returns how many."""
+    hashes = excluded_hashes(excluded)
+    moved = 0
+    dest_dir = os.path.join(pack, "excluded")
+    for fn in os.listdir(pack):
+        if not fn.endswith(".tex"):
+            continue
+        tid = fn[:-4]
+        if not is_excluded(tid, excluded, hashes):
+            continue
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, fn)
+        if os.path.exists(dest):
+            os.remove(dest)
+        os.replace(os.path.join(pack, fn), dest)
+        moved += 1
+    return moved
+
+
 def write_manifest(pack, scale, upscaler, strength, complete):
     """The pack's own record of its settings, so the app can tell "the pack
     matches what is selected" from "the pack needs redoing" without guessing.
@@ -737,6 +799,14 @@ def main():
     # What is already in the pack, for --only-missing. A pack of thousands
     # takes half an hour with the AI; the handful dumped since take minutes,
     # and redoing everything to get them was the only option before this.
+    excluded = read_exclusions(pack)
+    excluded_hash = excluded_hashes(excluded)
+    if excluded:
+        retired = retire_excluded(pack, excluded)
+        print("%d texture id(s) on pack/%s are never packed%s"
+              % (len(excluded), EXCLUDE_LIST,
+                 (" - %d existing file(s) moved to pack/excluded/" % retired) if retired else ""),
+              flush=True)
     have_tex = set()
     if args.only_missing and os.path.isdir(pack):
         have_tex = {fn[:-4] for fn in os.listdir(pack) if fn.endswith(".tex")}
@@ -780,6 +850,10 @@ def main():
 
         if fmt not in FMT_INFO:
             skipped += 1
+            continue
+        if is_excluded(tid, excluded, excluded_hash):
+            skips["listed in exclude.txt"] = skips.get("listed in exclude.txt", 0) + 1
+            ui += 1
             continue
         if args.only_missing and tid in have_tex:
             reused += 1                 # in the pack already: leave it alone
@@ -834,7 +908,7 @@ def main():
             continue
         tid, w2, h2 = m.group(1), int(m.group(2)), int(m.group(3))
         fmt2 = by_name.get(m.group(4))
-        if tid in handled or fmt2 is None:
+        if tid in handled or fmt2 is None or is_excluded(tid, excluded, excluded_hash):
             continue
         if args.only_missing and tid in have_tex:
             reused += 1
