@@ -27,3 +27,6 @@ dll_backup_*/
 
 # third-party AI upscaler engine + models (ACME's copy; not ours to commit)
 tools/upscaler/
+
+# The updater's download and staging folder beside the executable
+/update/

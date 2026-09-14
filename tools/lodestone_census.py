@@ -417,6 +417,12 @@ def main():
         offenders = []
         for e in entries:
             low = e.lower()
+            # The AI upscaler's network weights are the one .bin a release
+            # carries on purpose - the engine's, not the game's - and they
+            # live under tools/upscaler only (make_release.py exempts the
+            # same subtree).
+            if low.replace(chr(92), '/').startswith('tools/upscaler/'):
+                continue
             if low.endswith(GAME_DATA_EXT) or TITLE_ID in low:
                 if os.path.basename(low) in ("put_files_here.txt",):
                     continue

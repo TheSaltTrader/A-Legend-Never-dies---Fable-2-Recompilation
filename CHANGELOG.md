@@ -3,6 +3,34 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.0 — 2026-09-13 (branch `tu1`)
+
+### Added - published, with an updater
+
+The port now lives at github.com/TheSaltTrader/A-Legend-Never-dies---Fable-2-Recompilation
+(source, docs and the release zip; no game data, ever) and keeps itself
+current from there. At launch it asks the releases page for the newest
+version - three seconds at most, and offline or current it says nothing -
+and offers a newer one: Update now, Not now, or Skip this version. Update
+now downloads the release zip (its size checked against what the release
+lists), moves the running files aside as .old, moves the new ones into
+place, and offers a restart, which is a click of its own; the next start
+removes the .old files. A release zip carries the executable, the runtime
+and the tools, so the game folder, the DLC, the saves, the settings and the
+texture pack are never touched by construction. "Check for updates at
+start" on the settings screen turns the check off; "Check now" beside it
+asks on demand. WinHTTP does the talking and Windows' own tar.exe the
+unpacking, so nothing new is needed on the machine.
+
+### Added - a release packager
+
+`tools/make_release.py`, ported from the Ninja Gaiden II port: stages a
+version folder under ../Releases (executable, SDK pair, VC runtime,
+controller database, the texture tools with the AI engine, README, release
+notes, SHA256SUMS, provenance) and zips it. It refuses a version without a
+CHANGELOG section, a build older than its sources, a mismatched SDK pair,
+and anything that looks like game data.
+
 ## 0.1.20 — 2026-09-13 (branch `tu1`)
 
 ### Changed - the pack tool decides before it decodes, and holds paths, not pixels

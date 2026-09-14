@@ -19,6 +19,7 @@ set(FABLE2_SOURCES
     src/fable2_hwdetect.cpp
     src/fable2_perf.cpp
     src/fable2_textool.cpp
+    src/fable2_update.cpp
     src/fable2_disc.cpp
     src/fable2_menu.cpp
     src/fable2_platform.cpp
@@ -76,6 +77,7 @@ add_custom_command(TARGET fable2 POST_BUILD
 # DbgHelp resolves recompiled sub_<guest address> names for the
 # FP trap diagnostic (src/fable2_fptrap.h).
 if (WIN32)
-    target_link_libraries(fable2 PRIVATE dbghelp)
+    # WinHTTP: the update check and download (src/fable2_update.cpp).
+    target_link_libraries(fable2 PRIVATE dbghelp winhttp)
 endif()
 

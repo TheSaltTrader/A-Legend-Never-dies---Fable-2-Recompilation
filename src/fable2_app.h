@@ -37,6 +37,7 @@
 #include "fable2_autoskip.h"
 #include "fable2_hwdetect.h"
 #include "fable2_perf.h"
+#include "fable2_update.h"
 #include "fable2_texnotify.h"
 #include "fable2_keyremap.h"
 #include "fable2_diagnostics.h"
@@ -100,6 +101,10 @@ class Fable2App : public rex::ReXApp {
     // leaves a minidump under crashdumps\ instead of a log that just stops.
     fable2::InstallCrashDumps();
     fable2::SetAppUserModelId();  // before any window: the taskbar groups by it
+    // After an update's restart: let the old process finish, then remove
+    // the .old files and the zip it left. No-ops on an ordinary start.
+    fable2::WaitForPreviousInstance();
+    fable2::CleanupAfterUpdate(rex::filesystem::GetExecutableFolder());
     settings_.Load();
     // Choose the memory-hungry settings from the card, ONCE. The latch is
     // what makes it safe: a value the player edits afterwards is never
@@ -431,6 +436,15 @@ class Fable2App : public rex::ReXApp {
     warm_overlay_ = std::make_unique<fable2::WarmOverlay>(drawer);
     fable2::SetHudSettings(&settings_);
     perf_hud_ = std::make_unique<fable2::PerfHudOverlay>(drawer);
+    // The update offer, drawn only when there is one. The check runs on its
+    // own thread and never holds the game: offline or current, nothing shows.
+    update_ = std::make_unique<fable2::UpdateOverlay>(drawer, &settings_,
+                                                      [this] { RestartForUpdate(); });
+    fable2::SetUpdateOverlay(update_.get());
+    if (settings_.update_check)
+      update_->StartCheck(/*manual=*/false);
+    else
+      REXLOG_INFO("[update] the check at start is off in the settings");
 
     // Escape quits. Settings are saved on the way out, so a change made in
     // the overlay and then quit is not lost - which is the whole reason this
@@ -533,6 +547,8 @@ class Fable2App : public rex::ReXApp {
     tex_notify_.reset();
     warm_overlay_.reset();
     perf_hud_.reset();
+    fable2::SetUpdateOverlay(nullptr);
+    update_.reset();
     rex::ui::UnregisterBind("bind_fable2_settings");
   }
 
@@ -651,6 +667,18 @@ class Fable2App : public rex::ReXApp {
   // Reachable from a test seam as well as the key: FABLE2_QUIT_AFTER=<seconds>
   // fires this from a timer, so whether the quit really exits is something a
   // script measures rather than something anyone has to believe.
+  // The update panel's "Restart now": the new executable is already in
+  // place, so start it (it waits for this process to exit) and leave by
+  // Escape's path, which saves the settings first.
+  void RestartForUpdate() {
+    settings_.Save();
+    if (!fable2::RelaunchSelf(rex::filesystem::GetExecutableFolder())) {
+      REXLOG_ERROR("[update] the new executable could not be started; staying in this one");
+      return;
+    }
+    QuitFromEscape();
+  }
+
   void QuitFromEscape() {
     settings_.Save();
     REXLOG_INFO("Escape: quitting");
@@ -895,6 +923,7 @@ class Fable2App : public rex::ReXApp {
   std::unique_ptr<fable2::TextureNotifyOverlay> tex_notify_;
   std::unique_ptr<fable2::WarmOverlay> warm_overlay_;
   std::unique_ptr<fable2::PerfHudOverlay> perf_hud_;
+  std::unique_ptr<fable2::UpdateOverlay> update_;
   // The texture dump/upscale run, owned here for the life of the process so
   // closing a settings screen never cancels it. See TextureJob.
   fable2::TextureJob tex_job_;

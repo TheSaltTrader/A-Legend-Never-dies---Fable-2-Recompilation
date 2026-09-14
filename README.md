@@ -4,9 +4,25 @@ Static recompilation of **Fable II (Game of the Year Edition)** from Xbox 360
 to native PC, on the **ReXGlue SDK 0.10.0** — the same toolchain used by
 re:Blue (Blue Dragon) and by this machine's `ng2recomp` (Ninja Gaiden II).
 
-The user owns the disc. Nothing here is redistributable: the build embeds the
-game's own translated code, and `assets/`, `game/` and every disc file are
-gitignored.
+**Getting it:** download the latest `fable2recomp-vX.Y.Z-win-amd64.zip` from the
+[Releases](https://github.com/TheSaltTrader/A-Legend-Never-dies---Fable-2-Recompilation/releases)
+page, unzip it anywhere, and run `fable2.exe`. The first run opens a setup
+screen that takes your own disc image or an extracted disc folder. It needs
+nothing installed; it does need your own copy of the game.
+
+**This project ships no game data of any kind.** No textures, no videos, no
+saves, no DLC, no executable image from the disc, no title update. You provide
+all of it from your own copy. `assets/`, `game/` and every disc file are
+gitignored here, and `tools/make_release.py` refuses to package anything that
+looks like game data. The executable contains the game's code in translated
+form and does nothing without the disc.
+
+**Updating:** the game asks the releases page for the newest version when it
+starts (three seconds at most; offline it just starts) and offers a newer one:
+Update now, Not now, or Skip this version. Nothing downloads or installs
+without a click, the restart is a click of its own, and your game folder,
+saves, settings and texture pack are never touched. The check can be turned
+off on the settings screen (F10, Updates).
 
 ---
 
@@ -249,6 +265,12 @@ go undocumented.
 **Keys while playing:** F10 opens these settings; F8 shows or hides the
 on-screen readouts; F9 switches the texture pack on and off without opening a
 menu; Escape quits and saves the settings; F4 is the runtime's own cvar browser.
+
+**Check for updates at start.** On by default. The game asks the project's
+GitHub releases page for the newest version when it launches (three seconds
+at most; offline it starts as usual) and offers a newer one with Update now,
+Not now and Skip this version. Check now on the same row asks straight away.
+A skipped version stays skipped until you press Offer it again.
 
 **Frame rate.** With the 60 fps patch on, this port holds a locked 60 in town
 at 2x supersampling on a 5090 (0.0.15). What made it 17 to 45 before was not

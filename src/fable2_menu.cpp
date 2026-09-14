@@ -1,4 +1,5 @@
 #include "fable2_menu.h"
+#include "fable2_update.h"
 
 #include "fable2_textool.h"
 #include "fable2_diagnostics.h"
@@ -892,6 +893,41 @@ void DrawTexturesSection(Fable2Settings& s, const PageOptions& opts, bool& chang
 // in one text file, with its path on the clipboard and the folder opened. A
 // report needs three files from two folders, and asking for that is asking
 // for a report with none of them.
+#ifndef FABLE2_VERSION
+#define FABLE2_VERSION "dev"
+#endif
+
+void DrawUpdatesSection(Fable2Settings& s, bool& changed) {
+  SectionHeader("Updates",
+                "New versions are published on the project's GitHub releases "
+                "page. With this on, the game asks for the newest one at launch "
+                "and offers it; nothing downloads or installs without a click, "
+                "and the restart is a click of its own.");
+  changed |= ImGui::Checkbox("Check for updates at start", &s.update_check);
+  if (UpdateOverlay* up = GetUpdateOverlay()) {
+    ImGui::SameLine();
+    ImGui::BeginDisabled(up->Busy());
+    if (ImGui::Button("Check now"))
+      up->StartCheck(/*manual=*/true);
+    ImGui::EndDisabled();
+    const std::string line = up->StatusLine();
+    if (!line.empty()) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("%s", line.c_str());
+    }
+  }
+  if (!s.update_skip.empty()) {
+    Muted("Version %s is skipped and is not offered at launch again.",
+          s.update_skip.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Offer it again")) {
+      s.update_skip.clear();
+      changed = true;
+    }
+  }
+  Muted("This build is v%s. Releases: github.com/%s", FABLE2_VERSION, kUpdateRepo);
+}
+
 void DrawDiagnosticsButton() {
   SectionHeader("Diagnostics",
                 "For a bug report: this session's log, the settings, and what "
@@ -2151,6 +2187,7 @@ void SettingsOverlay::OnDraw(ImGuiIO& io) {
       Muted("The game folder is chosen on the setup screen, which runs before the "
             "game is loaded. Hold Shift while launching to get it back.");
       DrawDiagnosticsButton();
+      DrawUpdatesSection(*settings_, changed);
     }
     ImGui::EndChild();
 
