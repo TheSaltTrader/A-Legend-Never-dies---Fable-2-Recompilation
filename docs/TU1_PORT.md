@@ -75,6 +75,39 @@ the first suspect; if something misbehaves around register saves, v65.
 
 ## Log
 
+- 2026-09-14 12:00 0.2.6: the wrong textures were the PACK TOOL, not the
+  plugin - decode_dump fell back to the id-only raw from before content
+  hashes, labelling one address's old bytes with every hash later recorded
+  there (an audit found all 144,311 hash-named raws correct and 744
+  hash+shape groups with two pictures); 14,631 pack files retired to
+  pack/poisoned, the tool verifies every raw's CRC and never falls back,
+  the plugin dumps a snapshot hashed twice (s65). Replacements get GPU mip
+  chains (s66: a 2x2 box compute pass per level, fxc-compiled) - far grass
+  no longer aliases. A replacement change rebinds descriptors in the same
+  draw (s67: TextureSRVKey carries the texture and its descriptor
+  generation; retired slots released after the submission). Re-verify
+  samples (s64). Diagnostics: draw failure reasons, GPU-written pages
+  invalidated by CPU writes (s68). Readback "full" measured at 23 fps with
+  2 s of waits per 5 s: never for play. White impostor/lake flashes remain
+  open (pack off too); a scripted stand-still A/B does not reproduce them -
+  runs must walk and turn, and load hero 1 (left slot: pad
+  "12:a,16:down,18:a,22:a"); scripted runs write autosaves.
+  15:xx flash fix: the user's live A/B (on-demand readback, 1x scale, ROV,
+  direct resolve off, render-target re-bind only, submission split) found
+  only the submission split cures the canopy flashes (5/min -> 0); s72
+  ships readback_resolve_submit_small_kb=64 by default. Debug layer + new
+  GPU-based validation switch both clean; a UAV-barrier variant is opt-in.
+  Plugin now built with CodeView + PDB (src/graphics/CMakeLists.txt) so
+  FABLE2_PROFILE="GPU Commands" leaves symbolize (scratchpad
+  profile_symbolize.py + llvm-symbolizer).
+  15:25 market profile (scripted walk, 51-54 fps): the plugin's command
+  thread is ~55% busy (plugin 35%, D3D12/driver 19%), a third waiting (12%
+  asleep in WAIT_REG_MEM, 12% idle for commands, 8% submission fences), GPU
+  64% - nothing saturated; the frame is the serialized hand-off between the
+  game's 3D thread (spinning for GPU progress) and the command thread.
+  wait_reg_mem_yield_ms (s73, default 2): 2 vs 1000 ms measured EQUAL
+  (48.3 vs 48.8 mean) - not the lever. Next: per-function host profile.
+
 - 2026-09-14 00:45 0.2.5: the synthetic pad reads pad_script.txt beside the exe
   while the game runs (commands with hold times, sticks, triggers, waits; the
   file is consumed; a real press clears the queue; pad_script.accepts with the

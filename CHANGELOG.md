@@ -3,6 +3,89 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.6 — 2026-09-14 (branch `tu1`)
+
+### Fixed - the pack served other textures' pictures: 14,631 poisoned files retired
+
+The sky in Oakfield wore an ornament, barrels wore a villager's outfit and
+the loading spinner kept reappearing. The plugin's content hash was never
+at fault: it is a full CRC32 of the texture bytes, and an audit of all
+144,311 hash-named raw dumps found every one hashing to its name. The
+fault was in the pack tool. When a dump had no `tex_<id>-<hash>.bin`, the
+decoder fell back to the id-only `tex_<id>.bin` left from before content
+hashes, so one old raw at a streaming address supplied the picture for
+every hash ever recorded at that address - one raw stood behind up to 22
+hashes, of which one was right. 744 hash-and-shape groups carried two
+different pictures. The tool now refuses any dump whose bytes do not hash
+to its name, renames old id-only raws to their true hash, and never falls
+back; 14,631 pack files and 15,305 PNGs made through that path were moved
+to `pack/poisoned` and `dump/poisoned` (nothing deleted). Those textures
+show as originals until they are dumped again, which happens on its own
+when dumping is on, and re-encoded with `--only-missing`. The plugin's dump
+(pair s65) now writes a snapshot hashed twice, so a torn capture is never
+written. The earlier "faithful" check compared pack files with their PNGs,
+which were the mislabeled step; a census has to check the raw bytes.
+
+### Fixed - far grass like a television with a bad signal: replacements get mip chains
+
+Pack replacements were single-level textures; at distance a 2x texture
+with no smaller levels aliases. The plugin (pair s66) now generates the
+full chain on the GPU right after the level-0 upload: a 2x2 box compute
+shader (`texpack_mip.cs.hlsl`, compiled with the SDK's fxc) per level, and
+the replacement's view exposes every level.
+
+### Fixed - one wrong frame per streaming swap (wood flashing between pictures)
+
+When the game streams a new texture into an address the pack had
+replaced, the plugin builds a new replacement, but the shader's descriptor
+indices were only rewritten when the texture key changed - and the key is
+the same. The draw went on sampling the previous descriptor, the previous
+picture, until the next frame. The binding key (pair s67) now carries the
+texture object and its descriptor generation, so any replacement change,
+retirement or recreation rebinds in the same draw; old descriptor slots
+are released once the GPU has finished the submission that used them
+instead of leaking.
+
+### Added - re-verification of replaced textures, and two diagnostics
+
+A replaced texture keeps eight samples of the memory it was resolved from
+and compares them every half second while it is bound; a change
+invalidates the range the way a CPU write would, so the picture can never
+stay wrong for more than half a second (pair s64; no event has been seen
+yet - the game does not rewrite under a live replacement). A draw that
+fails in the backend now names the step (`[diag] draw failed: ...`), and a
+CPU write that invalidates GPU-rendered pages is logged (`[diag]
+gpu-written pages invalidated ...`) for matching against screen recordings
+of the white impostor and lake flashes, which remain open and are the
+render-target path, not the pack (they show with the pack off).
+
+### Fixed - the white and purple impostor flashes (plugin pair s72)
+
+Tree canopies in the distance are impostors the game renders into an atlas
+every few seconds and resolves to memory; on the Bowerlake shore every
+canopy in view turned white and purple for one frame, several times a
+minute, with the pack off as well. Recordings matched against the log ruled
+out the CPU (no write ever invalidated those pages, no read ever needed an
+early copy), the resolution scale, the direct host resolve shortcut and the
+render-target re-bind; the ROV path never showed it, and both the Direct3D
+12 debug layer and GPU-based validation (new switch
+`d3d12_gpu_based_validation`) pass clean. What does stop it is a
+command-list boundary after each small deferred resolve, without any GPU
+wait: `readback_resolve_submit_small_kb` now defaults to 64. On the user's
+own session that took the flashes from five a minute to none in a minute;
+the cost is about 2,000 extra submissions a second among many impostor
+resolves (60 to 56 fps at the lake) and 3 a frame in the market. The exact
+hazard a boundary hides is still open; an explicit UAV-barrier variant
+(`readback_resolve_uav_barrier`) is kept as an opt-in for the next test.
+Scripted runs at the Bowerlake save (hero 1, camera sweeps through the pad
+file, screen recordings scored for multi-tile flashes) never reproduced the
+flash in five attempts, so the measurement stayed with the live session.
+
+### Known - readback "full" is a diagnostic, never a play setting
+
+"Full" waits for the GPU after every resolve: about 2 seconds of waits in
+every 5 in the open world, 23 fps where "some" gives 60 with no waits.
+
 ## 0.2.5 — 2026-09-14 (branch `tu1`)
 
 ### Added - a live pad-script file, so a tool can drive the game while it runs

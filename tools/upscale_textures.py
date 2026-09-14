@@ -32,6 +32,7 @@ left as they are; the game ignores them and says so in its log.
 """
 
 import argparse
+import glob
 import os
 import re
 import struct
@@ -82,6 +83,48 @@ DECODED_RE = re.compile(r"^([0-9A-Fa-f]{16}-[0-9A-Fa-f]{8})_(\d+)x(\d+)_(.+)\.pn
 def content_hash(data):
     """CRC-32 of the raw guest bytes, exactly as the plugin computes it."""
     return "%08X" % (zlib.crc32(data) & 0xFFFFFFFF)
+
+
+def raw_is_poisoned(dump, pack, tid):
+    """True when no raw bytes hash to the hash in this dump's name.
+
+    The plugin writes tex_<id>-<hash>.bin from the bytes it hashed, so that
+    file always matches its name. Before content hashes the raw was
+    tex_<id>.bin, and decode_dump used to fall back to it: the index line's
+    hash (recorded for whatever occupied the address at that load) was paired
+    with the bytes of a DIFFERENT occupant of the same streaming slot, and
+    the picture went into the pack under a hash it did not belong to. Such a
+    PNG and pack file are moved to poisoned/ beside their folders; the plugin
+    dumps the real content, consistently, the next time it is loaded. An
+    id-only raw is renamed to its true hash name once, so its own content
+    stays usable."""
+    if "-" not in tid:
+        return False
+    tid16, want = tid.split("-", 1)
+    raw = os.path.join(dump, "tex_%s.bin" % tid)
+    if os.path.isfile(raw):
+        with open(raw, "rb") as f:
+            if content_hash(f.read()) == want.upper():
+                return False
+    legacy = os.path.join(dump, "tex_%s.bin" % tid16)
+    if os.path.isfile(legacy):
+        with open(legacy, "rb") as f:
+            true_hash = content_hash(f.read())
+        try:
+            os.replace(legacy, os.path.join(dump, "tex_%s-%s.bin" % (tid16, true_hash)))
+        except OSError:
+            pass
+        if true_hash == want.upper():
+            return False
+    for folder, pattern in ((dump, "%s_*.png" % tid), (pack, "%s.tex" % tid)):
+        for path in glob.glob(os.path.join(folder, pattern)):
+            dest = os.path.join(folder, "poisoned")
+            os.makedirs(dest, exist_ok=True)
+            try:
+                os.replace(path, os.path.join(dest, os.path.basename(path)))
+            except OSError:
+                pass
+    return True
 
 
 def migrate_pack(dump, pack):
@@ -510,11 +553,14 @@ def decode_dump(dump, tid, name, w, h, fmt, tiled, pitch, endian):
     decoder raises on bad data; the caller decides what each means.
     """
     raw = os.path.join(dump, "tex_%s.bin" % tid)
-    if not os.path.isfile(raw):
-        raw = os.path.join(dump, "tex_%s.bin" % tid[:16])   # dumped before hashes
+    # No fallback to the id-only raw from before content hashes: its bytes
+    # are some occupant of that address, not necessarily this hash's
+    # (raw_is_poisoned renames it to its true hash name first).
     if not os.path.isfile(raw):
         raise FileNotFoundError(raw)
     data = open(raw, "rb").read()
+    if "-" in tid and content_hash(data) != tid.split("-", 1)[1].upper():
+        raise ValueError("raw bytes do not hash to %s" % tid)
     # ONLY block formats. decode_plain already reads multi-byte texels
     # big-endian itself, so swapping here too double-swaps them; and k_8
     # is single-byte, where an 8in16 swap exchanges ADJACENT PIXELS.
@@ -651,8 +697,17 @@ def read_exclusions(pack):
     return ids
 
 
-def excluded_hashes(excluded):
-    """The content hashes of the excluded ids (the part after the dash)."""
+def excluded_hashes(excluded, pack=None):
+    """The content hashes of the excluded ids (the part after the dash), and,
+    for a BARE id, the hash of every pack file that carries that id - so the
+    same picture under another id goes too (the spinner sheet's three
+    byte-variants each lived under several ids; a bare id alone left the
+    twins in place, 2026-09-14)."""
+    # A bare id excludes that id's files ONLY. It must not spread by content:
+    # an address is a streaming slot, and one of them carried twenty different
+    # textures across the dump sessions - spreading from it retired 331 real
+    # files (2026-09-14 06:45, reverted). To exclude a picture wherever it
+    # lives, list an id-hash line for each of its byte-variants.
     return {tid.split("-", 1)[1] for tid in excluded if "-" in tid}
 
 
@@ -672,7 +727,7 @@ def is_excluded(tid, excluded, hashes):
 def retire_excluded(pack, excluded):
     """Move pack files of excluded ids - and of every id carrying the same
     content hash - into pack/excluded/. Returns how many."""
-    hashes = excluded_hashes(excluded)
+    hashes = excluded_hashes(excluded, pack)
     moved = 0
     dest_dir = os.path.join(pack, "excluded")
     for fn in os.listdir(pack):
@@ -800,7 +855,7 @@ def main():
     # takes half an hour with the AI; the handful dumped since take minutes,
     # and redoing everything to get them was the only option before this.
     excluded = read_exclusions(pack)
-    excluded_hash = excluded_hashes(excluded)
+    excluded_hash = excluded_hashes(excluded, pack)
     if excluded:
         retired = retire_excluded(pack, excluded)
         print("%d texture id(s) on pack/%s are never packed%s"
@@ -866,6 +921,10 @@ def main():
         if reason and not args.include_ui:
             skips[reason] = skips.get(reason, 0) + 1
             ui += 1
+            continue
+        if raw_is_poisoned(dump, pack, tid):
+            skips["no raw bytes hash to the name (decoded from an older raw); retired"] = \
+                skips.get("no raw bytes hash to the name (decoded from an older raw); retired", 0) + 1
             continue
         # The decoded PNG beside the raw dump is the SAME bytes a fresh decode
         # gives (the decoder last changed on 2026-09-05; every PNG is younger),

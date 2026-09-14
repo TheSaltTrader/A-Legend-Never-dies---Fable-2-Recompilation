@@ -5,6 +5,18 @@ present in Fable II's build - the two ports share one SDK source tree - so
 nothing on the plugin side had to change. What was missing was the settings
 that drive them.
 
+**Status 2026-09-14: the pack was poisoned by the tool, not the plugin.** When a
+dump had no hash-named raw (`tex_<id>-<hash>.bin`), `decode_dump` fell back to
+the id-only raw from before content hashes, so one address's old bytes were
+labelled with every hash later recorded there; an audit found all 144,311
+hash-named raws correct and 744 hash+shape groups with two pictures. The tool
+now verifies every raw's CRC against its name, renames id-only raws to their
+true hash and never falls back; 14,631 pack files sit in `pack/poisoned` (and
+their PNGs in `dump/poisoned`) until those textures are dumped and encoded
+again. Replacements also get GPU-generated mip chains (plugin s66) - without
+them a 2x texture aliased at distance - and a replacement change rebinds in
+the same draw (s67).
+
 **Status 2026-09-11: dump, decode, pack and replacement all work** (the
 "decoding is not correct" and "replacement is not implemented" sections
 further down are history, kept for the method). The pipeline now also
