@@ -22,3 +22,4 @@ missed. Use the AI-Vision `eye` MCP tools when available (see the doc).
 - `flash_probe.py <outdir> <seconds>`: 40 fps GDI capture of the primary screen scored per frame for one-frame white/magenta/brightness spikes; saves a contact sheet per flagged frame.
 - `flash_ab.sh <tag> "<tune>"`: hero 1 at Bower Lake, camera sweeps, the flash probe running; prints the verdict, fps and fence line.
 - `lake_await.sh <tag> "<tune>" [secs]` / `lake_profile.sh`: the same sweep without the probe (fps + fence census), and with FABLE2_PROFILE (hottest host functions).
+- `variant_flash2.sh "tag|tune" ...` / `variant_flash3.sh`: per configuration, launch (Start-Process, so FABLE2_TUNE reaches the game), boot from the log's own state lines, pan-pan-walk to the reproducing forest view, score 25 s static (v2) or a 70-s pan (v3). `flash_region.py x y w h secs` scores one screen region at ~190 fps.

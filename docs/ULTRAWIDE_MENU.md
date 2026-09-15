@@ -115,6 +115,24 @@ perspective-widget rule, a quad whose vertex x extent reaches the frame edge
 never reach it. Log: `[uw-menu] transition layer quad kept full width: x ...`
 (first 12). Verified with the 45 fps probe: world → menu → world with no band.
 
+## Texture flash — v0.2.12 correction (read this first)
+
+The s96 "mirror" below is **wrong**: it is a flash source of its own (70-s pan
+protocol, two runs 82/75 flashes with it, three runs 0/1/0 without). Off since
+v0.2.12. The original flash reproduces in ONE view: hero 1 spawn, pan left
+1.6 s, pan back, walk 8 s up the forest path, then a static view (~1.4/s;
+`tools/diag/flash_probe.py` scores it, `variant_flash2.sh` automates a
+config). Everything measured there (25 s): drain128 **0** @32 fps, band drain
+128–256K **0** @32 fps (that band IS the impostor resolves, ~1,250/s), all
+boundaries 21, UAV 42, ≤64K boundaries 32, none 36, on-demand 28 (no CPU
+touch), pack off 35/39, keep/drop superseded 36/35, ring+upload-landing 45/48,
+**wait-only** (the drain's wait without its copy) 31, **`clear_memory_page_state=false`
+5** (default now). So: the cure is the immediate CPU copy, not GPU ordering;
+no plugin or game path was caught reading the stale bytes (the upload hook's
+counters stay 0); the per-frame page refresh (every CPU-uploaded page
+invalidated at frame end, 500–700 MB/s of re-uploads) drives most of it. The
+last ~0.2/s is open. Everything below this line is the history that led here.
+
 ## Texture flash — the v0.2.11 fix (s96) and how the earlier ones were wrong
 
 **Mechanism** (found 2026-09-15 by reading the upload path after every other

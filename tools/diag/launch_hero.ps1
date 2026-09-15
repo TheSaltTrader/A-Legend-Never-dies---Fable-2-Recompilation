@@ -15,8 +15,9 @@ $env:FABLE2_PAD_SCRIPT = $Pad
 if ($Tune) { $env:FABLE2_TUNE = $Tune } else { Remove-Item Env:FABLE2_TUNE -ErrorAction SilentlyContinue }
 $env:FABLE2_HUD = "1"
 $before = @(Get-Process fable2 -ErrorAction SilentlyContinue | ForEach-Object Id)
-$cmd = "cmd.exe /c start `"`" `"$exe`" --game_data_root `"$root\game`" --log_file `"$Log`" --log_level info --log_flush_interval 1"
-$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = "$root\out\build\win-amd64-Release" }
+# Start-Process, not WMI: a WMI-created process does not inherit this shell's
+# environment, so FABLE2_TUNE / FABLE2_PAD_SCRIPT were silently dropped.
+$r = Start-Process -FilePath $exe -ArgumentList @("--game_data_root", "`"$root\game`"", "--log_file", "`"$Log`"", "--log_level", "info", "--log_flush_interval", "1") -WorkingDirectory "$root\out\build\win-amd64-Release" -PassThru
 Start-Sleep -Seconds 3
 $p = Get-Process fable2 -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | Select-Object -First 1
 if ($p) { "launched pid $($p.Id)  log $Log" } else { "launch returned $($r.ReturnValue) but no fable2.exe seen yet" }

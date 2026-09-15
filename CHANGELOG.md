@@ -3,6 +3,46 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.12 — 2026-09-15 (branch `tu1`)
+
+### Fixed - the impostor flash 0.2.11 introduced, and most of the original one
+
+0.2.11's changelog was wrong about the streaming flash. The "mirror copy" it
+shipped (the 1x downscale of every resolve written into the unscaled memory
+copy) turned out to be a flash source of its own: at Bower Lake, scored by a
+40 fps screen detector over 70-second camera pans, two runs with it flashed
+82 and 75 times, three runs without it 0, 1 and 0. It is off
+(`readback_resolve_mirror_unscaled`, kept as an experiment key).
+
+The original flash - distant trees going white with a violet base for one
+frame, about 1.4 times a second in one view up the forest path from the Bower
+Lake spawn - was then measured under every barrier the earlier releases had
+guessed at, twenty-five seconds each in that view: a submission boundary after
+every resolve 21, an explicit UAV barrier 42, boundaries for small resolves
+only 32, none 36, on-demand landing 28 (and the game's CPU never reads that
+memory), the texture pack off 35, landing or waiting for pending readbacks
+inside the upload 45 and 48, the drain's GPU wait without its copy 31. Only
+landing the CPU copy at once cures it (the 0.2.10 drain, 0 flashes, at 32 fps).
+What drives most of it is the per-frame page-state refresh
+(`clear_memory_page_state`): at the end of every frame it invalidated every
+page the CPU had uploaded, so they were uploaded again on their next use -
+460 to 700 MB a second, a fifth of the market's frame time. With it off
+(the default now, as in upstream): 5 flashes instead of 35 to 48 in that
+view, uploads down five-fold, the market walk 57-59 fps instead of 51-56, and
+the lake at the 60 fps cap. The remaining rare flash is still open; the drain
+key (`readback_resolve_drain_large_kb=128`) remains the total cure for anyone
+who prefers no flash to frame rate.
+
+### Changed - readback bookkeeping
+
+Each resolve target now keeps up to eight readback buffers, grown on demand,
+so a copy that has not landed is never overtaken by a later resolve of the
+same target (it used to be dropped, or read from a buffer the GPU was
+rewriting), and a copy still owed to a range is landed before any upload reads
+that range. Neither changed the flash count on its own; both are correct and
+free. Cost counters on the fence line: `landings`, `submissions`, `superseded`,
+`upload landed/awaited/open`.
+
 ## 0.2.11 — 2026-09-15 (branch `tu1`)
 
 ### Fixed - the white/magenta streaming flash, for real, and the frame rate with it
