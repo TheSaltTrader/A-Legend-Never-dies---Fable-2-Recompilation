@@ -150,6 +150,24 @@ the first suspect; if something misbehaves around register saves, v65.
   depth-off draw with that signature: buttons round, widget inside the
   band (hud_s79c_03.png), market walk 55-58. 0.2.7 cut from s79c +
   app build 75.
+  19:30 FADES (user: "use the ultrawide fade... learn from NG2"): a 10 fps
+  recording of an area change showed the fade to black covering only the
+  16:9 band (left strip of grass lit through the whole fade-out, sides
+  popping in first on arrival): the fade is a c8 2D quad with a
+  textureless pixel shader, squeezed by the HUD compression. s80
+  (patch_uw_2d_fade.py) = NG2 v1.0.20's rule: solid-fill 2D draws keep
+  their width. The presenter switches themselves land on black frames.
+  BLACK DISTANT-RIDGE FLASH (user, readback=some, daylight, Bower Lake):
+  ~30 one-frame flashes a minute, the whole far ridge black with its
+  silhouette intact, near ground and sky right; each on a frame that
+  reloads 100+ textures (36 MB). Not reproduced in scripted runs so far:
+  night (invisible), readback=fast (no deferred path), daylight looking
+  at the lake (0 in 6 chunks with 11 reload frames). Census with "some":
+  per frame ~42 deferred resolves <=64K (boundary), ~28 <=256K, ~6 <=1M,
+  ~5 <=4M, 1 >4M (the 3680 KB scene) without one. s80b/s80c diagnostics
+  in the tree; the user's own trigger claim: "every time I click outside
+  the screen" (focus loss) - a scripted focus steal was blocked by
+  Defender (simulated input) and an Explorer-window steal did not take.
 
 - 2026-09-14 00:45 0.2.5: the synthetic pad reads pad_script.txt beside the exe
   while the game runs (commands with hold times, sticks, triggers, waits; the

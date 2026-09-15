@@ -3,6 +3,31 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.8 — 2026-09-14 (branch `tu1`)
+
+### Fixed - scene-transition fades cover the whole ultrawide picture
+
+Fable II draws its fade to black as a full-screen 2D quad with the same
+pixel-to-clip constant as the HUD and a pixel shader that samples no
+texture. The 0.2.7 HUD compression squeezed that quad into the centred 16:9
+band, so on an area change the sides of the world stayed lit through the
+fade-out and popped in first on arrival (recorded at 10 frames a second at
+Bower Lake). A 2D draw whose pixel shader binds no texture now keeps its
+full width, the same rule Ninja Gaiden II's port uses for its fades; textured
+HUD draws are still compressed. The presenter's own switches between edge
+to edge and 16:9 with bars already land on black frames, so they are
+unchanged.
+
+### Added - diagnostics for the black distant-ridge flash
+
+With the "some" readback mode the distant ridge can draw black for a single
+frame (silhouette intact, near ground and sky right), on the frames in which
+the plugin reloads 100 or more textures at once. The fence line now carries
+a size census of the deferred resolves, the first deferred resolves above
+the submission-boundary size are logged with their address, and the first
+ten reload frames name up to twelve of their textures (address, size,
+format, GPU-written, readback pending). Diagnostic only.
+
 ## 0.2.7 — 2026-09-14 (branch `tu1`)
 
 ### Fixed - the HUD no longer stretches at ultrawide
