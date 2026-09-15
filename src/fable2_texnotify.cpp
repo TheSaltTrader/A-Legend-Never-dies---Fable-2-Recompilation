@@ -216,21 +216,104 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
             last_all = all_draws;
           }
         }
-        const bool world = fable2::WorldCameraLive();
-        const int want = world ? 0 : 1;
-        const bool held = now - last_switch < std::chrono::milliseconds(250);
-        if (want != last_want && !held) {
+        // A "world" scene whose camera has gone stale (no rebuild for a
+        // while) is a full-screen pause / Up menu: the world camera stops the
+        // instant the menu opens, while gameplay rebuilds it every frame and a
+        // still dialogue camera keeps rebuilding. Letterbox those to 16:9 so
+        // the menu is not stretched across the ultrawide screen. The gap
+        // threshold is a plugin cvar (ms); 0 keeps the old behaviour.
+        const int menu_gap_ms = rex::cvar::GetFlagInfo("fable2_menu_letterbox_gap_ms")
+                                    ? rex::cvar::Query<int>("fable2_menu_letterbox_gap_ms")
+                                    : 150;
+        // The aspect the world should present at: edge to edge in gameplay,
+        // 16:9 with bars for any full-screen menu. A menu is either the front
+        // end (no world camera) or the pause / Up menu, which keeps the world
+        // camera live but sets Fable's own menu flag (PauseMenuOpen, a guest
+        // global). The 16:9 menu keeps the character and map at their true
+        // proportions instead of stretched.
+        //
+        // Flag behaviour, measured at ~10 kHz externally: in gameplay it is a
+        // rock-solid 0 (never spikes), so the FIRST menu frame is trusted - no
+        // false opens. In a menu it is 1 but the game clears it for a sub-
+        // millisecond window each frame, which our once-per-frame read catches
+        // as an isolated 1-frame zero on ~2-6% of frames. So a CLOSE is trusted
+        // only after several consecutive gameplay frames, and the veil is pulled
+        // to black DURING that confirm: on close the game reveals the world at
+        // 16:9 (we have not switched back yet) for a frame or two, and the veil
+        // must already be covering it so the world is never seen letterboxed
+        // snapping back to edge to edge.
+        const bool frontend = !fable2::WorldCameraLive();  // title / load: no world
+        const bool raw_menu = frontend || fable2::PauseMenuOpen();
+        static int menu_run = 0, game_run = 0;
+        if (raw_menu) { menu_run++; game_run = 0; } else { game_run++; menu_run = 0; }
+        static bool stable_menu = false;
+        const int kOpenConfirm = 1;   // gameplay flag never false-fires -> trust at once
+        const int kCloseConfirm = 3;  // gameplay frames before a close is trusted
+        if (frontend) stable_menu = true;
+        else if (!stable_menu && menu_run >= kOpenConfirm) stable_menu = true;
+        else if (stable_menu && game_run >= kCloseConfirm) stable_menu = false;
+        const int want = stable_menu ? 1 : 0;
+        // A close in progress: still applied at 16:9, a pause menu (not the
+        // front end), and gameplay has now been seen for >=2 consecutive frames
+        // - past a lone 1-frame flicker, before the confirm commits. Darken now
+        // so those pre-switch 16:9 world frames are hidden.
+        const bool pending_close = stable_menu && (last_want == 1) && !frontend && game_run >= 2;
+        auto apply_aspect = [&](int w) {
+          rex::cvar::SetFlagByName("present_letterbox", w ? "true" : "false");
+          rex::cvar::SetFlagByName("fable2_uw_2d_k", Hud2DFactor(w == 0));
+        };
+
+        // Cross the aspect change behind a quick fade to black, like the game's
+        // own area transitions, so neither the switch nor the 16:9 bars are
+        // ever seen snapping in. last_want is the aspect actually applied; when
+        // it differs from want we fade out, flip at full black, fade back in.
+        // menu_gap_ms > 0 enables the fade; 0 switches instantly (no veil).
+        static float fade = 0.0f;  // 0 = clear, 1 = black
+        static int fade_dir = 0;   // +1 fading out, -1 fading in, 0 idle
+        // Snap to black fast on the way out so the game's own one-frame resize
+        // is covered immediately, then reveal the 16:9 menu gently.
+        const float kFadeOut = 1.0f / 0.04f;  // ~0.04 s to black (about 2-3 frames)
+        const float kFadeIn = 1.0f / 0.16f;   // ~0.16 s reveal
+        const float dt = (io.DeltaTime > 0.0f && io.DeltaTime < 0.25f) ? io.DeltaTime : 1.0f / 60.0f;
+        if (last_want < 0) {  // first frame in this scene: adopt without a fade
           last_want = want;
-          last_switch = now;
-          rex::cvar::SetFlagByName("present_letterbox", want ? "true" : "false");
-          rex::cvar::SetFlagByName("fable2_uw_2d_k", Hud2DFactor(want == 0));
-          REXLOG_INFO("[ultrawide] presenter -> {} ({:.3f} s since a world camera build)",
-                      want ? "16:9 with bars" : "edge to edge",
-                      fable2::SecondsSinceWorldCameraBuild());
-        } else if (last_want >= 0 && now - last_check > std::chrono::milliseconds(500)) {
-          // Any other settings change re-applies the letterbox and would
-          // undo this (seen with the black-texture fix): re-assert, but
-          // not more than twice a second.
+          apply_aspect(want);
+        } else if (menu_gap_ms <= 0) {  // fade off: switch instantly
+          if (want != last_want) { last_want = want; apply_aspect(want); }
+          fade = 0.0f; fade_dir = 0;
+        } else {
+          // Darken for either a real aspect switch (want != applied) or a close
+          // still being confirmed (pending_close). Snap most of the way to black
+          // at once so a switch is covered within a frame or two.
+          const bool switching = (want != last_want);
+          const bool want_dark = switching || pending_close;
+          if (want_dark && fade_dir <= 0) { fade_dir = 1; fade = std::max(fade, 0.6f); }
+          if (fade_dir > 0) {
+            fade += kFadeOut * dt;
+            if (fade >= 1.0f) {
+              fade = 1.0f;
+              if (switching) {  // at full black: flip the aspect, then reveal
+                last_want = want;
+                last_switch = now;
+                apply_aspect(want);
+                fade_dir = -1;
+              } else if (!want_dark) {  // pending close resolved as a flicker
+                fade_dir = -1;
+              }
+              // else: pending close not yet committed - hold at full black.
+            }
+          } else if (fade_dir < 0) {
+            fade -= kFadeIn * dt;
+            if (fade <= 0.0f) { fade = 0.0f; fade_dir = 0; }
+          }
+          // A pending close that turned out to be a flicker (menu flag back up)
+          // while we were still fading out: stop darkening and reveal the menu.
+          if (fade_dir > 0 && !want_dark) fade_dir = -1;
+        }
+        // Re-assert the applied aspect a couple of times a second (another
+        // settings change re-applies present_letterbox and would undo it),
+        // only while idle so it never fights the fade.
+        if (fade_dir == 0 && last_want >= 0 && now - last_check > std::chrono::milliseconds(500)) {
           last_check = now;
           const char* wanted = last_want ? "true" : "false";
           if (rex::cvar::GetFlagByName("present_letterbox") != wanted)
@@ -238,6 +321,13 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
           const std::string k = Hud2DFactor(last_want == 0);
           if (rex::cvar::GetFlagByName("fable2_uw_2d_k") != k)
             rex::cvar::SetFlagByName("fable2_uw_2d_k", k);
+        }
+        // The veil: a full-screen black quad on the foreground, over the game
+        // and the HUD alike.
+        if (fade > 0.001f) {
+          const int a = int(std::clamp(fade, 0.0f, 1.0f) * 255.0f + 0.5f);
+          ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0.0f, 0.0f), io.DisplaySize,
+                                                        IM_COL32(0, 0, 0, a));
         }
       } else {
         if (last_want != -1) rex::cvar::SetFlagByName("fable2_uw_2d_k", "0");

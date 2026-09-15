@@ -3,6 +3,39 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.9 — 2026-09-15 (branch `tu1`)
+
+### Fixed - the Start and Up menus stop showing the world resize at ultrawide
+
+At ultrawide the pause (Start) and quick (Up) menus are drawn at 16:9 so the
+character and the map keep their real proportions instead of stretching to the
+window's width. Switching the presenter to 16:9 for the menu and back to edge
+to edge for the world is now hidden behind a fast fade to black, driven by the
+game's own pause flag rather than a guessed camera signal. The flag reads a
+rock-solid 0 during play but is cleared for a sub-millisecond window each frame
+a menu is up, which a once-a-frame read catches as an odd 1-frame zero on a few
+percent of frames; so an open is trusted on the first menu frame (play never
+false-fires) and a close only after several play frames, and the veil is pulled
+to black during that confirm. Opening is seamless. On closing, a single frame
+can still show the world at 16:9 because the game reveals it one frame before it
+clears its own pause flag; the fade covers everything after. This replaces the
+0.2.8 behaviour, where the world was seen snapping to 16:9 for about a sixth of
+a second on every open and close.
+
+### Investigated - the distant-texture flash (not yet fixed)
+
+The white/magenta/black flash on a distant hill while running was root-caused:
+a texture whose guest memory was written by the GPU (the sky, water, or a
+distant terrain impostor - a resolve target the game then samples as art) is
+uploaded while its resolve copy back into guest memory is still in flight, so
+it shows a frame of stale or empty bytes. The reload-frame diagnostic names
+these exactly (e.g. a 1024x1024 target marked "GPU-written READBACK-PENDING").
+A general fix that deferred any such upload a frame regressed to a black sky -
+the sky is re-resolved every frame, so it would defer forever - and to a failed
+present, and was reverted; a correct fix has to tell a copy that will land soon
+from a target re-resolved every frame. The existing mitigations stand and the
+flash is rare in play.
+
 ## 0.2.8 — 2026-09-14 (branch `tu1`)
 
 ### Fixed - scene-transition fades cover the whole ultrawide picture

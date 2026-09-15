@@ -1232,6 +1232,10 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     {
       char buf[512];
       std::snprintf(buf, sizeof(buf), "%s", s.save_import_path.c_str());
+      // RowStart made the field full width, which pushed the Browse and Scan
+      // buttons off the panel's right edge; bound the field so they stay on
+      // screen next to it.
+      ImGui::SetNextItemWidth(-260.0f);
       if (ImGui::InputText("##savepath", buf, sizeof(buf))) {
         s.save_import_path = buf;
         changed = true;

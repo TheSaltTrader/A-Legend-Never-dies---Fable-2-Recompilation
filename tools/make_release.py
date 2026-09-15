@@ -100,12 +100,14 @@ FORBIDDEN_SUFFIXES = (".xex", ".xexp", ".iso", ".bin", ".dat", ".bnk", ".big", "
 FORBIDDEN_EXCEPTIONS = ("gamecontrollerdb.txt",)
 
 KNOWN_ISSUES = [
-    "With the Black texture fix at 'some', a distant building or tree can flash "
-    "white or magenta for a frame while the camera moves. 'Full' is the cure at "
-    "a cost in frame rate; the cause is being chased in the GPU plugin.",
-    "In an ultrawide window the map and the Start menu stretch to the window's "
-    "width. The world, the loading map and the title menus are handled; those two "
-    "are still being worked on.",
+    "A distant building, tree or hill can flash white, magenta or black for a "
+    "single frame while you run, when the game re-renders that texture into "
+    "memory and reads it back a frame late. It is rare in play; the cause is "
+    "root-caused and the fix is being worked on in the GPU plugin.",
+    "When you open or close the Start or Up menu at ultrawide, a single frame "
+    "can still show the world at 16:9 before the fade to black covers it, because "
+    "the game reveals the world one frame before it clears its own pause flag. "
+    "The rest of the transition is hidden.",
 ]
 
 README_TITLE = "fable2recomp v{version} - Fable II, statically recompiled for PC"

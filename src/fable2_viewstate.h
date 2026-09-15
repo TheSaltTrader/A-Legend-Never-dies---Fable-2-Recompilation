@@ -24,5 +24,12 @@ bool LoadingCameraAfterWorld();
 // leaves it; a still camera keeps it): the hook projects wide and the
 // presenter stretches, together.
 bool WorldCameraLive();
+// True while a full-screen menu camera (title / pause / Up menu, the 4:3-like
+// projection) was built in the last ~160 ms: the reliable menu-open signal,
+// instant on open and quiet during gameplay hitches.
+bool MenuCameraActive();
+// True while Fable II's own menu flag is set: the pause (Start) or Up quick-
+// menu is open. The reliable, instant menu signal (a guest global).
+bool PauseMenuOpen();
 
 }  // namespace fable2

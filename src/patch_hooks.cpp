@@ -269,6 +269,7 @@ void fable2PatchBankLoadSleep(PPCRegister& r3) {
 namespace {
 std::atomic<int64_t> g_last_camera_build_ns{0};     // last WORLD camera build
 std::atomic<int64_t> g_last_loading_camera_ns{0};   // last loading-map camera
+std::atomic<int64_t> g_last_menu_camera_ns{0};       // last title/pause/Up menu camera
 // The SCENE the game is in, from its cameras. The game rebuilds a
 // projection only when it changes, so a still camera (a dialogue, a shop,
 // a pause) means no builds while the world is still drawn with the last
@@ -338,6 +339,43 @@ bool fable2::LoadingCameraAfterWorld() {
 
 bool fable2::WorldCameraLive() {
   return g_scene.load(std::memory_order_relaxed) == int(Scene::kWorld);
+}
+
+bool fable2::PauseMenuOpen() {
+  // Fable II's own menu flags (found 2026-09-14 by diffing guest memory across
+  // menu toggles). 0x8335F854 is the GAMEPLAY flag - 1 only in normal gameplay,
+  // 0 in the pause (Start) / Up quick-menu; it is rock-solid at 500 Hz, unlike
+  // the pause flag 0x834B2467 which flickers to 0 for the odd frame. A menu is
+  // up when the gameplay flag is clear (and the pause flag confirms it). Fixed
+  // data-segment globals, stable across saves and launches, like Ninja Gaiden's.
+  // Use ONLY the specific pause/Up-menu flag 0x834B2467 (== 1 only while the
+  // pause or Up menu is up, 0 in ALL gameplay - combat, targeting, walking).
+  // The gameplay flag 0x8335F854 was wrong: it is a world-state flag that flips
+  // during other actions and fired the fix constantly (user, 2026-09-14). The
+  // pause flag flickers to 0 for the odd frame (the game rewrites it and our
+  // read races it); the caller holds a true read ~150 ms to smooth that.
+  if (auto* memory = REX_KERNEL_MEMORY()) {
+    const uint8_t* p = memory->TranslateVirtual<const uint8_t*>(0x834B2467u);
+    const bool open = p && *p == 1u;
+    static int64_t last_log = 0;
+    const int64_t now = NowNs();
+    if (open || now - last_log > 2000000000) {
+      last_log = now;
+      REXLOG_INFO("[menu] pause-flag={} -> open={}", p ? int(*p) : -1, open ? 1 : 0);
+    }
+    return open;
+  }
+  return false;
+}
+
+bool fable2::MenuCameraActive() {
+  // A title / pause / Up-menu camera (the 4:3-like projection) built within the
+  // last 160 ms. Unlike the scene flag, this fires the instant the pause menu
+  // opens (its camera builds every frame it is up) and never during gameplay
+  // hitches - the reliable "a full-screen menu is on screen" signal.
+  const int64_t last = g_last_menu_camera_ns.load(std::memory_order_relaxed);
+  if (!last) return false;
+  return NowNs() - last < 160000000;
 }
 
 void fable2PatchFieldOfView(PPCRegister& f8, PPCRegister& f30, PPCRegister& r31) {
@@ -429,6 +467,7 @@ void fable2PatchFieldOfView(PPCRegister& f8, PPCRegister& f30, PPCRegister& r31)
     return;
   }
   if (!wide_ratio) {
+    g_last_menu_camera_ns.store(now, std::memory_order_relaxed);
     // The title / main-menu camera. Two quick builds with no world build
     // between them: the menus own the screen (a menu camera built beside
     // a live world camera changes nothing).
