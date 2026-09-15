@@ -3,6 +3,77 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.11 — 2026-09-15 (branch `tu1`)
+
+### Fixed - the white/magenta streaming flash, for real, and the frame rate with it
+
+0.2.10 hid the flash by landing every large render-to-texture resolve
+synchronously, and that wait was a full GPU-queue drain about 1,100 times a
+second: the host kept presenting at 170+ fps while the game itself ran at
+28-38 fps in town (the `[swap] guest fps` line; `[perf]` only counts host
+frames). The real mechanism turned out to be this: at a draw resolution scale
+above 1 a resolve writes only the scaled copy of memory, never the unscaled
+one, which keeps whatever the game last uploaded there - for the distant-tree
+impostor pool, its fill colour. A texture object that reads the unscaled copy
+(one created before its range was ever resolved, or whose scaled pages were
+cleared by the game writing beside the render) then showed that fill for a
+frame: every canopy at once, white or magenta. The drain worked only because
+its synchronous CPU copy got uploaded over the fill on the next invalidation.
+
+Now the 1x downscale the readback path already computes for every scaled
+resolve is also copied into the unscaled buffer on the GPU
+(`readback_resolve_mirror_unscaled`, default on): one buffer copy per resolve,
+no wait, no submission boundary, and an unscaled load of a resolved range
+always shows the render. The per-resolve boundaries are off
+(`readback_resolve_submit_small_kb` 0) and so is the resolve-time drain; two
+further measures remain as experiment keys
+(`readback_resolve_split_before_load`: end the submission only right before a
+texture is loaded from freshly resolved memory; `readback_resolve_uav_barrier`);
+both can be switched on for a comparison through the `FABLE2_TUNE` environment
+variable (for example `FABLE2_TUNE=readback_resolve_submit_small_kb=1048576`
+brings back the boundary after every resolve). The safety net that waits for an in-flight
+readback before a texture upload reads its memory
+(`readback_await_before_texture_upload`) now sits in the shared-memory upload
+itself, before the copy - the 0.2.8 version ran after it.
+
+Bower Lake, the same settings, camera sweeps, `[swap] guest fps`: 0.2.10 held
+49-53, this release 55-60 (the vsync cap). Market walk, 150 s: 0.2.10 held
+28-30; this release 51-56 (the same walk
+with the page-checked wait alone: 53-55).
+
+### Fixed - the pause-menu open/close at ultrawide
+
+Pressing Start, the picture (the hero) compressed into a 16:9 band for a
+moment; pressing it again, a semi-transparent menu layer stayed in a centred
+16:9 band with the world at the sides. Per-draw dumps of a real open and
+close showed why: Fable II draws its whole UI as quads through one hard-coded
+16:9 perspective, and during the transition it draws five of them depth-off
+over the world - the 1024x512 capture of the menu covering the entire frame
+and four leather side pieces at the edges. The 0.2.7 rule that keeps the 3D
+HUD widgets round compressed those five into the band. A quad that reaches
+the frame edge is now recognised as that transition layer and keeps its full
+width, so the menu dissolves in and out over the whole ultrawide picture,
+matching the steady menu. The HUD widgets are unchanged.
+
+### Fixed - the log filled with pause-flag lines
+
+While a menu was open the `[menu] pause-flag` line printed on every read
+(thousands a second), so the 5 MB log rotated every few seconds and lost the
+lines that matter. It prints every 2 s now; a `[uwstate]` line records each
+change of the ultrawide menu decision (front end / pause menu / gameplay) with
+the presenter and 2D-compression values applied.
+
+### Added - a per-draw GPU dump for transitions
+
+`dump:N` in `pad_script.txt` (put it on the line before the press) makes the
+GPU plugin write one line per draw for the next N guest frames to
+`draw_dump_<n>.txt` beside the executable: shaders, primitive, vertex count,
+depth/blend state, render target, viewport, scissor, the c0..c3 projection
+block and c8 when used, the vertex x range of small draws, and each texture's
+size, format, address, GPU-written and readback-pending flags.
+`tools/diag/analyze_dump.py` lists the shader pairs that come and go across
+the frames. This is what found the menu layer; it costs nothing when off.
+
 ## 0.2.10 — 2026-09-15 (branch `tu1`)
 
 ### Fixed - the white/magenta streaming texture flash

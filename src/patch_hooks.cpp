@@ -357,10 +357,18 @@ bool fable2::PauseMenuOpen() {
   if (auto* memory = REX_KERNEL_MEMORY()) {
     const uint8_t* p = memory->TranslateVirtual<const uint8_t*>(0x834B2467u);
     const bool open = p && *p == 1u;
+    // A line when the answer changes (at most ten a second - the flag flickers
+    // for a frame now and then) or every 2 s; it used to print on EVERY call
+    // while a menu was open, and the log rotated every few seconds.
     static int64_t last_log = 0;
+    static int last_open = -1;
     const int64_t now = NowNs();
-    if (open || now - last_log > 2000000000) {
+    // The raw flag flickers every frame a menu is up, so "on change" is still
+    // several lines a second: a line every 2 s is enough (the [uwstate] line
+    // in the HUD overlay records the debounced decision the moment it changes).
+    if (now - last_log > 2000000000) {
       last_log = now;
+      last_open = int(open);
       REXLOG_INFO("[menu] pause-flag={} -> open={}", p ? int(*p) : -1, open ? 1 : 0);
     }
     return open;

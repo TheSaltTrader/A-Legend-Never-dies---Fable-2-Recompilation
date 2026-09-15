@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include <rex/cvar.h>
 #include <rex/filesystem.h>
 
 namespace fable2 {
@@ -176,8 +177,23 @@ struct PadCommand {
   double seconds = 0.2;                    // how long the state is held
   bool wait_only = false;                  // "wait:N": nothing pressed
   bool release = false;                    // "release": clear and stop
+  int dump_frames = 0;                     // "dump:N": the plugin's per-draw dump
   std::string text;                        // for the log
 };
+
+// "dump:N" - ask the GPU plugin for one line per draw over the next N guest
+// frames (gpu_draw_dump_frames), into draw_dump_<serial>.txt beside the exe.
+// A diagnostic for finding which draws make up a transition (the ultrawide
+// pause-menu dissolve): put it on the line before the press.
+void StartDrawDump(int frames) {
+  static int serial = 0;
+  ++serial;
+  const auto path = rex::filesystem::GetExecutableFolder() /
+                    ("draw_dump_" + std::to_string(serial) + ".txt");
+  rex::cvar::SetFlagByName("gpu_draw_dump_file", path.string());
+  rex::cvar::SetFlagByName("gpu_draw_dump_frames", std::to_string(frames));
+  REXLOG_INFO("[padfile] draw dump {} frames -> {}", frames, path.string());
+}
 
 std::filesystem::path PadFilePath() {
   if (const char* env = std::getenv("FABLE2_PAD_FILE"); env && *env)
@@ -217,6 +233,12 @@ bool ParsePadCommand(const std::string& raw, PadCommand& out) {
     return (parts.size() > i && !parts[i].empty()) ? std::atof(parts[i].c_str()) : dflt;
   };
   if (head == "release") { out.release = true; out.seconds = 0; return true; }
+  if (head == "dump") {
+    out.wait_only = true;
+    out.seconds = 0;
+    out.dump_frames = int(secs_at(1, 40));
+    return true;
+  }
   if (head == "wait") { out.wait_only = true; out.seconds = secs_at(1, 0.5); return true; }
   if (head == "l" || head == "r") {
     if (parts.size() < 2) return false;
@@ -299,6 +321,7 @@ class PadFile {
         queue_.pop_front();
         current_until_ = now + current_.seconds;
         gap_until_ = current_until_ + 0.1;
+        if (current_.dump_frames > 0) StartDrawDump(current_.dump_frames);
         if (!current_.wait_only && !current_.release)
           REXLOG_INFO("[padfile] {} for {:.2f} s", current_.text, current_.seconds);
       }

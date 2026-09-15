@@ -253,9 +253,20 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
                                 now - pause_seen < std::chrono::milliseconds(150);
         const bool gameplay = !frontend && !pause_menu;
         rex::cvar::SetFlagByName("present_letterbox", frontend ? "true" : "false");
-        const std::string k2d = gameplay ? Hud2DFactor(true) : std::string("0");
-        if (rex::cvar::GetFlagByName("fable2_uw_2d_k") != k2d)
-          rex::cvar::SetFlagByName("fable2_uw_2d_k", k2d);
+        const std::string k2d = gameplay ? Hud2DFactor(true) : std::string("0");
+        if (rex::cvar::GetFlagByName("fable2_uw_2d_k") != k2d)
+          rex::cvar::SetFlagByName("fable2_uw_2d_k", k2d);
+        // [uwstate] One line whenever the decision changes, with what is applied.
+        {
+          static int last_state = -1;
+          const int state = (frontend ? 1 : 0) | (pause_menu ? 2 : 0) | (gameplay ? 4 : 0);
+          if (state != last_state) {
+            last_state = state;
+            REXLOG_INFO("[uwstate] frontend={} pause_menu={} gameplay={} -> present_letterbox={} k2d={} (pause flag {})",
+                        frontend ? 1 : 0, pause_menu ? 1 : 0, gameplay ? 1 : 0,
+                        frontend ? "true" : "false", k2d, fable2::PauseMenuOpen() ? 1 : 0);
+          }
+        }
         last_want = 0;  // "edge to edge"; for the reset branch below
         (void)menu_gap_ms; (void)last_switch; (void)last_check;
       } else {

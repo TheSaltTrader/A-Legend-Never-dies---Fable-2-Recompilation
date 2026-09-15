@@ -16,3 +16,9 @@ machine's build dir - adjust EXE_DIR / OUT as needed.
 
 Capture samples ~40 fps; the game runs ~170, so single-frame transitions are
 missed. Use the AI-Vision `eye` MCP tools when available (see the doc).
+
+- `analyze_dump.py <draw_dump_N.txt>`: which shader pairs come and go across the frames of a per-draw dump (`dump:N` pad command), with their state; found the pause-menu transition layer (v0.2.11).
+- `launch_hero.ps1 [-Pad ...] [-Tune ...]`: launch fable2.exe from the build dir with a boot pad script and FABLE2_TUNE overrides; refuses if one runs.
+- `flash_probe.py <outdir> <seconds>`: 40 fps GDI capture of the primary screen scored per frame for one-frame white/magenta/brightness spikes; saves a contact sheet per flagged frame.
+- `flash_ab.sh <tag> "<tune>"`: hero 1 at Bower Lake, camera sweeps, the flash probe running; prints the verdict, fps and fence line.
+- `lake_await.sh <tag> "<tune>" [secs]` / `lake_profile.sh`: the same sweep without the probe (fps + fence census), and with FABLE2_PROFILE (hottest host functions).
