@@ -3,6 +3,50 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.10 — 2026-09-15 (branch `tu1`)
+
+### Fixed - the white/magenta streaming texture flash
+
+Running through the world, a distant hill, building or the sky could flash
+white or magenta for a single frame as new terrain streamed in. The cause: a
+render-to-texture target (the sky, water reflections, a distant impostor) whose
+result is copied back into guest memory was being uploaded as a texture while
+that copy was still in flight, so the texture read stale or empty bytes for one
+frame. The earlier mitigation only landed copies that had already finished; the
+targets that flash had not. Now every resolve of at least 128 KB lands
+synchronously (plugin cvar `readback_resolve_drain_large_kb`, default 128), so
+its bytes are valid in guest memory before any texture reads them; only the tiny
+(<= 64 KB) resolves stay asynchronous. On the test machine this held ~175 fps at
+Bower Lake with no hitches (the GPU had headroom); raise the cvar toward 512 or
+higher on a GPU-bound setup to trade some flash coverage back for frame rate.
+Syncing cannot black-screen the way an earlier
+defer-the-upload attempt did (that starved the continuously re-resolved sky);
+verified across heavy movement with the sky never dropping and no hitches.
+
+### Changed - the ultrawide pause / Up menu is now full width, not 16:9
+
+The 0.2.9 approach switched the presenter to 16:9 for the pause and Up menus.
+That re-lays-out the swap chain and left stale, ghosted world in the ultrawide
+edges during the open and close, and the game's menu-dim was squeezed into the
+centre so the edges stayed bright - the "overlay" and apparent squish. The
+presenter now switches to 16:9 ONLY for the front end (title, main menus,
+loading, which have no world behind them); while a world camera exists
+(gameplay and the pause / Up menu) it stays edge to edge, so there is no
+re-layout and no ghosting. The gameplay HUD is still held to a 16:9 band; the
+pause / Up menu is left full width, so its map reads a touch wide (a wide oval)
+but the transitions are clean. The menu flash from 0.2.9's veil is gone (there
+is no veil).
+
+### Known issue - the menu's dissolve draws at 16:9
+
+Opening and closing the pause / Up menu, the fade-in / fade-out of the menu
+itself is drawn in a centred 16:9 band while the world shows through the
+ultrawide edges (a brief squeeze on the way in, a semi-transparent layer on the
+way out). It is the menu's transition draw specifically - the steady menu is
+full width - and it is not reached by the app-side full-width setting or the
+presenter's stretch, so it needs work in the GPU plugin's 2D path. Tracked for a
+future release; see docs/ULTRAWIDE_MENU.md.
+
 ## 0.2.9 — 2026-09-15 (branch `tu1`)
 
 ### Fixed - the Start and Up menus stop showing the world resize at ultrawide
