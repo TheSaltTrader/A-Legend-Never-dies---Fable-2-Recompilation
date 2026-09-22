@@ -3,6 +3,22 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.0.0 — 2026-09-22
+
+The 1.0 release. Fable II: Game of the Year Edition running on PC by static
+recompilation - the setup and installer, the title-update handling, the
+in-game updater, ultrawide, the texture tools and the on-screen readouts are
+all in place, and the recent crashes are fixed. It plays start to finish.
+
+Carries everything from 0.2.17 unchanged - the setup-reopen crash fix and the
+Ultrawide-on-the-setup-screen fix - and only marks the version.
+
+**Known limitation:** a genuinely damaged save (an incomplete STFS package -
+e.g. one from a third-party collection whose data is truncated at the source)
+cannot be loaded, because the game's own loader needs the data that is missing;
+having one in the save list can crash the load screen. Remove the damaged save
+and the rest load normally.
+
 ## 0.2.17 — 2026-09-22 (branch `tu1`)
 
 ### Fixed — reopening the setup screen no longer crashes the game
