@@ -2087,6 +2087,35 @@ void SetupScreen::DrawAbout() {
 void SetupScreen::DrawFooter(float column_width) {
   const bool can_play = game_info_.Usable();
 
+  // TITLE UPDATE VALIDATION, before the game can run. This build is compiled
+  // FROM a specific pressing of the disc and, when compiled WITH Title Update 1
+  // (version 0.0.1.26), needs the update's DATA present - the game opens
+  // update:\data\tu1_data.bnk. Every save a real console made carries the
+  // update's version and runs ONLY on this build; without the update data the
+  // game loads as far as Bowerstone Market and stops (see docs/TU1_PORT.md).
+  // The setup screen therefore names which version is required and refuses Play
+  // until it is satisfied, so nobody is dropped into that known failure.
+  static fable2::TitleUpdateStatus tu;
+  static double tu_read_at = -1.0e9;
+  static bool tu_data_present = false;
+  if (can_play && game_info_.IsFable2()) {
+    const double now = ImGui::GetTime();
+    if (now - tu_read_at > 2.0) {
+      const auto gp = settings_->ResolvedGamePath();
+      tu = fable2::InspectTitleUpdate(gp);
+      std::error_code ec;
+      tu_data_present =
+          std::filesystem::exists(gp / "update" / "data" / "tu1_data.bnk", ec);
+      tu_read_at = now;
+    }
+  }
+  // What this build requires, and whether the chosen game satisfies it. A
+  // title-update build (compiled_with_patch) needs the update data; a base-disc
+  // build does not, but it cannot load console saves - stated, not blocked.
+  const bool tu_update_required = tu.compiled_with_patch;
+  const bool tu_blocks_play =
+      can_play && game_info_.IsFable2() && tu_update_required && !tu_data_present;
+
   // An install can run for minutes, and its own progress bar sits far enough
   // down the Content page to be below the fold - which read as a UI that had
   // simply stopped responding. The footer is always on screen, so the state
@@ -2108,6 +2137,20 @@ void SetupScreen::DrawFooter(float column_width) {
                        "from a disc image, before starting.");
   } else if (!game_info_.IsFable2()) {
     ImGui::TextColored(kBad, "The selected folder is not Fable II.");
+  } else if (tu_blocks_play) {
+    ImGui::TextColored(
+        kBad,
+        "Title Update 1 required. This build is Fable II with Title Update 1 "
+        "(version %s); it needs the update data, which is missing. Put the game's "
+        "\"update\" folder (containing data\\tu1_data.bnk) next to the game files, or "
+        "choose the title update in Advanced settings. Console saves also need this "
+        "build. Without the update the game loads to Bowerstone Market and stops.",
+        fable2::VersionText(0x11Au).c_str());
+  } else if (tu.xex_ok) {
+    // Ready, and the version is stated so a wrong pressing is caught before Play.
+    Muted("Ready. Game version %s (media ID %08X)%s.",
+          fable2::VersionText(tu.version).c_str(), tu.media_id,
+          tu_update_required ? ", Title Update 1 data present" : " (base disc build)");
   } else {
     Muted("Ready.");
   }
@@ -2131,7 +2174,7 @@ void SetupScreen::DrawFooter(float column_width) {
     on_done_(false);
   }
   ImGui::SameLine();
-  ImGui::BeginDisabled(!can_play || progress_.running.load());
+  ImGui::BeginDisabled(!can_play || tu_blocks_play || progress_.running.load());
   if (ImGui::Button("Play", ImVec2(button_w, 0)) && !finished_) {
     finished_ = true;
     settings_->configured = true;
