@@ -3,6 +3,31 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.15 — 2026-09-22 (branch `tu1`)
+
+### Fixed - the update loop: v0.2.14 reported itself as v0.2.13
+
+v0.2.14's executable was built by an incremental `cmake --build` after the
+VERSION file was bumped, but nothing re-ran CMake, so the compiled-in
+`FABLE2_VERSION` stayed `0.2.13`. The shipped v0.2.14 therefore reported itself
+as v0.2.13 and its updater saw v0.2.14 as "available" forever - update, restart,
+still v0.2.13, repeat. Now CMake re-runs whenever VERSION changes
+(`CMAKE_CONFIGURE_DEPENDS`), so a bump is always compiled in, and this v0.2.15
+build carries the correct version. Updating from a v0.2.14 install fixes the
+loop.
+
+### Fixed - a damaged save no longer crashes the game on load
+
+Some third-party save packages (e.g. saves from a public collection) ship with
+an STFS block chain that links fewer blocks than the file's directory entry
+allocates - the file's own data is incomplete. The reader handed the game a
+short buffer for that file, and the game read past the end and crashed (a
+recursive walk on missing appearance/morph data, seen as a hang loading to
+Bowerstone Market). The STFS reader now detects a short chain, logs it, and
+zero-fills the missing tail so the file reads at its full declared length; the
+save loads with the missing bytes blanked instead of taking the game down. Good
+saves, whose chains are complete, are unaffected.
+
 ## 0.2.14 — 2026-09-22 (branch `tu1`)
 
 ### Added - re-open the setup screen from the settings menu

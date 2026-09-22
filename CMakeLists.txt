@@ -56,6 +56,13 @@ endif()
 # title string names the SDK version, which never changes between our builds.
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" FABLE2_VERSION_TEXT)
 string(STRIP "${FABLE2_VERSION_TEXT}" FABLE2_VERSION_TEXT)
+# Re-run CMake when VERSION changes, so a bump is picked up even by an
+# incremental `cmake --build` that would otherwise reuse the old configure.
+# Without this, `--build` after a version bump silently kept the OLD
+# FABLE2_VERSION: v0.2.14 shipped an exe that reported v0.2.13 and looped the
+# updater (it always saw the new release as "available"). 2026-09-22.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
 target_compile_definitions(fable2 PRIVATE FABLE2_VERSION="${FABLE2_VERSION_TEXT}")
 if(FABLE2_COMPILED_WITH_PATCH)
     target_compile_definitions(fable2 PRIVATE FABLE2_COMPILED_WITH_PATCH=1)
