@@ -1059,9 +1059,17 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     changed |= ImGui::Checkbox("##letterbox", &s.letterbox);
 
     {
-      // Offered only on a display wider than 16:9 (published by the HUD
-      // overlay from the window's size); a 16:9 display has nothing to fill.
-      const int aspect = rex::cvar::Query<int>("fable2_display_aspect_x1000");
+      // Offered only on a display wider than 16:9; a 16:9 display has nothing
+      // to fill. Read the display's aspect straight from the window here, not
+      // the HUD's published cvar: the setup screen runs before the guest boots,
+      // where the HUD does not run, so the cvar sits at its 16:9 default and the
+      // Ultrawide option was greyed out even on an ultrawide display (the whole
+      // point being to start the first game wide). The overlay in-game gets the
+      // same answer from the same window size.
+      const ImGuiIO& io = ImGui::GetIO();
+      const int aspect = io.DisplaySize.y > 0.0f
+                             ? int(io.DisplaySize.x / io.DisplaySize.y * 1000.0f + 0.5f)
+                             : 0;
       const bool wide = aspect > 1800;
       RowStart("Picture width",
                wide ? "16:9 keeps the game's own framing with bars at the sides. "

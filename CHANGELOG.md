@@ -19,6 +19,17 @@ only while the guest is live, and the pause-menu reader itself returns "no
 menu" before the guest boots, so no caller can fault through it. The setup
 screen, the first launch, and the F10 "reopen setup" flag all draw safely.
 
+### Fixed — Ultrawide is selectable on the setup screen again
+
+The setup screen's "Picture width" control offers Ultrawide only on a display
+wider than 16:9, and it read the display's aspect from a value the on-screen
+readouts publish. The setup-crash fix above stops those readouts from running
+before the game boots - which is exactly when the setup screen is up - so the
+value sat at its 16:9 default and Ultrawide was greyed out even on an ultrawide
+display, where starting the first game wide is the whole point. The setup now
+measures the display directly, so Ultrawide is available before the first
+launch on a wide screen.
+
 ### Changed
 
 - **The setup screen's redundant Display section is gone.** The Picture-width
