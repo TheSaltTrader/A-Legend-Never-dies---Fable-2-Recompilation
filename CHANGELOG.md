@@ -28,6 +28,11 @@ The setup screen now makes the title update a required part of installing:
   update" put it in the wrong place).
 - Play is refused, with an on-screen reason naming exactly what is missing, if a
   chosen game folder lacks the update executable or its data.
+- The setup names the exact requirement so it is clear what to get: this build is
+  Fable II with Title Update 1 (game version 0.0.1.26), which brings the game up
+  from the disc's 0.0.0.26, and it must match the disc pressing (media ID
+  716F0A0D). The accepted forms are stated too - a LIVE/CON title update package,
+  or its extracted default.xexp with tu1_data.bnk.
 
 The title update is your own game data - it was a separate console download, not
 on the Game of the Year disc - so it cannot be bundled; the setup makes adding it
