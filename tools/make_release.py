@@ -137,11 +137,27 @@ Setting it up
    It reads the title out of the disc, so it will tell you if you have
    pointed it at the wrong game.
 
-3. Optional: your DLC packages (the extensionless STFS files from your
-   console's content folder) and the title update, which the setup screen
-   installs beside the disc files.
+3. REQUIRED: the title update. This build is Fable II with Title Update 1
+   (game version 0.0.1.26), the update every Xbox 360 installed - so the
+   game needs it beside the disc files, and console saves load only with it.
+   It brings the game from the disc's version 0.0.0.26 up to 0.0.1.26, and
+   it is NOT on the Game of the Year disc: it was a separate console
+   download. Provide your own copy as the title update package (a LIVE or
+   CON file from a console's storage, or a title-update archive) or its
+   extracted default.xexp together with tu1_data.bnk. It must match your
+   disc pressing (media ID 716F0A0D for the GOTY disc).
 
-4. Press Play.
+   Installing from a disc image, the setup asks for the title update and
+   Install stays disabled until you choose it - then the game and the update
+   install together. Pointing at a folder that already holds your extracted
+   disc, the setup installs the title update into it. Without the update the
+   game loads only as far as Bowerstone Market and stops.
+
+4. Optional: your DLC packages (the extensionless STFS files from your
+   console's content folder), which the setup screen installs beside the
+   disc files.
+
+5. Press Play.
 
 The game/ and dlc/ folders beside fable2.exe are the defaults, so putting
 your files there works without choosing anything.

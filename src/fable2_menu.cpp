@@ -1902,6 +1902,19 @@ void SetupScreen::DrawInstaller() {
     // install together - Install stays disabled until it is a usable update.
     ImGui::Spacing();
     ImGui::TextUnformatted("Title update (required)");
+    // Say precisely WHICH update, for WHICH version, so the player knows what to
+    // get. This build IS Fable II with Title Update 1; the disc is one version
+    // below it. Numbers are the game's own XEX versions (see docs/TU1_PORT.md).
+    Muted("This build is Fable II with Title Update 1 - game version %s. You need "
+          "that title update: it brings the game from the disc's version %s up to "
+          "%s. It is the update every Xbox 360 installed for Fable II, and it is "
+          "NOT on the Game of the Year disc - it was a separate console download.",
+          fable2::VersionText(0x11Au).c_str(), fable2::VersionText(0x001Au).c_str(),
+          fable2::VersionText(0x11Au).c_str());
+    Muted("Give it as the title update package (a LIVE or CON file from a console's "
+          "storage, or a title-update archive) or its extracted default.xexp with "
+          "its tu1_data.bnk. It must be for THIS disc pressing (media ID %08X); a "
+          "title update for another pressing will not fit.", 0x716F0A0Du);
     PathField("##tufile", tu_file_.string());
     if (ImGui::Button("Choose title update...")) {
       if (auto picked = PickFile(
@@ -1915,9 +1928,8 @@ void SetupScreen::DrawInstaller() {
       ImGui::SameLine();
       ImGui::TextColored(tu_ok_ ? kGood : kBad, "%s", tu_note_.c_str());
     } else {
-      Muted("Your own copy of Fable II's console update. It is not on the GOTY "
-            "disc - it was a separate download. The game and this update install "
-            "together; without it the game stops at Bowerstone Market.");
+      ImGui::TextColored(kBad, "Without it the game loads only as far as Bowerstone "
+                               "Market and stops, and console saves will not load.");
     }
 
     ImGui::Spacing();
@@ -2014,9 +2026,14 @@ void SetupScreen::DrawInstaller() {
                          fable2::VersionText(tu.patch_target_version).c_str());
     } else {
       ImGui::TextColored(kBad,
-                         "This build needs the disc's title update in the game folder, and "
-                         "it is %s. Choose it to install it there.",
-                         tu.patch_found ? "the wrong one for this pressing" : "not there");
+                         "This build is Fable II with Title Update 1 (game version %s). Your "
+                         "game folder is version %s (media ID %08X) and needs that update "
+                         "beside default.xex - it is %s. Choose it to install it here: the "
+                         "LIVE/CON title update package, or its extracted default.xexp with "
+                         "tu1_data.bnk, matching this disc pressing.",
+                         fable2::VersionText(0x11Au).c_str(),
+                         fable2::VersionText(tu.version).c_str(), tu.media_id,
+                         tu.patch_found ? "the wrong update for this pressing" : "not there");
       if (ImGui::Button("Choose title update...")) {
         if (auto picked = PickFile("The disc's title update - its default.xexp or LIVE/CON package",
                                    {{"Title update", "*.xexp;*.*"}},
@@ -2175,12 +2192,12 @@ void SetupScreen::DrawFooter(float column_width) {
                                            : "the update data (update\\data\\tu1_data.bnk) is";
     ImGui::TextColored(
         kBad,
-        "Title Update 1 required. This build is Fable II with Title Update 1 "
-        "(version %s), and %s not in the game folder. Use the \"Title update\" "
-        "section on the Content page to install it beside the game (it also carries "
-        "the update data). Console saves need this build too. Without the update the "
-        "game loads to Bowerstone Market and stops.",
-        fable2::VersionText(0x11Au).c_str(), missing);
+        "Title Update 1 required. This build is Fable II with Title Update 1 (game "
+        "version %s, up from the disc's %s), and %s not in the game folder. Use the "
+        "\"Title update\" section on the Content page to install it beside the game "
+        "(it also carries the update data). Console saves need this build too. "
+        "Without the update the game loads to Bowerstone Market and stops.",
+        fable2::VersionText(0x11Au).c_str(), fable2::VersionText(0x001Au).c_str(), missing);
   } else if (tu.xex_ok) {
     // Ready, and the version is stated so a wrong pressing is caught before Play.
     Muted("Ready. Game version %s (media ID %08X)%s.",
