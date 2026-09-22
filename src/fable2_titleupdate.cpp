@@ -236,4 +236,76 @@ void InstallQueuedTitleUpdate() {
   REXLOG_INFO("Title update: {} unpacked, patch kept as {}", name, dest.string());
 }
 
+bool IsTitleUpdateFile(const std::filesystem::path& file, std::string* note) {
+  auto say = [note](bool ok, const char* text) {
+    if (note) *note = text;
+    return ok;
+  };
+  std::vector<uint8_t> head;
+  if (!ReadHead(file, head, 64 * 1024))
+    return say(false, "Could not read that file.");
+  if (head.size() >= 4 &&
+      (std::memcmp(head.data(), "LIVE", 4) == 0 || std::memcmp(head.data(), "CON ", 4) == 0 ||
+       std::memcmp(head.data(), "PIRS", 4) == 0))
+    return say(true, "A title update package - the update and its data unpack into the game.");
+  uint32_t desc = 0;
+  if (head.size() >= 4 && std::memcmp(head.data(), "XEX2", 4) == 0 &&
+      OptHeader(head, kKeyDeltaPatch, desc))
+    return say(true, "The disc's title update (default.xexp).");
+  if (head.size() >= 4 && std::memcmp(head.data(), "XEX2", 4) == 0)
+    return say(false, "That is an executable, not a title update (no delta patch).");
+  return say(false, "Not a title update: choose the disc's default.xexp or its LIVE/CON package.");
+}
+
+bool StageTitleUpdateInto(const std::filesystem::path& tu_file,
+                          const std::filesystem::path& game_dir, std::string& message) {
+  std::error_code ec;
+  std::vector<uint8_t> head;
+  if (!ReadHead(tu_file, head, 64))
+    return (message = "Could not read the title update file."), false;
+
+  // A loose default.xexp: copy it beside default.xex (the runtime applies
+  // game:\default.xexp when it loads the executable) and bring its data bank
+  // along to update/data, which is mounted as update:\data.
+  if (head.size() >= 4 && std::memcmp(head.data(), "XEX2", 4) == 0) {
+    const auto dest_xexp = game_dir / "default.xexp";
+    std::filesystem::create_directories(game_dir, ec);
+    std::filesystem::copy_file(tu_file, dest_xexp,
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec)
+      return (message = "Could not copy the title update to " + dest_xexp.string() + ": " +
+                        ec.message()),
+             false;
+    bool data_done = false;
+    for (const auto& cand : {tu_file.parent_path() / "tu1_data.bnk",
+                             tu_file.parent_path() / "data" / "tu1_data.bnk"}) {
+      if (std::filesystem::is_regular_file(cand, ec)) {
+        const auto data_dir = game_dir / "update" / "data";
+        std::filesystem::create_directories(data_dir, ec);
+        std::filesystem::copy_file(cand, data_dir / "tu1_data.bnk",
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        data_done = !ec;
+        break;
+      }
+    }
+    REXLOG_INFO("Title update: staged default.xexp into {}{}", game_dir.string(),
+                data_done ? " with tu1_data.bnk" : " (no tu1_data.bnk beside it)");
+    message = data_done
+                  ? "Title update installed with the game (default.xexp + update data)."
+                  : "Title update installed (default.xexp). Its data file (tu1_data.bnk) was "
+                    "not beside it - the game runs, but keep them together for the full update.";
+    return true;
+  }
+
+  // A LIVE/CON/PIRS package: queue it. InstallQueuedTitleUpdate unpacks it once
+  // the runtime is up, which is where the STFS reader lives.
+  if (head.size() >= 4 && (std::memcmp(head.data(), "LIVE", 4) == 0 ||
+                           std::memcmp(head.data(), "CON ", 4) == 0 ||
+                           std::memcmp(head.data(), "PIRS", 4) == 0))
+    return ChooseTitleUpdateFile(tu_file, message);
+
+  message = "Not a title update: expected default.xexp or a LIVE/CON package.";
+  return false;
+}
+
 }  // namespace fable2

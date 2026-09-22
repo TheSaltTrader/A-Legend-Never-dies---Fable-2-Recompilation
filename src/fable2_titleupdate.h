@@ -57,4 +57,19 @@ TitleUpdateStatus InspectTitleUpdate(const std::filesystem::path& game_dir);
 bool ChooseTitleUpdateFile(const std::filesystem::path& file, std::string& message);
 void InstallQueuedTitleUpdate();
 
+// Is `file` a plausible title update at all - a default.xexp (XEX2 with a delta
+// descriptor) or a LIVE/CON/PIRS package? A light check for the setup screen's
+// Install gate; the full "fits THIS disc" test needs the extracted executable
+// and is done by InspectTitleUpdate afterwards. `note` gets a one-line reason.
+bool IsTitleUpdateFile(const std::filesystem::path& file, std::string* note);
+
+// Install the chosen title update INTO a game folder, beside default.xex, so
+// the runtime applies game:\default.xexp and mounts game:\update at play time.
+// A loose default.xexp is copied in and its tu1_data.bnk (beside it, or under
+// data/) brought along to update/data/; a LIVE/CON package is queued for the
+// runtime to unpack there at first start. Returns false with a message on
+// failure. This is what makes "install the game and the patch together" true.
+bool StageTitleUpdateInto(const std::filesystem::path& tu_file,
+                          const std::filesystem::path& game_dir, std::string& message);
+
 }  // namespace fable2

@@ -127,6 +127,12 @@ class SetupScreen final : public rex::ui::ImGuiDialog {
   DiscInfo iso_info_;
   std::filesystem::path install_dest_;
   std::string setup_save_message_;  // result of the save-folder pick, shown until cleared
+  // The disc's title update, a REQUIRED input to Install: the game and the
+  // patch are installed together, so Install stays disabled until this is a
+  // valid title update file. tu_note_ is the one-line reason shown by it.
+  std::filesystem::path tu_file_;
+  bool tu_ok_ = false;
+  std::string tu_note_;
   ExtractProgress progress_;
   std::thread install_thread_;
   bool install_started_ = false;

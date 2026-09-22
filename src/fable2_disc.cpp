@@ -11,6 +11,7 @@
 #include <rex/memory/mapped_memory.h>
 
 #include "fable2_platform.h"
+#include "fable2_titleupdate.h"
 
 namespace fs = std::filesystem;
 namespace rfs = rex::filesystem;
@@ -213,10 +214,10 @@ int CountStfsPackages(const fs::path& dir) {
 }
 
 std::thread ExtractDiscAsync(const fs::path& iso_path, const fs::path& dest,
-                             ExtractProgress& progress) {
+                             ExtractProgress& progress, const fs::path& tu_file) {
   progress.Reset();
   progress.running = true;
-  return std::thread([iso_path, dest, &progress] {
+  return std::thread([iso_path, dest, &progress, tu_file] {
     auto fail = [&progress](const std::string& why) {
       progress.SetError(why);
       progress.failed = true;
@@ -299,6 +300,16 @@ std::thread ExtractDiscAsync(const fs::path& iso_path, const fs::path& dest,
       REXLOG_INFO("Install: extracted {} files ({}) to {}",
                   progress.files_done.load(), FormatBytes(progress.bytes_done.load()),
                   dest.string());
+      // Install the title update alongside the game, so the two land together
+      // and the runtime applies game:\default.xexp on the very first launch.
+      if (!tu_file.empty()) {
+        progress.SetCurrentFile("Installing the title update...");
+        std::string msg;
+        if (StageTitleUpdateInto(tu_file, dest, msg))
+          REXLOG_INFO("Install: {}", msg);
+        else
+          REXLOG_WARN("Install: title update not staged: {}", msg);
+      }
     }
     progress.complete = true;
     progress.running = false;

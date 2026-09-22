@@ -1530,27 +1530,17 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
 
   SectionHeader("Community patches",
                 "From Xenia Canary's patch file for Fable II (Margen67, Guy). "
-                "These change the game's own behaviour, so they are off by "
-                "default. All of them are applied at startup.");
+                "60 fps and 1280-wide rendering are always on - they are the "
+                "proven, beneficial pair and cannot be turned off. The black "
+                "texture fix is on by default in Textures above. The rest below "
+                "are optional and off by default.");
+  Muted("Always on: 60 fps, render at 1280 wide, and the black-texture fix.");
   TightRows tight_patches;
   if (ImGui::BeginTable("patches", 2, kRowTableFlags)) {
     ImGui::TableSetupColumn("l", ImGuiTableColumnFlags_WidthFixed, kLabelWidth);
     ImGui::TableSetupColumn("c", ImGuiTableColumnFlags_WidthFixed, kControlWidth);
 
     ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
-
-    RowStart("60 fps",
-             "The game picks a frame divider at startup; this picks the one "
-             "that runs at 60 instead of the 30 it shipped with.");
-    changed |= ImGui::Checkbox("##p60", &s.patch_60fps);
-    if (!live) RestartTag();
-
-    RowStart("Render at 1280 wide",
-             "Fable II renders 1120 pixels wide and scales up to the display. "
-             "This makes it render 1280, so there is no upscale. Separate from "
-             "supersampling above, and they stack.");
-    changed |= ImGui::Checkbox("##p720", &s.patch_720p);
-    if (!live) RestartTag();
 
     RowStart("Disable MSAA",
              "Turns off the game's own multisampling. Cheaper, and it frees "
@@ -1750,6 +1740,12 @@ SetupScreen::SetupScreen(rex::ui::ImGuiDrawer* drawer, Fable2Settings* settings,
   }
   if (const char* dest = std::getenv("NG2_INSTALL_DEST"); dest && *dest)
     install_dest_ = dest;
+  // The title update is a required input to Install; the test seam preselects
+  // it so a scripted install can drive the whole flow.
+  if (const char* tu = std::getenv("NG2_TU"); tu && *tu) {
+    tu_file_ = tu;
+    tu_ok_ = fable2::IsTitleUpdateFile(tu_file_, &tu_note_);
+  }
 
   RefreshGame();
 }
@@ -1772,7 +1768,9 @@ void SetupScreen::StartInstall() {
   if (install_thread_.joinable())
     install_thread_.join();
   install_started_ = true;
-  install_thread_ = ExtractDiscAsync(iso_path_, install_dest_, progress_);
+  // The title update installs with the game: the worker stages it into the
+  // destination once the disc files are out (see ExtractDiscAsync).
+  install_thread_ = ExtractDiscAsync(iso_path_, install_dest_, progress_, tu_file_);
 }
 
 void SetupScreen::OnDraw(ImGuiIO& io) {
@@ -1898,6 +1896,30 @@ void SetupScreen::DrawInstaller() {
   // a screen that has to fit, for a question most people never answer.
   const bool busy = progress_.running.load();
   if (!iso_path_.empty()) {
+    // The title update is a REQUIRED input. This build is Fable II with Title
+    // Update 1; the game runs correctly (and console saves load) only with the
+    // update installed beside it. It is chosen here so the game and the patch
+    // install together - Install stays disabled until it is a usable update.
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Title update (required)");
+    PathField("##tufile", tu_file_.string());
+    if (ImGui::Button("Choose title update...")) {
+      if (auto picked = PickFile(
+              "The disc's title update - its default.xexp, or the LIVE/CON package",
+              {{"Title update", "*.xexp;*.*"}}, settings_->ResolvedGamePath())) {
+        tu_file_ = *picked;
+        tu_ok_ = fable2::IsTitleUpdateFile(tu_file_, &tu_note_);
+      }
+    }
+    if (!tu_file_.empty()) {
+      ImGui::SameLine();
+      ImGui::TextColored(tu_ok_ ? kGood : kBad, "%s", tu_note_.c_str());
+    } else {
+      Muted("Your own copy of Fable II's console update. It is not on the GOTY "
+            "disc - it was a separate download. The game and this update install "
+            "together; without it the game stops at Bowerstone Market.");
+    }
+
     ImGui::Spacing();
     ImGui::TextUnformatted("Install to");
     PathField("##installdest", install_dest_.string());
@@ -1908,11 +1930,26 @@ void SetupScreen::DrawInstaller() {
       }
     }
     ImGui::SameLine();
-    ImGui::BeginDisabled(busy || !iso_info_.Usable() || install_dest_.empty());
+    const bool install_ready = iso_info_.Usable() && !install_dest_.empty() && tu_ok_;
+    ImGui::BeginDisabled(busy || !install_ready);
     if (ImGui::Button("Install")) {
       StartInstall();
     }
     ImGui::EndDisabled();
+    // Say WHY Install is disabled, on screen next to the button - never leave it
+    // greyed out with no reason (a disabled button with no reason reads broken).
+    if (!busy && !install_ready) {
+      if (!iso_info_.Usable())
+        Muted("Choose a usable disc image above to install.");
+      else if (!tu_ok_)
+        ImGui::TextColored(kBad, "%s",
+                           tu_file_.empty()
+                               ? "Select the disc's title update above first - the game and "
+                                 "the update install together, so Install waits for it."
+                               : "That title update file cannot be used - see the note above.");
+      else if (install_dest_.empty())
+        Muted("Choose where to install.");
+    }
   }
 
   // Xbox 360 saves, here as well as in the settings: a player with a save
@@ -1952,51 +1989,39 @@ void SetupScreen::DrawInstaller() {
     }
   }
 
-  // The title update. Saves from a console need the game at the version the
-  // console had, and this build was compiled from the disc's executable; the
-  // section says which version that is, which update the disc takes, and
-  // whether a file at hand is that update. A build compiled with the update
-  // is what loads those saves - see fable2_titleupdate.h.
-  {
+  // Title update for a game folder that is ALREADY extracted (the "Choose
+  // folder" path, where there is no Install step above to carry it in). This
+  // build is Fable II with Title Update 1, so the runtime applies the update's
+  // default.xexp beside default.xex at launch; this section says whether the
+  // game folder has it and installs it there if not. Installing puts it IN the
+  // game folder, where the runtime looks - not a staging area it ignores.
+  if (iso_path_.empty()) {
     static fable2::TitleUpdateStatus tu;
     static double tu_read_at = -1.0e9;
     static std::string tu_message;
     const double now = ImGui::GetTime();
-    if (now - tu_read_at > 5.0) {
-      tu = fable2::InspectTitleUpdate(install_dest_.empty() ? settings_->ResolvedGamePath()
-                                                            : install_dest_);
+    if (now - tu_read_at > 2.0) {
+      tu = fable2::InspectTitleUpdate(settings_->ResolvedGamePath());
       tu_read_at = now;
     }
     ImGui::Spacing();
     ImGui::TextUnformatted("Title update");
     if (!tu.xex_ok) {
-      ImGui::TextWrapped("Executable not inspected: %s", tu.xex_error.c_str());
+      Muted("Point at a game folder above; the title update goes beside default.xex.");
+    } else if (tu.patch_found && tu.patch_matches) {
+      ImGui::TextColored(kGood, "Installed: the disc's title update (version %s) is in the "
+                                "game folder and fits this pressing.",
+                         fable2::VersionText(tu.patch_target_version).c_str());
     } else {
-      ImGui::TextWrapped(
-          "This build was compiled from game version %s (media ID %08X). Saves made on "
-          "a console need the disc's title update - version %s for this pressing - and "
-          "a build compiled with it.",
-          fable2::VersionText(tu.version).c_str(), tu.media_id,
-          tu.patch_found && tu.patch_matches
-              ? fable2::VersionText(tu.patch_target_version).c_str()
-              : "the next one up");
-      if (tu.compiled_with_patch) {
-        ImGui::TextWrapped("This build WAS compiled with the title update applied.");
-      } else if (tu.patch_found) {
-        ImGui::TextWrapped("Title update file: %s - %s.%s", tu.patch_path.string().c_str(),
-                           tu.patch_note.c_str(),
-                           tu.patch_matches ? " This build was compiled without it; it is "
-                                              "staged for the build that will be."
-                                            : "");
-      } else {
-        ImGui::TextWrapped("No title update file found. Choose the disc's title update "
-                           "(a LIVE package, or its default.xexp) to stage it.");
-      }
-      if (ImGui::Button("Choose title update file...")) {
-        if (auto picked = PickFile("The disc's title update (LIVE package or default.xexp)",
+      ImGui::TextColored(kBad,
+                         "This build needs the disc's title update in the game folder, and "
+                         "it is %s. Choose it to install it there.",
+                         tu.patch_found ? "the wrong one for this pressing" : "not there");
+      if (ImGui::Button("Choose title update...")) {
+        if (auto picked = PickFile("The disc's title update - its default.xexp or LIVE/CON package",
                                    {{"Title update", "*.xexp;*.*"}},
                                    settings_->ResolvedGamePath())) {
-          fable2::ChooseTitleUpdateFile(*picked, tu_message);
+          fable2::StageTitleUpdateInto(*picked, settings_->ResolvedGamePath(), tu_message);
           tu_read_at = -1.0e9;  // re-read on the next frame
         }
       }
@@ -2110,11 +2135,15 @@ void SetupScreen::DrawFooter(float column_width) {
     }
   }
   // What this build requires, and whether the chosen game satisfies it. A
-  // title-update build (compiled_with_patch) needs the update data; a base-disc
-  // build does not, but it cannot load console saves - stated, not blocked.
+  // title-update build (compiled_with_patch) needs BOTH the update executable
+  // (game:\default.xexp, applied by the runtime when it loads default.xex) and
+  // the update data (game:\update\data\tu1_data.bnk). A base-disc build needs
+  // neither, but it cannot load console saves - stated, not blocked.
   const bool tu_update_required = tu.compiled_with_patch;
+  const bool tu_patch_ok = tu.patch_found && tu.patch_matches;
+  const bool tu_satisfied = tu_patch_ok && tu_data_present;
   const bool tu_blocks_play =
-      can_play && game_info_.IsFable2() && tu_update_required && !tu_data_present;
+      can_play && game_info_.IsFable2() && tu_update_required && !tu_satisfied;
 
   // An install can run for minutes, and its own progress bar sits far enough
   // down the Content page to be below the fold - which read as a UI that had
@@ -2138,19 +2167,25 @@ void SetupScreen::DrawFooter(float column_width) {
   } else if (!game_info_.IsFable2()) {
     ImGui::TextColored(kBad, "The selected folder is not Fable II.");
   } else if (tu_blocks_play) {
+    // Name exactly what is missing, and where it goes. The Content page's
+    // "Title update" section installs it into the game folder.
+    const char* missing =
+        (!tu_patch_ok && !tu_data_present) ? "the update and its data are"
+        : !tu_patch_ok                     ? "the update (default.xexp) is"
+                                           : "the update data (update\\data\\tu1_data.bnk) is";
     ImGui::TextColored(
         kBad,
         "Title Update 1 required. This build is Fable II with Title Update 1 "
-        "(version %s); it needs the update data, which is missing. Put the game's "
-        "\"update\" folder (containing data\\tu1_data.bnk) next to the game files, or "
-        "choose the title update in Advanced settings. Console saves also need this "
-        "build. Without the update the game loads to Bowerstone Market and stops.",
-        fable2::VersionText(0x11Au).c_str());
+        "(version %s), and %s not in the game folder. Use the \"Title update\" "
+        "section on the Content page to install it beside the game (it also carries "
+        "the update data). Console saves need this build too. Without the update the "
+        "game loads to Bowerstone Market and stops.",
+        fable2::VersionText(0x11Au).c_str(), missing);
   } else if (tu.xex_ok) {
     // Ready, and the version is stated so a wrong pressing is caught before Play.
     Muted("Ready. Game version %s (media ID %08X)%s.",
           fable2::VersionText(tu.version).c_str(), tu.media_id,
-          tu_update_required ? ", Title Update 1 data present" : " (base disc build)");
+          tu_update_required ? ", Title Update 1 installed" : " (base disc build)");
   } else {
     Muted("Ready.");
   }

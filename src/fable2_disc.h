@@ -123,8 +123,14 @@ struct ExtractProgress {
 //
 // Returns a joinable thread; the caller owns it and must join before the
 // progress object dies.
+//
+// When `tu_file` is given, the disc's title update is installed into `dest`
+// after the files are extracted, so the game and its patch land together
+// (StageTitleUpdateInto). A staging failure is reported but does not fail the
+// install - the extracted game is still usable.
 std::thread ExtractDiscAsync(const std::filesystem::path& iso_path,
                              const std::filesystem::path& dest,
-                             ExtractProgress& progress);
+                             ExtractProgress& progress,
+                             const std::filesystem::path& tu_file = {});
 
 }  // namespace fable2

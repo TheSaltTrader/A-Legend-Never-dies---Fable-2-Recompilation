@@ -3,6 +3,52 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.13 — 2026-09-22 (branch `tu1`)
+
+### Fixed - the release would not run after adding only the disc
+
+0.2.12 is compiled from the disc's Title Update 1 (game version 0.0.1.26), so
+the runtime applies the update's `default.xexp` beside `default.xex` and mounts
+`update/data/tu1_data.bnk` at launch, and console saves - which carry the
+update's version - load only on this build. Adding only the extracted disc, with
+no title update, ran the update's code against un-patched data: the game reached
+Bowerstone Market and stopped. Nothing on the setup screen said the update was
+required.
+
+The setup screen now makes the title update a required part of installing:
+
+- Installing from a disc image asks for the title update as well, and **Install
+  stays disabled until it is chosen**, with the reason shown on screen next to
+  the button. Clicking Install extracts the game **and** installs the update
+  beside it (its `default.xexp`, and `tu1_data.bnk` into `update/data/`), so the
+  game and the patch land together.
+- Pointing at an already-extracted game folder shows whether the title update is
+  present and fitting, and installs it into that folder if not - into the folder
+  the runtime reads, not a staging area it ignores (the previous "choose title
+  update" put it in the wrong place).
+- Play is refused, with an on-screen reason naming exactly what is missing, if a
+  chosen game folder lacks the update executable or its data.
+
+The title update is your own game data - it was a separate console download, not
+on the Game of the Year disc - so it cannot be bundled; the setup makes adding it
+a guided, one-time step.
+
+### Changed - the proven settings are the defaults, and the beneficial patches are locked on
+
+The dev build that ran well used 60 fps, 1280-wide rendering and the black
+texture fix; the release shipped with all three off, so it looked and ran worse.
+Now:
+
+- **60 fps and render-at-1280-wide are always on** and have no toggle - they are
+  the proven, beneficial pair. Their settings fields remain only so an old
+  settings file still parses.
+- **The black/flashing texture fix is on by default** (`readback` = `some`, the
+  femtofork's selective readback - the low-cost fix, not the full-frame readback
+  that costs a lot of performance). `none` is still available for absolute
+  maximum performance.
+- Disable MSAA, 30 Hz tick rate and the old texture-morph workaround stay
+  optional and off by default.
+
 ## 0.2.12 — 2026-09-15 (branch `tu1`)
 
 ### Fixed - the impostor flash 0.2.11 introduced, and most of the original one

@@ -204,15 +204,19 @@ struct Fable2Settings {
   // Xenia femtofork for this game solves it by reading back only the textures
   // that need it; this runtime already exposes that as a graduated setting
   // (readback_resolve: none / fast / some / full), so "some" is that fix
-  // rather than the all-or-nothing readback that cripples performance.
-  std::string readback = "none";   // none | fast | some | full
+  // rather than the all-or-nothing readback that cripples performance. ON by
+  // default ("some"): it is the proven fix for the black/flashing textures and
+  // its cost is small; "none" is available for absolute maximum performance.
+  std::string readback = "some";   // none | fast | some | full
 
   // --- Community patches ---------------------------------------------------
   // Xenia Canary's patch file for 4D5307F1 (Margen67, Guy). Each is verified
-  // against our own image in config/hooks/patches.toml. All off by default -
-  // they change how the game shipped.
-  bool patch_60fps = false;
-  bool patch_720p = false;
+  // against our own image in config/hooks/patches.toml. 60 fps and 1280-wide
+  // are the proven, beneficial pair and are FORCED ON (fable2_tuning.h) with no
+  // toggle - the fields remain only so an old settings file still parses. The
+  // rest are genuine off-by-default preferences.
+  bool patch_60fps = true;
+  bool patch_720p = true;
   bool patch_disable_msaa = false;
   bool patch_disable_texture_morph = false;
   bool patch_high_tick_rate = false;
@@ -425,7 +429,7 @@ struct Fable2Settings {
     readback_drain_small_kb = std::clamp(readback_drain_small_kb, 0, 65536);
     if (readback != "none" && readback != "fast" && readback != "some" &&
         readback != "full")
-      readback = "none";
+      readback = "some";
     if (gpu_backend != "vulkan" && gpu_backend != "d3d12")
       gpu_backend = "d3d12";
     // Dumping and loading together put the disk on the GPU thread and starve

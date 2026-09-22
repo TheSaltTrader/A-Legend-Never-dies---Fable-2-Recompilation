@@ -201,10 +201,14 @@ struct Fable2Tuning {
                    "no full-queue drain per shader memory export"});
 
     // The community patches, read by the midasm hooks in patch_hooks.cpp.
-    out.push_back({"fable2_60fps", s.patch_60fps ? "true" : "false",
-                   "[Xenia/Margen67] 60 fps"});
-    out.push_back({"fable2_720p", s.patch_720p ? "true" : "false",
-                   "[Xenia/Margen67] render 1280 wide instead of 1120"});
+    // 60 fps and 1280-wide are the proven, beneficial pair: FORCED ON here,
+    // ignoring the settings field, so there is no way to turn them off (the
+    // field stays only so an old settings file parses). This is the "no option
+    // to remove the beneficial patches" the release wants; the black-texture
+    // fix (readback, above) is on by default the same way.
+    out.push_back({"fable2_60fps", "true", "[Xenia/Margen67] 60 fps (always on)"});
+    out.push_back({"fable2_720p", "true",
+                   "[Xenia/Margen67] render 1280 wide instead of 1120 (always on)"});
     out.push_back({"fable2_disable_msaa",
                    s.patch_disable_msaa ? "true" : "false",
                    "[Xenia/Margen67] disable MSAA"});
