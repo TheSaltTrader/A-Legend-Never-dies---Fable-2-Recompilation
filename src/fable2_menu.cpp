@@ -2288,7 +2288,13 @@ void SettingsOverlay::OnDraw(ImGuiIO& io) {
       PathField("##gamepath", settings_->ResolvedGamePath().string());
       ImGui::Spacing();
       Muted("The game folder is chosen on the setup screen, which runs before the "
-            "game is loaded. Hold Shift while launching to get it back.");
+            "game is loaded. Hold Shift while launching to get it back - or use the "
+            "button below.");
+      if (ImGui::Button("Open setup on next launch")) {
+        settings_->force_setup = true;
+        settings_->Save();
+        status_ = "The setup screen will open the next time you start the game.";
+      }
       DrawDiagnosticsButton();
       DrawUpdatesSection(*settings_, changed);
     }

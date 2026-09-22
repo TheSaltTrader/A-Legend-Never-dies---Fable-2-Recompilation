@@ -261,6 +261,10 @@ struct Fable2Settings {
   // Set once Play has been pressed, so the setup screen only interrupts the
   // first run. Hold Shift at launch to get it back.
   bool configured = false;
+  // One-shot: the F10 menu sets this to open the setup screen on the NEXT
+  // launch (an on-screen alternative to holding Shift). Cleared when the setup
+  // screen opens, so it fires exactly once.
+  bool force_setup = false;
   // Updates: ask the project's releases page at launch and offer a newer
   // version. update_skip is the version the player declined with "Skip this
   // version"; the offer returns when a later one is released.
@@ -375,6 +379,7 @@ struct Fable2Settings {
         << "mouse_sensitivity=" << mouse_sensitivity << "\n"
         << "game_path=" << game_path << "\n"
         << "configured=" << (configured ? 1 : 0) << "\n"
+        << "force_setup=" << (force_setup ? 1 : 0) << "\n"
         << "update_check=" << (update_check ? 1 : 0) << "\n"
         << "update_skip=" << update_skip << "\n";
     out.flush();
@@ -506,6 +511,7 @@ struct Fable2Settings {
     else if (k == "mouse_sensitivity") mouse_sensitivity = std::atof(v.c_str());
     else if (k == "game_path") game_path = v;
     else if (k == "configured") configured = Truthy(v);
+    else if (k == "force_setup") force_setup = Truthy(v);
     else if (k == "update_check") update_check = Truthy(v);
     else if (k == "update_skip") update_skip = v;
   }

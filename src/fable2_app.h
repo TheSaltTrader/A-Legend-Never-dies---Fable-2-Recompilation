@@ -174,11 +174,13 @@ class Fable2App : public rex::ReXApp {
     const bool game_ok =
         fable2::InspectFolder(settings_.ResolvedGamePath()).Usable();
 
-    // Three reasons to stop: never configured, the player asked for it with
-    // Shift, or the configured folder has gone (a moved or unplugged drive
-    // should offer the picker, not a fatal error).
+    // Four reasons to stop: never configured, the player asked for it with
+    // Shift, the player asked for it from the F10 menu (force_setup, one-shot),
+    // or the configured folder has gone (a moved or unplugged drive should
+    // offer the picker, not a fatal error).
     const bool show = !path_from_cli &&
-                      (!settings_.configured || fable2::ShiftHeld() || !game_ok);
+                      (!settings_.configured || fable2::ShiftHeld() ||
+                       settings_.force_setup || !game_ok);
     if (!show) {
       rex::PathConfig paths = defaults;
       if (!path_from_cli)
@@ -188,8 +190,14 @@ class Fable2App : public rex::ReXApp {
 
     REXLOG_INFO("Setup screen: {}",
                 !settings_.configured ? "first run"
-                : fable2::ShiftHeld() ? "Shift held at launch"
-                                      : "configured game folder is missing");
+                : fable2::ShiftHeld()  ? "Shift held at launch"
+                : settings_.force_setup ? "requested from the settings menu"
+                                        : "configured game folder is missing");
+    // One-shot: clear the F10 request so it opens setup exactly once.
+    if (settings_.force_setup) {
+      settings_.force_setup = false;
+      settings_.Save();
+    }
     StartUiPump();
     setup_screen_ = std::make_unique<fable2::SetupScreen>(
         imgui_drawer(), &settings_,

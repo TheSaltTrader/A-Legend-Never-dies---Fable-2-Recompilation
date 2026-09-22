@@ -3,7 +3,15 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
-## 0.2.13 — 2026-09-22 (branch `tu1`)
+## 0.2.14 — 2026-09-22 (branch `tu1`)
+
+### Added - re-open the setup screen from the settings menu
+
+The F10 settings menu now has an "Open setup on next launch" button under
+Content. It reopens the setup screen the next time the game starts (a one-shot
+flag, `force_setup`), so the disc folder, the title update and the install can
+be redone without holding Shift at launch. It clears itself once the setup
+screen opens.
 
 ### Fixed - the release would not run after adding only the disc
 
