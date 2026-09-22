@@ -3,6 +3,28 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.17 — 2026-09-22 (branch `tu1`)
+
+### Fixed — reopening the setup screen no longer crashes the game
+
+Checking "Open the setup screen on the next launch" (or holding Shift at
+launch) crashed a configured install the moment the setup screen appeared. The
+on-screen readouts run the ultrawide presenter decision every frame, and one of
+its log lines read the game's own pause-menu flag from guest memory
+unconditionally. The setup screen draws *before the guest boots*, so that
+memory is not committed yet, and the read faulted - a deterministic access
+violation at a fixed address (the same spot on every run of a build, not a
+race). The readouts now do all of their scene, frame-rate and ultrawide work
+only while the guest is live, and the pause-menu reader itself returns "no
+menu" before the guest boots, so no caller can fault through it. The setup
+screen, the first launch, and the F10 "reopen setup" flag all draw safely.
+
+### Changed
+
+- **The setup screen's redundant Display section is gone.** The Picture-width
+  control already offers the ultrawide option, so the extra Display/Ultrawide
+  section it briefly grew has been removed.
+
 ## 0.2.16 — 2026-09-22 (branch `tu1`)
 
 ### Added

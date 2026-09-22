@@ -156,9 +156,15 @@ void TextureNotifyOverlay::OnDraw(ImGuiIO& io) {
 }
 
 void PerfHudOverlay::OnDraw(ImGuiIO& io) {
-  // The window's aspect, for the ultrawide projection (patch_hooks.cpp reads
-  // fable2_display_aspect_x1000). Once per change, not per frame.
-  {
+  // The window's aspect and the ultrawide presenter decision both read state
+  // that only exists once the guest is live: the GPU plugin's cvars, which it
+  // registers as it loads, and the game's own scene flags. The setup screen -
+  // including a force_setup reopen over a configured game - draws before the
+  // module boots and while the plugin is still registering, so ALL of this is
+  // gated on the guest running. Otherwise a query here faults on a cvar the
+  // plugin has not registered, or races it doing so (the 2026-09-22 setup
+  // reopen crash). One guard for the whole class, not one per cvar.
+  if (fable2::GuestLive()) {
     static int last_aspect = 0;
     const int aspect = io.DisplaySize.y > 0.0f
                            ? int(io.DisplaySize.x / io.DisplaySize.y * 1000.0f + 0.5f)
@@ -253,9 +259,9 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
                                 now - pause_seen < std::chrono::milliseconds(150);
         const bool gameplay = !frontend && !pause_menu;
         rex::cvar::SetFlagByName("present_letterbox", frontend ? "true" : "false");
-        const std::string k2d = gameplay ? Hud2DFactor(true) : std::string("0");
-        if (rex::cvar::GetFlagByName("fable2_uw_2d_k") != k2d)
-          rex::cvar::SetFlagByName("fable2_uw_2d_k", k2d);
+        const std::string k2d = gameplay ? Hud2DFactor(true) : std::string("0");
+        if (rex::cvar::GetFlagByName("fable2_uw_2d_k") != k2d)
+          rex::cvar::SetFlagByName("fable2_uw_2d_k", k2d);
         // [uwstate] One line whenever the decision changes, with what is applied.
         {
           static int last_state = -1;
@@ -320,7 +326,12 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
       // with the 60 fps patch on (30 without it - the colour is a hint, not a
       // verdict). The host rate stays beside it, smaller, because it is what
       // the V-Sync and frame-rate settings actually govern.
-      const int32_t guest_x10 = REXCVAR_QUERY(int32_t, guest_fps_x10);
+      // The GAME's rate is the GPU plugin's cvar; it does not exist until the
+      // guest is live, so read it only then and show "n/a" otherwise (the same
+      // class as the ultrawide block above - never touch a plugin cvar before
+      // the module has registered it).
+      const int32_t guest_x10 =
+          fable2::GuestLive() ? REXCVAR_QUERY(int32_t, guest_fps_x10) : 0;
       const float game_fps = float(guest_x10) / 10.0f;
       const ImVec4 c = game_fps >= 57.0f ? good : (game_fps >= 28.0f ? warn : bad);
       ImGui::TextColored(label, "FPS");

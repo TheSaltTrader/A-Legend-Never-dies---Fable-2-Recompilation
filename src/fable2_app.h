@@ -50,6 +50,7 @@
 #include "fable2_platform.h"
 #include "fable2_settings.h"
 #include "fable2_tuning.h"
+#include "fable2_viewstate.h"  // fable2::SetGuestLive
 
 // Where to look for Xbox 360 content packages. Empty (the default) means do
 // nothing at all: the two Fable II expansions are already on the GOTY disc, so
@@ -549,11 +550,18 @@ class Fable2App : public rex::ReXApp {
 
   void OnPreLaunchModule() override {
     REXLOG_INFO("fable2: launching guest module");
+    // The guest module is loaded and about to run (its data segment is
+    // committed, the GPU plugin's cvars are registered). From here the scene
+    // readers and the on-screen readouts may touch guest memory and plugin
+    // cvars; before this, the setup screen and its overlays draw with no guest,
+    // so that work must be skipped (the 2026-09-22 force_setup reopen crash).
+    fable2::SetGuestLive(true);
   }
 
   void OnGuestThreadExit(rex::system::XThread* thread) override {
     (void)thread;
     REXLOG_INFO("fable2: main guest thread exited");
+    fable2::SetGuestLive(false);
   }
 
   void OnShutdown() override {

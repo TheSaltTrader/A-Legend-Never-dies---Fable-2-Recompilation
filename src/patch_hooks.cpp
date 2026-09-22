@@ -11,6 +11,7 @@
 #include <rex/ppc/context.h>
 #include <rex/system/kernel_state.h>
 
+#include "fable2_platform.h"  // fable2::PageCommitted
 #include "fable2_stage.h"
 #include "fable2_viewstate.h"
 
@@ -282,6 +283,10 @@ std::atomic<int64_t> g_last_menu_camera_ns{0};       // last title/pause/Up menu
 // scene, and outside the world scene they keep the game's own projection.
 enum class Scene : int { kNone = 0, kLoading, kMenu, kWorld };
 std::atomic<int> g_scene{int(Scene::kNone)};
+// Whether the guest module is live (see fable2_viewstate.h). False until the
+// app says the module is about to run, so the guest-memory readers below do
+// not dereference an uncommitted data-segment page while the setup screen is up.
+std::atomic<bool> g_guest_live{false};
 int g_world_quick_builds = 0;   // hook thread only
 int g_menu_quick_builds = 0;
 int g_world_builds_in_loading = 0;  // world builds since the loading map appeared
@@ -326,6 +331,13 @@ constexpr int64_t kCameraForgetNs = 2000000000;
 constexpr double kLoadingMapFy = 1.2870;
 }  // namespace
 
+void fable2::SetGuestLive(bool live) {
+  g_guest_live.store(live, std::memory_order_release);
+}
+bool fable2::GuestLive() {
+  return g_guest_live.load(std::memory_order_acquire);
+}
+
 double fable2::SecondsSinceWorldCameraBuild() {
   const int64_t last = g_last_camera_build_ns.load(std::memory_order_relaxed);
   if (!last) return 1e9;
@@ -354,26 +366,42 @@ bool fable2::PauseMenuOpen() {
   // during other actions and fired the fix constantly (user, 2026-09-14). The
   // pause flag flickers to 0 for the odd frame (the game rewrites it and our
   // read races it); the caller holds a true read ~150 ms to smooth that.
-  if (auto* memory = REX_KERNEL_MEMORY()) {
-    const uint8_t* p = memory->TranslateVirtual<const uint8_t*>(0x834B2467u);
-    const bool open = p && *p == 1u;
-    // A line when the answer changes (at most ten a second - the flag flickers
-    // for a frame now and then) or every 2 s; it used to print on EVERY call
-    // while a menu was open, and the log rotated every few seconds.
-    static int64_t last_log = 0;
-    static int last_open = -1;
-    const int64_t now = NowNs();
-    // The raw flag flickers every frame a menu is up, so "on change" is still
-    // several lines a second: a line every 2 s is enough (the [uwstate] line
-    // in the HUD overlay records the debounced decision the moment it changes).
-    if (now - last_log > 2000000000) {
-      last_log = now;
-      last_open = int(open);
-      REXLOG_INFO("[menu] pause-flag={} -> open={}", p ? int(*p) : -1, open ? 1 : 0);
-    }
-    return open;
+  auto* memory = REX_KERNEL_MEMORY();
+  const uint8_t* p =
+      memory ? memory->TranslateVirtual<const uint8_t*>(0x834B2467u) : nullptr;
+  // The flag lives in the guest data segment, which the loader commits only
+  // once the module is loaded. Reading it before then faults on an uncommitted
+  // page - the 2026-09-22 setup-reopen crash: the HUD called this with the
+  // setup screen up, before boot. Check the ACTUAL page rather than a proxy for
+  // "is the guest up" (a flag set at module launch can be true a hair before
+  // the page is mapped); this is then correct for any caller and cannot be
+  // wrong at the boot edge. No menu is open before the guest exists - and the
+  // skip is reported ONCE, so a guard that has quietly turned the readout off
+  // is visible in the log rather than an unexplained blank.
+  if (!p || !fable2::PageCommitted(p)) {
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true))
+      REXLOG_INFO("[menu] pause-flag not readable yet (guest data not "
+                  "committed) - reporting 'no menu'; expected before boot");
+    return false;
   }
-  return false;
+  const bool open = *p == 1u;
+  // A line when the answer changes (at most ten a second - the flag flickers
+  // for a frame now and then) or every 2 s; it used to print on EVERY call
+  // while a menu was open, and the log rotated every few seconds.
+  static int64_t last_log = 0;
+  static int last_open = -1;
+  const int64_t now = NowNs();
+  // The raw flag flickers every frame a menu is up, so "on change" is still
+  // several lines a second: a line every 2 s is enough (the [uwstate] line
+  // in the HUD overlay records the debounced decision the moment it changes).
+  if (now - last_log > 2000000000) {
+    last_log = now;
+    last_open = int(open);
+    REXLOG_INFO("[menu] pause-flag={} -> open={}", int(*p), open ? 1 : 0);
+  }
+  (void)last_open;
+  return open;
 }
 
 bool fable2::MenuCameraActive() {

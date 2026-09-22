@@ -9,6 +9,17 @@
 
 namespace fable2 {
 
+// Whether the guest module is live. The scene signals below read the game's
+// own memory (guest globals, camera projections), which only exists once the
+// module is loaded and running. Before that - the setup screen, including a
+// force_setup reopen over a configured game - those reads dereference an
+// uncommitted guest page and fault. The app sets this true just before the
+// module runs and false when it exits; the guest-memory readers here return
+// their "no game" answer while it is false, so a caller that runs before the
+// guest boots (like the HUD overlay) is safe. See PauseMenuOpen.
+void SetGuestLive(bool live);
+bool GuestLive();
+
 // Seconds since the last world-camera build; a large number before the first.
 double SecondsSinceWorldCameraBuild();
 // Seconds the world camera has been built without a gap longer than a
