@@ -1867,23 +1867,6 @@ void SetupScreen::DrawContent() {
                        "game's; another title will not run.");
   }
 
-  // Display: ultrawide, offered here so it can be chosen before the first
-  // launch. The setting is applied at launch and the runtime uses it only on a
-  // display wider than 16:9 (it detects the real aspect then), so it is safe to
-  // offer unconditionally; on a 16:9 display it simply has no effect.
-  SectionHeader("Display");
-  {
-    bool uw = settings_->ultrawide;
-    if (ImGui::Checkbox("Ultrawide", &uw))
-      settings_->ultrawide = uw;
-    ImGui::SameLine();
-    Muted("(fills a display wider than 16:9)");
-    Muted("Projects the world edge to edge at your monitor's aspect - a wider view - "
-          "instead of 16:9 with bars at the sides. The title screen, the menus and 2D "
-          "screens (such as the loading map) stay 16:9. Takes effect when the game "
-          "starts, and only on a display wider than 16:9.");
-  }
-
   DrawInstaller();
 }
 
