@@ -3,6 +3,23 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 0.2.16 — 2026-09-22 (branch `tu1`)
+
+### Added
+
+- **Ultrawide can be chosen on the setup screen.** A Display section with an
+  Ultrawide toggle, so it can be set before the first launch instead of only
+  from F10. It applies at launch and the runtime uses it only on a display wider
+  than 16:9.
+- **The F10 "open setup on next launch" control is now a checkbox** (it was a
+  button), so its state is visible.
+
+### Changed
+
+- **The setup rescans automatically when an install finishes.** After Install,
+  the game folder and the imported saves are re-scanned once, so the game, the
+  title update and the saves all show Ready without pressing Rescan.
+
 ## 0.2.15 — 2026-09-22 (branch `tu1`)
 
 ### Fixed - the update loop: v0.2.14 reported itself as v0.2.13

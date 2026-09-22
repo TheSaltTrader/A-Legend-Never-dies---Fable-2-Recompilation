@@ -136,6 +136,9 @@ class SetupScreen final : public rex::ui::ImGuiDialog {
   ExtractProgress progress_;
   std::thread install_thread_;
   bool install_started_ = false;
+  // One-shot: when an install finishes, rescan the game folder and the saves so
+  // everything shows Ready without the player pressing Rescan. Reset per install.
+  bool install_rescanned_ = false;
 };
 
 class SettingsOverlay final : public rex::ui::ImGuiDialog {

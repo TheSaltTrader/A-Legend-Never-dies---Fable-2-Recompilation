@@ -1768,6 +1768,7 @@ void SetupScreen::StartInstall() {
   if (install_thread_.joinable())
     install_thread_.join();
   install_started_ = true;
+  install_rescanned_ = false;
   // The title update installs with the game: the worker stages it into the
   // destination once the disc files are out (see ExtractDiscAsync).
   install_thread_ = ExtractDiscAsync(iso_path_, install_dest_, progress_, tu_file_);
@@ -1864,6 +1865,23 @@ void SetupScreen::DrawContent() {
     ImGui::TextColored(kBad,
                        "This is not Fable II. The recompiled code is this "
                        "game's; another title will not run.");
+  }
+
+  // Display: ultrawide, offered here so it can be chosen before the first
+  // launch. The setting is applied at launch and the runtime uses it only on a
+  // display wider than 16:9 (it detects the real aspect then), so it is safe to
+  // offer unconditionally; on a 16:9 display it simply has no effect.
+  SectionHeader("Display");
+  {
+    bool uw = settings_->ultrawide;
+    if (ImGui::Checkbox("Ultrawide", &uw))
+      settings_->ultrawide = uw;
+    ImGui::SameLine();
+    Muted("(fills a display wider than 16:9)");
+    Muted("Projects the world edge to edge at your monitor's aspect - a wider view - "
+          "instead of 16:9 with bars at the sides. The title screen, the menus and 2D "
+          "screens (such as the loading map) stay 16:9. Takes effect when the game "
+          "starts, and only on a display wider than 16:9.");
   }
 
   DrawInstaller();
@@ -2069,9 +2087,24 @@ void SetupScreen::DrawInstaller() {
         ImGui::TextColored(kBad, "%s", progress_.Error().c_str());
       } else {
         ImGui::TextColored(kGood, "Install complete.");
-        if (settings_->ResolvedGamePath() != install_dest_) {
+        // One-shot after a successful install: adopt the destination as the
+        // game folder and rescan the game AND the saves, so the game, the title
+        // update and the imported saves all show Ready without the player
+        // pressing Rescan or re-picking the save folder.
+        if (!install_rescanned_) {
+          install_rescanned_ = true;
           settings_->game_path = install_dest_.string();
           RefreshGame();
+          if (!settings_->save_import_path.empty()) {
+            const auto found = fable2::FindSavePackages(settings_->save_import_path);
+            fable2::QueueSaveImports(found);
+            setup_save_message_ =
+                found.empty()
+                    ? std::string("No Fable II saves found there.")
+                    : (std::to_string(found.size()) +
+                       " save(s) found - imported when the game starts, each once, into a "
+                       "free slot.");
+          }
         }
       }
     }
@@ -2288,12 +2321,16 @@ void SettingsOverlay::OnDraw(ImGuiIO& io) {
       PathField("##gamepath", settings_->ResolvedGamePath().string());
       ImGui::Spacing();
       Muted("The game folder is chosen on the setup screen, which runs before the "
-            "game is loaded. Hold Shift while launching to get it back - or use the "
-            "button below.");
-      if (ImGui::Button("Open setup on next launch")) {
-        settings_->force_setup = true;
-        settings_->Save();
-        status_ = "The setup screen will open the next time you start the game.";
+            "game is loaded. Hold Shift while launching to get it back - or tick the "
+            "box below.");
+      {
+        bool open_setup = settings_->force_setup;
+        if (ImGui::Checkbox("Open the setup screen on the next launch", &open_setup)) {
+          settings_->force_setup = open_setup;
+          settings_->Save();
+          status_ = open_setup ? "Setup will open the next time you start the game."
+                               : "Setup will not open on the next launch.";
+        }
       }
       DrawDiagnosticsButton();
       DrawUpdatesSection(*settings_, changed);
