@@ -3,6 +3,46 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.0.1 — 2026-09-24
+
+### Fixed — the main-menu video no longer flashes on its second and later loops
+
+The attract video on the main menu played cleanly the first time and then, on
+every later loop, showed a band of the previous playback over the top of the
+picture (about the upper 70%), flashing as the video moved. It was not the
+texture pack.
+
+**Cause.** When the video ends the game frees its frame buffers. A last
+upload of one buffer, still in flight, lands just after that release and
+marks the freed pages as current. A write watch cannot be placed on freed
+memory, and nothing invalidates memory when the game allocates it again, so
+on the next loop the game's writes into that buffer were never seen and the
+old picture stayed on screen.
+
+**Fix.** The GPU plugin no longer marks as current any page the game has
+freed; such a page is simply read again the next time it is used. The check
+reads only the pages each upload touches.
+
+**Measured on the files in this release** (shipped settings; the comparison
+build is 1.0.0's own plugin with this runtime, so the plugin is the only
+difference):
+- the flashing band, counted on the screen rows where it appears: **74** video
+  frames with 1.0.0's plugin, **0** with this one;
+- Bowerstone Market frame rate: 49.4 fps with 1.0.0's plugin, 50.0 and 49.6
+  with this one (testing was stopped after these three runs).
+
+On earlier test builds of the same fix, three runs each: 49.6 fps before,
+49.5 after, and the band 0 frames in two separate runs. An earlier version of
+this fix cost 9 fps in town and was not shipped.
+
+Both `rexgpu-xenos.dll` and `rexruntime.dll` change in this release and must
+be used together; the in-game updater replaces both. The damaged-save handling
+from 1.0.0 is unchanged.
+
+**Not covered by these measurements:** in-game story cutscenes, and the
+distant-tree flash at Bower Lake (no measurement of it exists for either
+build).
+
 ## 1.0.0 — 2026-09-22
 
 The 1.0 release. Fable II: Game of the Year Edition running on PC by static
