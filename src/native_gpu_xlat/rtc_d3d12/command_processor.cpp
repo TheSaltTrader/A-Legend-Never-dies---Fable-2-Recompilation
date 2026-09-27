@@ -119,7 +119,18 @@ extern std::atomic<uint32_t> g_dcl_command_counts[64];
 extern std::atomic<uint32_t> g_dcl_command_total;
 bool& FLAGS_readback_resolve_uav_barrier_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("readback_resolve_uav_barrier", false); return s; }
 int32_t& FLAGS_fable2_menu_letterbox_gap_ms_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("fable2_menu_letterbox_gap_ms", 150); return s; }
-double& FLAGS_fable2_uw_2d_k_storage_() { static double s = ::fable2::ngpu::xlat::PluginDouble("fable2_uw_2d_k", 0.0); return s; }
+// NATIVE PATCH [live cvars] (2026-09-27, user: "the 2d assets on the screen are stretched" at ultrawide): the app
+// sets this every frame the scene changes (HUD 16:9 factor in gameplay, 0 in menus / loading); the startup snapshot
+// stayed 0, so the HUD compression never ran natively. The app now pushes each change straight in (same exe, same
+// frame - no polling on the per-draw path), beside its write to the plugin's registry.
+static std::atomic<double> g_uw_2d_k{-1.0};
+double& FLAGS_fable2_uw_2d_k_storage_() {
+  static double s = ::fable2::ngpu::xlat::PluginDouble("fable2_uw_2d_k", 0.0);
+  const double pushed = g_uw_2d_k.load(std::memory_order_relaxed);
+  if (pushed >= 0.0) s = pushed;
+  return s;
+}
+namespace fable2::ngpu { void SetUw2dK(double k) { g_uw_2d_k.store(k < 0.0 ? 0.0 : k, std::memory_order_relaxed); } }
 int32_t& FLAGS_gpu_draw_dump_frames_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("gpu_draw_dump_frames", 0); return s; }
 std::string& FLAGS_gpu_draw_dump_file_storage_() { static std::string s = ::fable2::ngpu::xlat::PluginString("gpu_draw_dump_file", ""); return s; }
 bool& FLAGS_readback_await_before_texture_upload_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("readback_await_before_texture_upload", true); return s; }

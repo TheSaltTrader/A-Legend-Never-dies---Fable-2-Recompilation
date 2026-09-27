@@ -18,6 +18,7 @@
 #include "fable2_viewstate.h"
 
 namespace fable2::ngpu { bool RevealPending(); }   // native_gpu_present.cpp
+namespace fable2::ngpu { void SetUw2dK(double k); }   // native_gpu_xlat/rtc_d3d12/command_processor.cpp
 
 // [ultrawide] The plugin scales the 2D HUD's pixel-to-clip x by this while the
 // world is drawn edge to edge: 16:9 over the display aspect, so the HUD keeps
@@ -273,6 +274,7 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
         const std::string k2d = gameplay ? Hud2DFactor(true) : std::string("0");
         if (rex::cvar::GetFlagByName("fable2_uw_2d_k") != k2d)
           rex::cvar::SetFlagByName("fable2_uw_2d_k", k2d);
+        fable2::ngpu::SetUw2dK(std::atof(k2d.c_str()));   // the native renderer's copy, same frame
         // [uwstate] One line whenever the decision changes, with what is applied.
         {
           static int last_state = -1;
@@ -287,7 +289,7 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
         last_want = 0;  // "edge to edge"; for the reset branch below
         (void)menu_gap_ms; (void)last_switch; (void)last_check;
       } else {
-        if (last_want != -1) rex::cvar::SetFlagByName("fable2_uw_2d_k", "0");
+        if (last_want != -1) { rex::cvar::SetFlagByName("fable2_uw_2d_k", "0"); fable2::ngpu::SetUw2dK(0.0); }
         last_want = -1;
       }
     }
