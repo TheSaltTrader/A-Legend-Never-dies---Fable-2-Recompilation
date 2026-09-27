@@ -3,6 +3,20 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.1.3 — 2026-09-27
+
+### Fixed — ultrawide HUD stretched on the native renderer
+
+- **The 2D HUD (d-pad and map cluster, quest banners, prompts) sits in its
+  16:9 position and size again at ultrawide.** The native renderer carried the
+  same HUD rule the old GPU plugin had, but it read the switch once at start-up
+  (on the title screen, where it is off), so in gameplay every 2D element was
+  stretched edge to edge. The switch now reaches the native renderer the same
+  frame it changes: 16:9 HUD in gameplay, full width in menus and loading
+  screens as before.
+
+Only fable2.exe changes.
+
 ## 1.1.2 — 2026-09-27
 
 ### Changed — MSAA is off, for everyone
