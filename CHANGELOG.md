@@ -3,6 +3,24 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.0.2 — 2026-09-26
+
+### Fixed — the settings menu now counts the textures the AI texture pack replaced
+
+With the texture pack on, the settings menu and the texture notice said the
+pack had replaced nothing ("0 in the pack"), even though the upscaled textures
+were on screen. The pack itself was working; only its counter was wrong.
+
+**Cause.** The GPU plugin updated the counter only on a path this game does
+not use. Since the pack switched to applying its replacements as each texture
+loads, that path never ran, so the counter stayed at 0.
+
+**Fix.** The plugin now counts each replacement where it is applied. Nothing
+else changes: this release changes `rexgpu-xenos.dll` only (one file of the
+plugin's source); the executable is rebuilt for the new version number and
+`rexruntime.dll` is the 1.0.1 one. The in-game updater replaces both DLLs
+together as before.
+
 ## 1.0.1 — 2026-09-24
 
 ### Fixed — the main-menu video no longer flashes on its second and later loops
