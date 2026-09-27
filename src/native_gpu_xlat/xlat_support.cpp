@@ -1,6 +1,7 @@
 #include <chrono>
 #include <unordered_map>
 #include <mutex>
+#include <atomic>
 // Definitions the vendored SDK shader translator links against that live in
 // OTHER plugin translation units (not vendored): two cvars from
 // src/graphics/flags.cpp and one constant table from src/graphics/util/draw.cpp
@@ -62,16 +63,30 @@ int32_t PluginInt(const char* name, int32_t fallback) {
 // dump / pack path / vsync), and the native backend never saw them: texture_pack_chapter read 0 forever, so no stage
 // change, no stage warming, no stage lists and no texture-pack prebuild on the native path. These re-read the registry
 // quietly, at most every 250 ms per cvar. Only for cvars the APP writes - never for ones the backend itself publishes.
+// HOT PATH (profile PROF_F1, Fairfax 2026-09-27: RefreshDue was 12.5% of the GPU thread, ~3.5 ms a frame). The
+// anisotropic mirror is read per sampler lookup, tens of thousands of times a frame; the old version took a mutex, an
+// unordered_map lookup and a steady_clock read every time. Now: a handful of keys in a fixed table with relaxed atomics
+// and the tick counter (a shared-memory read). A lost race only means one extra or one skipped 250 ms re-read.
+extern "C" __declspec(dllimport) unsigned long long __stdcall GetTickCount64(void);
 static bool RefreshDue(const void* key) {
-  static std::mutex m;
-  static std::unordered_map<const void*, int64_t> last;
-  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count();
-  std::lock_guard<std::mutex> lock(m);
-  int64_t& t = last[key];
-  if (t && now - t < 250) return false;
-  t = now;
-  return true;
+  struct Slot { std::atomic<const void*> key{nullptr}; std::atomic<int64_t> last{0}; };
+  static Slot slots[16];
+  const int64_t now = int64_t(GetTickCount64());
+  for (Slot& s : slots) {
+    const void* k = s.key.load(std::memory_order_relaxed);
+    if (k == nullptr) {
+      const void* expected = nullptr;
+      if (!s.key.compare_exchange_strong(expected, key, std::memory_order_relaxed) && expected != key) continue;
+      s.last.store(now, std::memory_order_relaxed);
+      return true;
+    }
+    if (k != key) continue;
+    const int64_t t = s.last.load(std::memory_order_relaxed);
+    if (now - t < 250) return false;
+    s.last.store(now, std::memory_order_relaxed);
+    return true;
+  }
+  return false;   // more than 16 mirrored cvars: the extras keep their startup value (never happens: 6 today)
 }
 void RefreshInt(const char* name, int32_t& v) {
   if (!RefreshDue(&v)) return;

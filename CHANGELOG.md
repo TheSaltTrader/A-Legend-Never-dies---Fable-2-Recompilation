@@ -3,6 +3,20 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.1.1 — 2026-09-27
+
+### Fixed — frame rate on the native renderer
+
+- **About 4 fps more where the game is busiest.** A settings check that 1.1.0
+  added (so antialiasing and anisotropic filtering apply without a restart)
+  ran on every texture lookup and took a lock each time - about 3.5 ms of
+  every frame around Fairfax castle. It is now a lock-free check. Measured at
+  the Fairfax castle stand, runs interleaved: 1.1.0 37.3 / 36.9 fps, 1.1.1
+  41.1 / 41.6 fps (p99 frame time 29.5 -> 25.6 ms). The settings still apply
+  live.
+
+Only fable2.exe changes.
+
 ## 1.1.0 — 2026-09-27 — native PC graphics
 
 ### New — the game is drawn by a native DirectX 12 renderer
