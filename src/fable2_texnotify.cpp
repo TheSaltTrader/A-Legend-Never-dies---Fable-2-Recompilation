@@ -17,6 +17,8 @@
 #include "fable2_settings.h"
 #include "fable2_viewstate.h"
 
+namespace fable2::ngpu { bool RevealPending(); }   // native_gpu_present.cpp
+
 // [ultrawide] The plugin scales the 2D HUD's pixel-to-clip x by this while the
 // world is drawn edge to edge: 16:9 over the display aspect, so the HUD keeps
 // its proportions inside a centred 16:9 band. "0" turns it off.
@@ -250,7 +252,16 @@ void PerfHudOverlay::OnDraw(ImGuiIO& io) {
         // squeezed. The trade the user accepted: the pause / Up map reads a
         // touch wide. No presenter switch and no fade, so there is nothing to
         // tear and nothing to flash.
-        const bool frontend = !fable2::WorldCameraLive();  // title / load: no world
+        // Also while the native renderer still holds the loading screen after a
+        // load (REVEAL hold, 300-400 ms): the scene is already "world" but the
+        // window still shows the loading frame, which was stretched edge to
+        // edge (user, 2026-09-27). The letterbox now lifts with the first world
+        // frame, not with the scene flag.
+        // Called EVERY frame, never short-circuited: RevealPending tracks the
+        // load count itself, and behind a || it first ran at the very flip it
+        // has to see (RC3 smoke: the letterbox still lifted at the flip).
+        const bool reveal_pending = fable2::ngpu::RevealPending();
+        const bool frontend = !fable2::WorldCameraLive() || reveal_pending;
         // Debounce the pause flag (it clears for 1-2 frames a menu is up) so the
         // HUD compression does not flicker on and off at the menu edge.
         static std::chrono::steady_clock::time_point pause_seen{};

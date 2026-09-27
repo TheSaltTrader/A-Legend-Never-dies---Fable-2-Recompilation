@@ -3,6 +3,83 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.1.0 — 2026-09-27 — native PC graphics
+
+### New — the game is drawn by a native DirectX 12 renderer
+
+The game's frames are drawn by this port's own Direct3D 12 renderer inside the
+app instead of the Xenos emulation layer's renderer (the plugin still reads the
+game's GPU command stream and hands each draw over). The picture appears in the
+game's own window through the same presenter, so letterbox, ultrawide, FSR/CAS
+and the F10 overlay work as before.
+
+It is the default. **Settings > Renderer** switches back to "Xenos plugin" (the
+1.0.x renderer) if the native one misbehaves on your PC; it applies at the next
+start.
+
+On by default with the native renderer, measured on a Bowerstone Market walk:
+- Texture reloads whose bytes did not change are skipped (about 90% of them).
+- The AI texture pack's replacements for the area are built ready for the GPU
+  during the loading screen (15% of video memory, at most 1.5 GB, smallest
+  first); the rest are built on a background thread instead of in the frame.
+- Compiled pipelines are stored between sessions
+  (%LOCALAPPDATA%\fable2\ngpu_cache), so the second session compiles almost
+  none mid-play.
+- The loading screen holds until the area is drawing smoothly.
+
+### Fixed — settings menu (F10)
+
+- **Antialiasing and anisotropic filtering apply immediately** on the native
+  renderer (they did nothing on it before, not even after a restart).
+- **The frame rate stops at 60.** 120 and 144 Hz are gone: above 60 the game
+  does not run at normal speed. A saved higher value comes back as 60.
+- **A line at the top of the menu lists every changed setting that is waiting
+  for a restart** (draw distance, resolution, ...); the (restart) tag explains
+  itself on hover.
+- Upscale factor says it applies to the next texture-pack build.
+- "Download AI upscaler" now says why it failed, under the button.
+
+### Fixed — ultrawide
+
+- The chapter background is no longer stretched across an ultrawide screen for
+  a moment at the end of a load: the 16:9 frame now stays until the first
+  finished world frame is shown.
+
+### Carried over
+
+- The v1.0.1 main-menu video fix (no stale band on the video's later loops) is
+  carried into the native renderer. Checked on the attract video's second
+  playback: the band shows on a native build without it and not on this one.
+- Everything from 1.0.3.
+
+### Measured against 1.0.3
+
+Same PC, same saves, same settings (2x internal scale, FXAA extreme, 16x
+filtering, AI texture pack on, draw distance 100%), standing still for 75 s at
+the same spot, runs interleaved, two per build:
+
+| Place | 1.0.3 | 1.1.0, Renderer: Xenos plugin | 1.1.0, Renderer: Native |
+|---|---|---|---|
+| Fairfax castle | 32.5 / 32.6 fps | 36.0 / 36.0 fps | 36.7 / 36.7 fps (37.0 on the final build) |
+| Bowerstone Market | 50.0 / 49.9 fps | 54.0 / 54.1 fps | 58.0 / 58.4 fps |
+
+These are standing measurements. **Frame-rate dips while moving through busy
+areas remain** (the Market can still dip into the 40s-50s while walking), and
+around Fairfax castle the game is limited to about 36 fps by one CPU thread
+that still interprets the console's GPU commands - the next step removes that
+layer entirely.
+
+### Not yet known
+
+Tested in one play session across Bowerstone, Bowerlake, Brightwood, Dunecrest,
+Westcliff and the Crucible, on one PC (RTX 5090). Not yet tested: a full
+playthrough (new game to credits), every area, lower-end PCs.
+
+Both DLLs change (the native hand-off is in the plugin); fable2.exe changes, and
+six ngpu_*.dxil shader files and ngpu_pairs.txt are new beside it. The two DLLs
+are built from this project's local ReXGlue SDK fork (fa06262 lineage), which
+is not published.
+
 ## 1.0.3 — 2026-09-27
 
 ### Fixed — the settings menu tells the truth about what each setting does and when

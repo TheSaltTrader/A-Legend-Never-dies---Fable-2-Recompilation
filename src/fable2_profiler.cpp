@@ -1,4 +1,5 @@
 #include "fable2_profiler.h"
+#include "fable2_perf.h"  // StartPerfMonitor: an app anchor for the gap census
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -41,6 +42,14 @@ struct Target {
   uint32_t samples = 0;         // on-CPU samples: the thread ran since the last look
   uint32_t blocked = 0;         // wall-clock samples where it had not run at all
   uint64_t last_cycles = 0;
+  // The EXACT on-CPU measure: cycle deltas summed over the window, and the
+  // scheduled time from GetThreadTimes at each report. The ran/blocked verdict
+  // above is binary per 1 ms sample and aliases with the game's 1 ms sleeps
+  // and yields: a thread sleeping in 1 ms steps reads "on CPU 100%"
+  // (2026-09-23, GameThread: 100% on CPU with 64% of samples in its
+  // NtYieldExecution wrapper). Accumulate, do not threshold (claudecode-76).
+  uint64_t cycles_window = 0;
+  uint64_t last_cpu_100ns = 0;
   uint32_t by_module[8] = {};  // see ModuleClass
   uint32_t no_guest_frame = 0;
 };
@@ -57,9 +66,30 @@ struct GuestFn {
 };
 std::vector<GuestFn> g_guest_fns;
 uint64_t g_guest_lo = 0, g_guest_hi = 0;  // host address range covered by generated code
+uint64_t g_app_anchor = 0;                 // the app function that bounds it (see BuildGuestTable)
+// Largest host extent a generated function is allowed: beyond it a rip is app
+// code in a gap. 256 KB of host code is ~16K guest instructions; the gap census
+// at startup lists the gaps this turns into app code, and the largest gap that
+// is NOT an app region bounds the cap from below.
+constexpr uint64_t kMaxGuestFnBytes = 0x40000;
+uint64_t g_gap_count = 0, g_gap_bytes = 0, g_largest_gap = 0, g_gap_unanchored = 0;
+std::string g_gap_detail;
 
 HMODULE g_exe = nullptr, g_runtime = nullptr, g_gpu = nullptr, g_ntdll = nullptr, g_k32 = nullptr;
 
+bool SymbolIsGenerated(uint64_t rip);  // defined below GuestFnFor; the sampler's per-rip rule
+// The gap census's tri-state: 0 = no symbol at all (unresolved), 1 = a
+// generated function (a public "sub_" symbol), 2 = an app function. Uncached;
+// it runs twice at startup.
+int SymbolKind(uint64_t rip) {
+  alignas(SYMBOL_INFO) char sbuf[sizeof(SYMBOL_INFO) + 256] = {};
+  auto* sym = reinterpret_cast<SYMBOL_INFO*>(sbuf);
+  sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+  sym->MaxNameLen = 255;
+  DWORD64 disp = 0;
+  if (!SymFromAddr(GetCurrentProcess(), rip, &disp, sym)) return 0;
+  return std::strncmp(sym->Name, "sub_", 4) == 0 ? 1 : 2;
+}
 void BuildGuestTable() {
   if (!g_guest_fns.empty()) return;  // built once; the sampler and the crash log both ask
   for (const PPCFuncMapping* m = PPCFuncMappings; m->host != nullptr; ++m) {
@@ -70,7 +100,80 @@ void BuildGuestTable() {
   if (!g_guest_fns.empty()) {
     g_guest_lo = g_guest_fns.front().host;
     g_guest_hi = g_guest_fns.back().host + 0x100000;  // the last function's extent is unknown
+    // The app's own code follows the generated code in this exe. With the
+    // open-ended extent above, every app sample was classed as GUEST and
+    // symbolised to the nearest preceding sub_: P1 (2026-09-23) reported
+    // 65.7% of the render thread as "sub_832BD218" with its stacks in the
+    // NVIDIA driver - that was the native GPU path. Bound the guest range by
+    // the lowest app function this file can name; anything above it is app.
+    // The bound is logged so a run states what it applied.
+    const uint64_t app_anchor = reinterpret_cast<uint64_t>(&BuildGuestTable);
+    if (app_anchor > g_guest_fns.back().host && app_anchor < g_guest_hi) g_guest_hi = app_anchor;
+    g_app_anchor = app_anchor;
+    // Gap census: consecutive generated functions further apart than the cap.
+    // Those spans are app code (or one giant function - the count says which).
+    // Each large gap is named by the function before it and checked for an
+    // app anchor (a function from another app translation unit) inside it:
+    // a large gap WITHOUT an anchor is a candidate giant generated function
+    // that the cap would truncate - the defect with the sign flipped
+    // (claudecode-76, 2026-09-23) - and is counted as such, not assumed away.
+    const uint64_t anchors[] = {reinterpret_cast<uint64_t>(&BuildGuestTable),
+                                reinterpret_cast<uint64_t>(&fable2::StartPerfMonitor),
+                                reinterpret_cast<uint64_t>(&fable2::StartProfiler)};
+    for (size_t i = 1; i < g_guest_fns.size(); ++i) {
+      const uint64_t gap = g_guest_fns[i].host - g_guest_fns[i - 1].host;
+      if (gap > g_largest_gap) g_largest_gap = gap;
+      if (gap >= kMaxGuestFnBytes) {
+        ++g_gap_count;
+        g_gap_bytes += gap - kMaxGuestFnBytes;
+        int anchored = 0;
+        for (uint64_t a : anchors)
+          if (a >= g_guest_fns[i - 1].host && a < g_guest_fns[i].host) ++anchored;
+        // The symbol just past the cap settles a gap without an anchor: a sub_
+        // there means one giant generated function (kept whole by
+        // GuestFnFor's symbol rule); anything else is app code.
+        // Tri-state on purpose: "not a sub_" is an APP verdict, not the absence
+        // of one (the first build of this census counted an app verdict as
+        // unresolved - P7, 2026-09-23). Only "no symbol at all" is unresolved.
+        const int kind = SymbolKind(g_guest_fns[i - 1].host + kMaxGuestFnBytes + 16);
+        const bool sym_gen = kind == 1;
+        if (!anchored && kind == 0) ++g_gap_unanchored;
+        if (g_gap_detail.size() < 600) {
+          char b[200];
+          std::snprintf(b, sizeof(b), "%safter sub_%08X: %llu KB (%s; symbol past the cap %s)",
+                        g_gap_detail.empty() ? "" : ", ", g_guest_fns[i - 1].guest,
+                        static_cast<unsigned long long>(gap / 1024),
+                        anchored ? "holds an app anchor" : "no app anchor",
+                        kind == 1 ? "is a sub_: ONE GIANT GENERATED FUNCTION, kept whole"
+                        : kind == 2 ? "is an app symbol: app code"
+                                    : "NO SYMBOL: unresolved");
+          g_gap_detail += b;
+        }
+      }
+    }
   }
+}
+
+// Does the nearest symbol at rip name a generated function ("sub_...")?
+// Cached per rip: the sampler asks this only for rips beyond the extent cap.
+// Returns false when there is no symbol information (the cap then stands).
+bool SymbolIsGenerated(uint64_t rip) {
+  static std::unordered_map<uint64_t, bool> cache;
+  static std::mutex mutex;
+  std::lock_guard<std::mutex> lock(mutex);
+  auto it = cache.find(rip);
+  if (it != cache.end()) return it->second;
+  alignas(SYMBOL_INFO) char sbuf[sizeof(SYMBOL_INFO) + 256] = {};
+  auto* sym = reinterpret_cast<SYMBOL_INFO*>(sbuf);
+  sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+  sym->MaxNameLen = 255;
+  DWORD64 disp = 0;
+  const bool ok = SymFromAddr(GetCurrentProcess(), rip, &disp, sym) != FALSE;
+  const bool gen = ok && std::strncmp(sym->Name, "sub_", 4) == 0;
+  // A failed lookup (symbols not initialised yet - the crash log builds the
+  // table too) is not cached, so it cannot pin a wrong verdict on a rip.
+  if (ok && cache.size() < 200000) cache.emplace(rip, gen);
+  return gen;
 }
 
 // The generated function containing rip, or nullptr.
@@ -82,6 +185,21 @@ const GuestFn* GuestFnFor(uint64_t rip) {
   if (it == g_guest_fns.begin())
     return nullptr;
   --it;
+  // A rip is inside function i only if it lies within i's extent. The extent
+  // is unknown, so cap it: the app's own translation units are linked in
+  // GAPS between generated ones (P3, 2026-09-23: the profiler's code sits
+  // inside the guest host range), and with no cap every app sample was
+  // charged to the generated function that happened to precede its gap
+  // ("sub_832BD218" at 65.7% of the render thread, offsets megabytes past
+  // the function, stacks in the NVIDIA driver). The startup line counts the
+  // gaps the cap turns into app code, so a run states what the rule moved.
+  // Past the cap the SYMBOL decides (the PDB names app functions since the
+  // build of 2026-09-23 09:33; generated ones are public "sub_" symbols): a
+  // rip whose nearest symbol is still a sub_ is inside a giant generated
+  // function (sub_82242F10 is 72,536 generated lines, ~1.15 MB of host code -
+  // the cap alone truncated it, the sign-flipped defect); anything else is
+  // app code linked in the gap. No symbol information at all keeps the cap.
+  if (rip - it->host >= kMaxGuestFnBytes) return SymbolIsGenerated(rip) ? &*it : nullptr;
   return &*it;
 }
 
@@ -122,6 +240,21 @@ std::string Describe(uint64_t rip) {
   DWORD64 disp = 0;
   char out[400];
   if (SymFromAddr(GetCurrentProcess(), rip, &disp, sym)) {
+    // The app's sources carry line tables since the build of 2026-09-23 09:33
+    // (CMakeLists: -gline-tables-only on FABLE2_SOURCES), so a hot leaf names
+    // its source line: "+4266" in a 19 KB function is not a place to look,
+    // "present.cpp:6321" is. Inlined callees resolve to the line of the call.
+    IMAGEHLP_LINE64 line = {};
+    line.SizeOfStruct = sizeof(line);
+    DWORD ldisp = 0;
+    if (SymGetLineFromAddr64(GetCurrentProcess(), rip, &ldisp, &line) && line.FileName) {
+      const char* fbase = line.FileName;
+      for (const char* c = line.FileName; *c; ++c)
+        if (*c == '\\' || *c == '/') fbase = c + 1;
+      std::snprintf(out, sizeof(out), "%s!%s+%llx @%s:%lu", name.c_str(), sym->Name,
+                    (unsigned long long)disp, fbase, (unsigned long)line.LineNumber);
+      return out;
+    }
     std::snprintf(out, sizeof(out), "%s!%s+%llx", name.c_str(), sym->Name, (unsigned long long)disp);
   } else {
     std::snprintf(out, sizeof(out), "%s+%llx", name.c_str(),
@@ -307,6 +440,25 @@ void Report(Target& t, double secs) {
   REXLOG_INFO("[profile] {} (tid {}): on CPU {:.0f}% of the time ({} of {} samples), blocked {:.0f}%",
               t.name, t.tid, 100.0 * t.samples / (t.samples + t.blocked), t.samples,
               t.samples + t.blocked, 100.0 * t.blocked / (t.samples + t.blocked));
+  // The exact share: scheduled kernel+user time over the window, from the
+  // kernel's own accounting, beside the summed cycle deltas. Printed from the
+  // second report on (the first has no baseline).
+  FILETIME ct, et, kt, ut;
+  if (GetThreadTimes(t.handle, &ct, &et, &kt, &ut)) {
+    const uint64_t cpu = ((uint64_t(kt.dwHighDateTime) << 32) | kt.dwLowDateTime) +
+                         ((uint64_t(ut.dwHighDateTime) << 32) | ut.dwLowDateTime);
+    if (t.last_cpu_100ns && cpu >= t.last_cpu_100ns && secs > 0.0) {
+      const double cpu_ms = double(cpu - t.last_cpu_100ns) / 10000.0;
+      REXLOG_INFO("[profile] {} (tid {}): SCHEDULED {:.1f} ms of {:.1f} ms wall = {:.1f}% "
+                  "(GetThreadTimes kernel+user; {:.0f} Mcycles summed) - the exact on-CPU share; "
+                  "the ran/blocked line is per 1 ms sample and reads a thread sleeping or "
+                  "yielding in 1 ms steps as on CPU",
+                  t.name, t.tid, cpu_ms, secs * 1000.0, 100.0 * cpu_ms / (secs * 1000.0),
+                  double(t.cycles_window) / 1e6);
+    }
+    t.last_cpu_100ns = cpu;
+  }
+  t.cycles_window = 0;
   if (t.samples == 0) {
     t.blocked = 0;
     return;
@@ -364,8 +516,23 @@ void SamplerMain(std::vector<std::string> wanted) {
   SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
   SymInitialize(GetCurrentProcess(), nullptr, TRUE);
   BuildGuestTable();
-  REXLOG_INFO("[profile] {} generated functions indexed; sampling every {} us, report every {:.0f} s",
-              g_guest_fns.size(), kSampleIntervalUs, kReportSeconds);
+  REXLOG_INFO("[profile] {} generated functions indexed; sampling every {} us, report every {:.0f} s; "
+              "guest host range [0x{:X}, 0x{:X}) - bounded by the app's own code at 0x{:X} ({}), "
+              "so app and driver frames classify as themselves and a spin in the native path is "
+              "not a guest function",
+              g_guest_fns.size(), kSampleIntervalUs, kReportSeconds, g_guest_lo, g_guest_hi,
+              g_app_anchor,
+              g_app_anchor > g_guest_fns.back().host && g_guest_hi == g_app_anchor
+                  ? "bound applied"
+                  : "the app's code lies INSIDE the generated range - it is linked in gaps");
+  REXLOG_INFO("[profile] generated-function extent capped at {} KB: {} gaps between consecutive "
+              "generated functions exceed it ({:.1f} MB beyond the cap, classed as app code); the "
+              "largest gap is {} KB; {} of the gaps are UNRESOLVED (no app anchor AND no symbol "
+              "verdict - such a gap may be one giant generated function whose tail the cap charges "
+              "to app code, the defect with the sign flipped; zero means both directions are "
+              "accounted for). Gaps: {}",
+              kMaxGuestFnBytes / 1024, g_gap_count, double(g_gap_bytes) / (1024.0 * 1024.0),
+              g_largest_gap / 1024, g_gap_unanchored, g_gap_detail);
 
   std::vector<Target> targets;
   using clock = std::chrono::steady_clock;
@@ -385,6 +552,7 @@ void SamplerMain(std::vector<std::string> wanted) {
       uint64_t cycles = 0;
       QueryThreadCycleTime(t.handle, &cycles);
       const bool ran = cycles != t.last_cycles;
+      if (t.last_cycles && cycles > t.last_cycles) t.cycles_window += cycles - t.last_cycles;
       t.last_cycles = cycles;
       if (!ran) {
         ++t.blocked;

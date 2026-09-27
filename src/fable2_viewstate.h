@@ -7,6 +7,8 @@
 // front end is always 16:9 and 2D art is never stretched.
 #pragma once
 
+#include <cstdint>
+
 namespace fable2 {
 
 // Whether the guest module is live. The scene signals below read the game's
@@ -42,5 +44,8 @@ bool MenuCameraActive();
 // True while Fable II's own menu flag is set: the pause (Start) or Up quick-
 // menu is open. The reliable, instant menu signal (a guest global).
 bool PauseMenuOpen();
+// How many times the scene has gone loading -> world (a load finished and the stage is up). The native presenter's
+// reveal hold starts on a change of this count.
+uint32_t WorldEntriesFromLoading();
 
 }  // namespace fable2

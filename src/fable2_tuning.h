@@ -62,12 +62,55 @@ struct Fable2Tuning {
          "[community] Fable II emits fetch constants the strict path rejects; "
          "without this, textures drop out (missing grass)"},
 
+        // [measured] The per-frame page-state refresh re-uploaded every page the CPU had uploaded, 460-700 MB/s -
+        // the released build turned it off (CHANGELOG: market 51-56 -> 57-59 fps, impostor flashes 35-48 -> 5,
+        // uploads five-fold down). The engine fork this branch builds against defaults it to TRUE (rexglue-src
+        // c94f5eb), so the native branch had silently run with it on. Native backend, town, interleaved A/B
+        // 2026-09-26 (CM01/CM11/CM02/CM12): plugin GPU-thread CPU 13.2-14.5 vs 15.7-16.3 ms per frame, uploads
+        // 1.3 vs 6.9-7.1 GB per 5 s. Ninja Gaiden II needs it ON; this title does not.
+        {"clear_memory_page_state", "false",
+         "[measured] per-frame page-state refresh re-uploads ~700 MB/s; off in the released build"},
+
         // RETRACTED. This once set render_target_path_d3d12 = "rov", on a
         // measurement that turned out to be worthless: the run it came from
         // never reached the state that fails. Xenia Canary plays this title
         // through that point on RTV, so ROV was never the answer, and the
         // flat-blue scene reproduces on ROV, RTV, the default, AND on Vulkan.
         // Left at the runtime's default deliberately.
+    };
+  }
+
+  // The native renderer (1.1.0): EXACTLY the set every test leg of 2026-09-26/27
+  // and the user's own test ran with, read from "Play Fable II (native).cmd"'s
+  // FABLE2_TUNE line - not trimmed, not reordered - so the release is the tested
+  // configuration and differs from it only in where the values come from.
+  // Applied when renderer=native (the default); renderer=plugin leaves the
+  // Xenos plugin drawing, as in 1.0.x. FABLE2_TUNE still overrides any of them.
+  static std::vector<Entry> Native() {
+    const char* why = "native renderer (1.1.0 tested set)";
+    return {
+        {"ngpu_census", "false", why},
+        {"ngpu_census_report_secs", "10", why},
+        {"ngpu_shadow", "true", why},
+        {"ngpu_native_draws", "true", why},
+        {"ngpu_dump_textures", "0", why},
+        {"ngpu_use_sdk_untile", "true", why},
+        {"ngpu_bridge", "true", why},
+        {"ngpu_bridge_log", "true", why},
+        {"ngpu_bridge_draws", "true", why},
+        {"ngpu_hooked_draws", "false", why},
+        {"ngpu_sdk_path", "true", why},
+        {"ngpu_sdk_pairs", "*:*", why},
+        {"ngpu_sdk_world_only", "false", why},
+        {"ngpu_bridge_accumulate", "true", why},
+        {"ngpu_present_post", "true", why},
+        {"ngpu_post_raw", "true", why},
+        {"ngpu_backend", "true", why},
+        {"gpu_offload_to_native", "true", why},
+        {"ngpu_guest_scene_probe", "0", why},
+        {"ngpu_dump_rts", "0", why},
+        {"ngpu_truth_keep", "false", why},
+        {"ngpu_guest_scene_dump_frame", "0", why},
     };
   }
 

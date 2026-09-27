@@ -301,8 +301,27 @@ const char* SceneName(Scene s) {
     default: return "none";
   }
 }
+std::atomic<uint32_t> g_world_entries{0};   // loading -> world transitions (fable2::WorldEntriesFromLoading)
 void SetScene(Scene s) {
   const int was = g_scene.exchange(int(s), std::memory_order_relaxed);
+  if (was == int(Scene::kLoading) && s == Scene::kWorld) {
+    g_world_entries.fetch_add(1, std::memory_order_relaxed);
+    // The plugin's presenter holds its last frame until the stage is complete (rexgpu-xenos RexNgpuRevealAfterLoad;
+    // an older plugin without the export simply shows the load as before).
+    using RevealFn = void (*)();
+    static RevealFn reveal = [] {
+      HMODULE m = GetModuleHandleA("rexgpu-xenos.dll");
+      return m ? reinterpret_cast<RevealFn>(GetProcAddress(m, "RexNgpuRevealAfterLoad")) : nullptr;
+    }();
+    if (reveal) reveal();
+    // ngpu_backend.dll, when the executable loaded it (ngpu_backend_dll=true): the same signal.
+    using DllRevealFn = void (*)();
+    static DllRevealFn dll_reveal = [] {
+      HMODULE m = GetModuleHandleA("ngpu_backend.dll");
+      return m ? reinterpret_cast<DllRevealFn>(GetProcAddress(m, "NgpuBackendRevealAfterLoad")) : nullptr;
+    }();
+    if (dll_reveal) dll_reveal();
+  }
   if (was != int(s))
     REXLOG_INFO("[cam] scene {} -> {}", SceneName(Scene(was)), SceneName(s));
 }
@@ -331,6 +350,7 @@ constexpr int64_t kCameraForgetNs = 2000000000;
 constexpr double kLoadingMapFy = 1.2870;
 }  // namespace
 
+uint32_t fable2::WorldEntriesFromLoading() { return g_world_entries.load(std::memory_order_relaxed); }
 void fable2::SetGuestLive(bool live) {
   g_guest_live.store(live, std::memory_order_release);
 }

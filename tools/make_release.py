@@ -51,6 +51,16 @@ PAYLOAD = [
     "rexruntime.dll",
     "rexgpu-xenos.dll",
     "gamecontrollerdb.txt",
+    # The native renderer (1.1.0) loads these from BESIDE THE EXE; without them
+    # every native draw is skipped and the screen shows nothing drawn - the
+    # first smoke of the native portable failed exactly that way.
+    "ngpu_vs.dxil",
+    "ngpu_ps.dxil",
+    "ngpu_ps_xs.dxil",
+    "ngpu_blit_vs.dxil",
+    "ngpu_rect_gs.dxil",
+    "ngpu_point_gs.dxil",
+    "ngpu_pairs.txt",
 ]
 
 # The Visual C++ runtime the executable and both SDK DLLs import. Windows does
@@ -100,6 +110,11 @@ FORBIDDEN_SUFFIXES = (".xex", ".xexp", ".iso", ".bin", ".dat", ".bnk", ".big", "
 FORBIDDEN_EXCEPTIONS = ("gamecontrollerdb.txt",)
 
 KNOWN_ISSUES = [
+    "Frame-rate dips while moving through busy areas (Bowerstone Market can dip "
+    "into the 40s-50s), and about 36 fps around Fairfax castle, where one CPU "
+    "thread is the limit. If the native renderer misbehaves on your PC, "
+    "Settings > Renderer > Xenos plugin switches back to the 1.0.x renderer "
+    "(applies at the next start).",
     "At ultrawide, the pause and Up menus are shown at full width, so their "
     "circular map reads a little wide (an oval). The world stays correctly "
     "proportioned and the title and main menus are 16:9.",

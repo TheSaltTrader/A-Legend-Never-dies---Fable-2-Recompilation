@@ -210,11 +210,19 @@ struct PageOptions {
 
 // Marks a row that will not take effect until the next launch. Drawn after the
 // control so it reads as a footnote on the value, not on the label.
+// The native renderer is drawing (offload on). It re-reads antialiasing and
+// anisotropic filtering every frame, so those rows apply at once there.
+bool NativeRendererActive() {
+  return rex::cvar::Query<std::string>("gpu_offload_to_native") == "true";
+}
+
 void RestartTag() {
   ImGui::SameLine();
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.7f, 0.35f, 1.0f));
   ImGui::TextUnformatted("(restart)");
   ImGui::PopStyleColor();
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Takes effect the next time the game starts.");
 }
 
 // Settings are drawn as a two-column grid, label beside control. Stacking the
@@ -279,11 +287,11 @@ int ResolutionIndex(const Fable2Settings& s) {
   return kResolutionCount;  // Custom
 }
 
-// 30 and 60 are what the console offered. 120 and 144 are here because they
-// were asked for; the row says plainly what they do to a game that paces
-// itself off the display.
-constexpr int kFpsValues[] = {30, 60, 120, 144};
-const char* const kFpsNames[] = {"30 Hz", "60 Hz (as shipped)", "120 Hz", "144 Hz"};
+// 30 and 60 only. 120 and 144 were removed (the user, 2026-09-27): above 60
+// the game does not run at normal speed, and a setting that breaks the game
+// is not offered. Settings::Clamp forces a saved value above 60 back to 60.
+constexpr int kFpsValues[] = {30, 60};
+const char* const kFpsNames[] = {"30 Hz", "60 Hz (as shipped)"};
 
 int FpsIndex(int fps) {
   for (int i = 0; i < IM_ARRAYSIZE(kFpsValues); ++i)
@@ -697,6 +705,10 @@ void DrawTexturesSection(Fable2Settings& s, const PageOptions& opts, bool& chang
     s.texture_scale = kScales[scale_index];
     changed = true;
   }
+  // F10 audit 2026-09-27: 8x was chosen in game and "nothing changed" - which
+  // is right, and was not said. This is the size of the NEXT pack build.
+  Muted("Takes effect when the pack is rebuilt with the Process button below - "
+        "changing it does not alter the pack in use.");
 
   // Live cost, beside the switches that cause it.
   //
@@ -785,6 +797,11 @@ void DrawTexturesSection(Fable2Settings& s, const PageOptions& opts, bool& chang
       job->thread = fable2::DownloadUpscalerAsync(job->tools, dir, job->progress);
     }
     ImGui::EndDisabled();
+    // A download that fails at once (no script, no Python) never shows a bar,
+    // and its reason used to appear only at the foot of the section - a click
+    // that "did nothing". Say it here, under the button that was clicked.
+    if (job->progress.failed.load())
+      Muted("Download failed: %s", job->progress.Error().c_str());
     if (job->tools.python.empty())
       Muted("Python is needed to download it.");
     else if (!have_path)
@@ -957,9 +974,65 @@ void DrawDiagnosticsButton() {
         "it - it names your folders.");
 }
 
+// Every restart-bound row that differs from what this session started with.
+// The per-row "(restart)" tag was easy to miss (the user, 2026-09-27: draw
+// distance "did not appear to do anything"), so the menu's top line lists
+// what is waiting for a restart. Keep in step with the RestartTag() rows.
+std::vector<const char*> PendingRestart(const Fable2Settings& now, const Fable2Settings& start) {
+  std::vector<const char*> out;
+  auto add = [&out](bool differs, const char* name) { if (differs) out.push_back(name); };
+  add(now.monitor != start.monitor, "Monitor");
+  add(now.window_width != start.window_width || now.window_height != start.window_height,
+      "Resolution");
+  add(now.fps != start.fps, "Frame rate");
+  add(now.draw_distance != start.draw_distance, "Draw distance");
+  add(now.audio_queue_frames != start.audio_queue_frames, "Audio buffering");
+  add(now.resolution_scale != start.resolution_scale, "Supersampling");
+  add(now.save_import_path != start.save_import_path, "Import Xbox 360 saves");
+  add(now.skip_logos != start.skip_logos, "Skip publisher logos");
+  add(now.skip_intro != start.skip_intro, "Skip intro videos");
+  add(now.fuzzy_alpha != start.fuzzy_alpha, "Fuzzy alpha test");
+  add(now.texture_cache_mb != start.texture_cache_mb, "Texture cache");
+  add(now.nan_constant_repair != start.nan_constant_repair, "NaN constant repair");
+  add(now.present_effect != start.present_effect, "Upscaling");
+  add(now.fsr_sharpness != start.fsr_sharpness, "FSR sharpness");
+  add(now.cas_sharpness != start.cas_sharpness, "CAS sharpness");
+  if (!NativeRendererActive()) {   // live on the native renderer
+    add(now.antialias != start.antialias, "Antialiasing");
+    add(now.anisotropic != start.anisotropic, "Anisotropic filtering");
+  }
+  add(now.gpu_backend != start.gpu_backend, "Graphics engine");
+  add(now.renderer != start.renderer, "Renderer");
+  add(now.readback != start.readback, "Black texture fix");
+  add(now.present_dither != start.present_dither, "Dither the output");
+  add(now.patch_disable_msaa != start.patch_disable_msaa, "Disable MSAA");
+  add(now.patch_high_tick_rate != start.patch_high_tick_rate, "30 Hz tick rate");
+  add(now.patch_disable_texture_morph != start.patch_disable_texture_morph,
+      "Disable texture morphing");
+  return out;
+}
+
 bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
   bool changed = false;
   const bool live = opts.restart_bound_editable;
+
+  // In game only: the values this session started with, taken at the first
+  // in-game draw (nothing changes them between start and then).
+  if (!live) {
+    static const Fable2Settings started_with = s;
+    const auto pending = PendingRestart(s, started_with);
+    if (!pending.empty()) {
+      std::string names;
+      for (const char* n : pending) {
+        if (!names.empty()) names += ", ";
+        names += n;
+      }
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.75f, 0.3f, 1.0f));
+      ImGui::TextWrapped("Restart the game to apply: %s.", names.c_str());
+      ImGui::PopStyleColor();
+      ImGui::Spacing();
+    }
+  }
 
   // --- Display -----------------------------------------------------------
   SectionHeader("Display");
@@ -1037,14 +1110,6 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       changed = true;
     }
     if (!live) RestartTag();
-    // ng2recomp warns here that above 60 its game runs faster rather than
-    // smoother, because Ninja Gaiden II paces its logic off the reported
-    // refresh. That is NOT carried over as fact: measured on this title, 30 Hz
-    // and 60 Hz runs stay in step, so the warning would be a borrowed claim.
-    // Untested above 60, hence "untested" rather than a promise either way.
-    if (s.fps > 60)
-      Muted("Untested above 60. If the game speeds up rather than looking "
-            "smoother, put this back to 60.");
     ImGui::EndDisabled();
 
     RowStart("V-Sync",
@@ -1467,7 +1532,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       s.antialias = aa_values[aa_index];
       changed = true;
     }
-    if (!live) RestartTag();
+    if (!live && !NativeRendererActive()) RestartTag();
 
     ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
     RowStart("Anisotropic filtering",
@@ -1481,7 +1546,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       s.anisotropic = aniso_index - 1;
       changed = true;
     }
-    if (!live) RestartTag();
+    if (!live && !NativeRendererActive()) RestartTag();
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
@@ -1497,6 +1562,20 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       int idx = s.gpu_backend == "d3d12" ? 1 : 0;
       if (ImGui::Combo("##gpubackend", &idx, backends, 2)) {
         s.gpu_backend = idx == 1 ? "d3d12" : "vulkan";
+        changed = true;
+      }
+    }
+    if (!live) RestartTag();
+
+    RowStart("Renderer",
+             "Native: this port's own DirectX 12 renderer draws every frame "
+             "(1.1.0 onwards). Xenos plugin: the emulated GPU draws, as in "
+             "1.0.x - use it if the native renderer misbehaves on your PC.");
+    {
+      const char* renderers[] = {"Native (recommended)", "Xenos plugin"};
+      int idx = s.renderer == "plugin" ? 1 : 0;
+      if (ImGui::Combo("##renderer", &idx, renderers, 2)) {
+        s.renderer = idx == 1 ? "plugin" : "native";
         changed = true;
       }
     }
@@ -1687,6 +1766,9 @@ void ApplyLiveSettings(const Fable2Settings& s, rex::ui::Window* window) {
   // build), so these writes take effect at the next start - the rows carry the
   // restart tag. Kept so the registry holds the value the next start will use.
   SetCvar("swap_post_effect", s.antialias);
+  // Live on the native renderer (it re-reads both; F10 audit 2026-09-27),
+  // restart-bound on the plugin. -1 ("Default") is the plugin's own 3 = 4x.
+  SetCvar("anisotropic_override", std::to_string(s.anisotropic >= 0 ? s.anisotropic : 3));
   SetCvar("present_dither", s.present_dither ? "true" : "false");
   // Ultrawide owns the letterbox while it is on (the HUD overlay decides per
   // frame); only 16:9 takes the Keep aspect ratio box.

@@ -1,0 +1,392 @@
+// BACKEND TRANSPLANT - the replay driver. See native_gpu_backend.h.
+#include "native_gpu_backend.h"
+
+#include <d3d12.h>
+
+#include <cstring>
+#include <filesystem>
+#include <chrono>
+#include <algorithm>
+#include <memory>
+
+#include <rex/cvar.h>
+#include <rex/graphics/flags.h>
+#include <rex/logging.h>
+#include <climits>
+#include <string>
+#include <rex/system/kernel_state.h>
+
+#include "rtc_d3d12/command_processor.h"
+#include "rtc_d3d12/facade.h"
+#include "rtc_d3d12/graphics_system_standin.h"
+
+// Vendored accessor storage defined in rtc_d3d12/command_processor.cpp and texture_cache.cpp (global scope; the
+// flags.h ones - ng2_uw_mode, ng2_fov_k - come with the header). Read by PublishStatCvars.
+int32_t& FLAGS_guest_fps_x10_storage_();
+int32_t& FLAGS_gpu_frame_draws_storage_();
+int32_t& FLAGS_gpu_frame_depth_draws_storage_();
+int32_t& FLAGS_texture_pack_original_storage_();
+int32_t& FLAGS_texture_pack_replaced_storage_();
+int32_t& FLAGS_texture_warm_total_storage_();
+int32_t& FLAGS_texture_warm_done_storage_();
+
+namespace fable2::ngpu::rtc { bool ShaderStorageEnabled(); }
+namespace fable2::ngpu::backend {
+
+using rex::graphics::RegisterFile;
+using rex::graphics::ngpu_d3d12::D3D12CommandProcessor;
+using rex::graphics::ngpu_d3d12::D3D12GraphicsSystem;
+namespace xenos = rex::graphics::xenos;
+
+// The friend the vendored D3D12CommandProcessor names (vendor_rtc_d3d12.py SOURCE_PATCHES): it performs what the
+// PM4 parser (CommandProcessor::ExecutePacket*) would, from the bridge's records instead of the ring.
+class Driver {
+ public:
+  bool Init(ID3D12Device* device, ID3D12CommandQueue* queue) {
+    auto& n = ::fable2::ngpu::rtc::Native();
+    n.device = device;
+    n.queue = queue;
+    auto* ks = rex::system::kernel_state();
+    // Too early (NG2 started the DLL in OnCreateDialogs and faulted here): refuse and say so instead.
+    if (!ks || !ks->memory()) {
+      REXLOG_ERROR("[ngpu] BACKEND: the kernel state / guest memory does not exist yet - start the backend after the "
+                   "runtime is set up (OnPostSetup), not before");
+      return false;
+    }
+    regs_ = std::make_unique<RegisterFile>();
+    gs_ = std::make_unique<D3D12GraphicsSystem>(ks->memory(), ks, regs_.get());
+    cp_ = std::make_unique<D3D12CommandProcessor>(gs_.get(), ks);
+    // CommandProcessor::Initialize would start the ring worker thread; the replay needs only its gamma defaults
+    // (command_processor.cpp Initialize, verbatim) and then the D3D12 context.
+    for (uint32_t i = 0; i < 256; ++i) {
+      const uint32_t value = i * 0x3FF / 0xFF;
+      auto& e = cp_->gamma_ramp_256_entry_table_[i];
+      e.color_10_blue = value; e.color_10_green = value; e.color_10_red = value;
+    }
+    for (uint32_t i = 0; i < 128; ++i) {
+      rex::graphics::reg::DC_LUT_PWL_DATA e = {};
+      e.base = (i * 0xFFFF / 0x7F) & ~UINT32_C(0x3F);
+      e.delta = i < 0x7F ? 0x200 : 0;
+      for (uint32_t c = 0; c < 3; ++c) cp_->gamma_ramp_pwl_rgb_[i][c] = e;
+    }
+    if (!cp_->SetupContext()) {
+      REXLOG_ERROR("[ngpu] BACKEND: the transplanted command processor's SetupContext FAILED");
+      cp_.reset();
+      return false;
+    }
+    REXLOG_INFO("[ngpu] BACKEND: transplanted D3D12 command processor ready (plume device, plume direct queue)");
+    // [pipeline storage] (2026-09-27): nothing ever started the native backend's persistent shader/pipeline storage, so
+    // every session compiled every pipeline on first use - the pipeline-compile bursts among the last deep frames
+    // (RBB1/RBB2: 4-10 new pipelines in one 27-37 ms frame). The vendored storage is the plugin's own (same code,
+    // same format), started here on the thread that feeds this command processor, into its OWN folder so it never
+    // touches the plugin's cache files. Blocking: stored pipelines are created before the first frame is drawn.
+    if (::fable2::ngpu::rtc::ShaderStorageEnabled()) {
+      const char* base = std::getenv("LOCALAPPDATA");
+      const std::filesystem::path root =
+          (base ? std::filesystem::path(base) : std::filesystem::temp_directory_path()) / "fable2" / "ngpu_cache";
+      const auto t0 = std::chrono::steady_clock::now();
+      cp_->InitializeShaderStorage(root, ks->title_id(), true);
+      REXLOG_INFO("[ngpu] BACKEND: pipeline storage for title {:08X} at {} ready in {} ms", ks->title_id(),
+                  root.string(), std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - t0).count());
+    }
+    return true;
+  }
+  bool Ready() const { return cp_ != nullptr; }
+
+  void WriteRegister(uint32_t index, uint32_t value) { cp_->WriteRegister(index, value); }
+
+  rex::graphics::Shader* Load(xenos::ShaderType type, uint32_t addr, const uint32_t* code, uint32_t dwords,
+                              const uint32_t*& last_code, uint32_t& last_dwords, rex::graphics::Shader*& last) {
+    if (!code || !dwords) return nullptr;
+    // No pointer cache: the pipeline cache hashes the microcode itself (as on every shader packet in the plugin); a
+    // pointer into guest memory can hold different code later.
+    ++stats_.shader_loads;
+    rex::graphics::Shader* s = cp_->LoadShader(type, addr, code, dwords);
+    if (!s) ++stats_.shader_load_failed;
+    last_code = code; last_dwords = dwords; last = s;
+    return s;
+  }
+
+  bool Draw(const DrawRecord& d) {
+    // command_processor.cpp: the shader-setting packets set the active shaders; the draw packet writes
+    // VGT_DRAW_INITIATOR (and VGT_DMA_BASE / VGT_DMA_SIZE for kDMA) and calls IssueDraw.
+    cp_->active_vertex_shader_ = Load(xenos::ShaderType::kVertex, d.vs_addr, d.vs_code, d.vs_dwords, last_vs_code_, last_vs_dwords_, last_vs_);
+    cp_->active_pixel_shader_ = Load(xenos::ShaderType::kPixel, d.ps_addr, d.ps_code, d.ps_dwords, last_ps_code_, last_ps_dwords_, last_ps_);
+    rex::graphics::reg::VGT_DRAW_INITIATOR vdi;
+    vdi.value = d.draw_initiator;
+    cp_->WriteRegister(rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR, vdi.value);
+    bool is_indexed = false;
+    D3D12CommandProcessor::IndexBufferInfo ibi;
+    if (vdi.source_select == xenos::SourceSelect::kDMA) {
+      is_indexed = true;
+      cp_->WriteRegister(rex::graphics::XE_GPU_REG_VGT_DMA_BASE, d.index_addr);
+      cp_->WriteRegister(rex::graphics::XE_GPU_REG_VGT_DMA_SIZE, d.index_size);
+      rex::graphics::reg::VGT_DMA_SIZE ds;
+      ds.value = d.index_size;
+      const uint32_t isz = vdi.index_size == xenos::IndexFormat::kInt16 ? sizeof(uint16_t) : sizeof(uint32_t);
+      ibi.guest_base = d.index_addr & ~(isz - 1);
+      ibi.endianness = ds.swap_mode;
+      ibi.format = vdi.index_size;
+      ibi.length = ds.num_words * isz;
+      ibi.count = vdi.num_indices;
+    } else if (vdi.source_select == xenos::SourceSelect::kAutoIndex) {
+      ibi.guest_base = 0;
+      ibi.length = 0;
+    } else {
+      ++stats_.draw_failed;   // kImmediate is not supported by the plugin either
+      return false;
+    }
+    auto viz = regs_->Get<rex::graphics::reg::PA_SC_VIZ_QUERY>();
+    if (viz.viz_query_ena && viz.kill_pix_post_hi_z) return true;   // the plugin drops these too
+    const bool explicit_major = xenos::IsMajorModeExplicit(vdi.major_mode, vdi.prim_type);
+    ++stats_.draws;
+    const bool ok = cp_->IssueDraw(vdi.prim_type, vdi.num_indices, is_indexed ? &ibi : nullptr, explicit_major);
+    if (!ok) ++stats_.draw_failed;
+    return ok;
+  }
+
+  void Swap(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* fetch0, const uint32_t* table, const uint32_t* pwl) {
+    if (fetch0)
+      for (uint32_t i = 0; i < 6; ++i) cp_->WriteRegister(rex::graphics::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + i, fetch0[i]);
+    if (table && std::memcmp(cp_->gamma_ramp_256_entry_table_, table, 256 * 4)) {
+      std::memcpy(cp_->gamma_ramp_256_entry_table_, table, 256 * 4);
+      cp_->gamma_ramp_256_entry_table_up_to_date_ = false;
+    }
+    if (pwl && std::memcmp(cp_->gamma_ramp_pwl_rgb_, pwl, 128 * 3 * 4)) {
+      std::memcpy(cp_->gamma_ramp_pwl_rgb_, pwl, 128 * 3 * 4);
+      cp_->gamma_ramp_pwl_up_to_date_ = false;
+    }
+    ++stats_.swaps;
+    cp_->IssueSwap(fb, w, h);
+    PublishStatCvars();
+    ::fable2::ngpu::rtc::NoteSwapSubmission(cp_->LastQueuedSubmission());   // [async submit] the frame waits for it
+  }
+
+  void EndFrameNoSwap() { cp_->EndSubmission(false); }
+  // PUBLISHED VALUES (2026-09-26): settings the backend WRITES (REXCVAR_SET in the vendored code) land in this
+  // module's accessor storage, not in the runtime registry other modules read by name. Under offload the plugin no
+  // longer computes them, so at each swap the changed ones are copied into the registry: the app's HUD
+  // (guest_fps_x10, gpu_frame_draws), texture warming / pack progress, and the ultrawide presenter half
+  // (ng2_uw_mode / ng2_fov_k, written by the scene detection in IssueSwap). In lockstep the plugin publishes them.
+  void PublishStatCvars() {
+    if (!::fable2::ngpu::rtc::NativeOwnsGuestMemory()) return;
+    struct IntPub { const char* name; int32_t& (*get)(); int32_t last; };
+    static IntPub ints[] = {
+        {"guest_fps_x10", &FLAGS_guest_fps_x10_storage_, INT32_MIN},
+        {"gpu_frame_draws", &FLAGS_gpu_frame_draws_storage_, INT32_MIN},
+        {"gpu_frame_depth_draws", &FLAGS_gpu_frame_depth_draws_storage_, INT32_MIN},
+        {"ng2_uw_mode", &FLAGS_ng2_uw_mode_storage_, INT32_MIN},
+        {"texture_pack_original", &FLAGS_texture_pack_original_storage_, INT32_MIN},
+        {"texture_pack_replaced", &FLAGS_texture_pack_replaced_storage_, INT32_MIN},
+        {"texture_warm_total", &FLAGS_texture_warm_total_storage_, INT32_MIN},
+        {"texture_warm_done", &FLAGS_texture_warm_done_storage_, INT32_MIN},
+    };
+    for (auto& p : ints) {
+      const int32_t v = p.get();
+      if (v == p.last) continue;
+      p.last = v;
+      rex::cvar::SetFlagByName(p.name, std::to_string(v));
+    }
+    static double last_k = -1.0;
+    const double k = FLAGS_ng2_fov_k_storage_();
+    if (k != last_k) {
+      last_k = k;
+      rex::cvar::SetFlagByName("ng2_fov_k", std::to_string(k));
+    }
+  }
+  Readiness GetReadiness() {
+    Readiness r;
+    if (!cp_) return r;
+    r.pipeline_not_ready_draws = cp_->draw_census_.pipeline_not_ready;
+    r.creating_pipelines = cp_->pipeline_cache_ && cp_->pipeline_cache_->IsCreatingPipelines();
+    return r;
+  }
+
+  Stats stats_;
+
+ private:
+  std::unique_ptr<RegisterFile> regs_;
+  std::unique_ptr<D3D12GraphicsSystem> gs_;
+  std::unique_ptr<D3D12CommandProcessor> cp_;
+  const uint32_t* last_vs_code_ = nullptr; uint32_t last_vs_dwords_ = 0; rex::graphics::Shader* last_vs_ = nullptr;
+  const uint32_t* last_ps_code_ = nullptr; uint32_t last_ps_dwords_ = 0; rex::graphics::Shader* last_ps_ = nullptr;
+};
+
+namespace {
+Driver g_driver;
+ID3D12Resource* g_output = nullptr;
+uint32_t g_output_w = 0, g_output_h = 0;
+bool g_output_is_8bpc = false;
+}  // namespace
+
+bool Init(ID3D12Device* device, ID3D12CommandQueue* queue) { return g_driver.Ready() || g_driver.Init(device, queue); }
+bool Ready() { return g_driver.Ready(); }
+void WriteRegister(uint32_t index, uint32_t value) { g_driver.WriteRegister(index, value); }
+bool Draw(const DrawRecord& d) { return g_driver.Draw(d); }
+void Swap(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* fetch0, const uint32_t* table, const uint32_t* pwl) { g_driver.Swap(fb, w, h, fetch0, table, pwl); }
+void EndFrameNoSwap() { g_driver.EndFrameNoSwap(); }
+ID3D12Resource* GuestOutput(uint32_t& w, uint32_t& h) { w = g_output_w; h = g_output_h; return g_output; }
+Stats GetStats() { return g_driver.stats_; }
+Readiness GetReadiness() { return g_driver.GetReadiness(); }
+void PresentMode(int32_t& uw_mode, double& fov_k) { uw_mode = FLAGS_ng2_uw_mode_storage_(); fov_k = FLAGS_ng2_fov_k_storage_(); }
+
+// [native frame] (2026-09-27): hand the finished guest output to the GPU plugin's presenter, so the game's own window
+// shows the native picture (with the presenter's letterbox / ultrawide / FSR and the app's overlay) instead of a second
+// window. A ring of three SHARED textures on this device: wait (GPU) until the plugin has consumed the slot's previous
+// frame, copy the guest output in, signal "ready" = frame number, and tell the plugin (RexNgpuSetNativeFrame) - its
+// IssueSwap, which runs right after this swap callback, waits on "ready" and copies it into the presenter's guest output.
+bool PublishToPluginPresenter() {
+  using SetFn = void (*)(void*, void*, void*, uint64_t, uint32_t, uint32_t, int);
+  static SetFn set_frame = [] {
+    HMODULE m = GetModuleHandleA("rexgpu-xenos.dll");
+    auto f = m ? reinterpret_cast<SetFn>(GetProcAddress(m, "RexNgpuSetNativeFrame")) : nullptr;
+    REXLOG_INFO("[ngpu] native frame: plugin export RexNgpuSetNativeFrame {}",
+                f ? "found - the native picture goes to the game window" : "MISSING - this plugin pair cannot take it");
+    return f;
+  }();
+  if (!set_frame || !g_output) return false;
+  auto& n = ::fable2::ngpu::rtc::Native();
+  ID3D12Device* device = n.device;
+  ID3D12CommandQueue* queue = n.queue;
+  static Microsoft::WRL::ComPtr<ID3D12Resource> shared[3];
+  static HANDLE shared_h[3] = {};
+  static uint32_t sw = 0, sh = 0;
+  static Microsoft::WRL::ComPtr<ID3D12Fence> ready, consumed;
+  static HANDLE ready_h = nullptr, consumed_h = nullptr;
+  static Microsoft::WRL::ComPtr<ID3D12CommandAllocator> alloc[3];
+  static Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
+  static uint64_t frame = 0;
+  static HANDLE cpu_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+  if (!ready) {
+    if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&ready))) ||
+        FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&consumed))) ||
+        FAILED(device->CreateSharedHandle(ready.Get(), nullptr, GENERIC_ALL, nullptr, &ready_h)) ||
+        FAILED(device->CreateSharedHandle(consumed.Get(), nullptr, GENERIC_ALL, nullptr, &consumed_h)))
+      return false;
+    for (auto& a : alloc)
+      if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a)))) return false;
+    if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc[0].Get(), nullptr, IID_PPV_ARGS(&list))))
+      return false;
+    list->Close();
+  }
+  if (sw != g_output_w || sh != g_output_h) {
+    // A resize: finish everything that used the old ring first (rare - a video mode change).
+    if (frame && ready->GetCompletedValue() < frame) {
+      ready->SetEventOnCompletion(frame, cpu_event);
+      WaitForSingleObject(cpu_event, 1000);
+    }
+    for (int i = 0; i < 3; ++i) {
+      shared[i].Reset();
+      if (shared_h[i]) { CloseHandle(shared_h[i]); shared_h[i] = nullptr; }
+      D3D12_HEAP_PROPERTIES hp = {D3D12_HEAP_TYPE_DEFAULT};
+      D3D12_RESOURCE_DESC rd = {};
+      rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+      rd.Width = g_output_w;
+      rd.Height = g_output_h;
+      rd.DepthOrArraySize = 1;
+      rd.MipLevels = 1;
+      rd.Format = ::rex::ui::ngpu_d3d12::D3D12Presenter::kGuestOutputFormat;
+      rd.SampleDesc.Count = 1;
+      if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_SHARED, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                 IID_PPV_ARGS(&shared[i]))) ||
+          FAILED(device->CreateSharedHandle(shared[i].Get(), nullptr, GENERIC_ALL, nullptr, &shared_h[i]))) {
+        REXLOG_ERROR("[ngpu] native frame: could not create the shared {}x{} output", g_output_w, g_output_h);
+        sw = sh = 0;
+        return false;
+      }
+    }
+    sw = g_output_w;
+    sh = g_output_h;
+  }
+  // The swap's own work must be on the queue before this copy (async submit). Timed: this blocks the GPU thread.
+  const auto w0 = std::chrono::steady_clock::now();
+  ::fable2::ngpu::rtc::WaitSwapSubmitted(100);
+  {
+    static double acc = 0, worst = 0;
+    static uint32_t cnt = 0;
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
+    acc += ms; worst = std::max(worst, ms);
+    if (++cnt == 600) {
+      REXLOG_INFO("[ngpu] native frame: the PUBLISHING WORKER waited for the swap submission {:.3f} ms mean, {:.2f} ms worst (off the GPU thread since e3fca31) "
+                  "(600 frames)", acc / cnt, worst);
+      acc = worst = 0; cnt = 0;
+    }
+  }
+  ++frame;
+  const int i = int(frame % 3);
+  // The allocator of this slot was last used three frames ago; its copy is done once "ready" reached that frame.
+  if (frame > 3 && ready->GetCompletedValue() < frame - 3) {
+    ready->SetEventOnCompletion(frame - 3, cpu_event);
+    WaitForSingleObject(cpu_event, 100);
+  }
+  alloc[i]->Reset();
+  list->Reset(alloc[i].Get(), nullptr);
+  D3D12_RESOURCE_BARRIER b[2] = {};
+  b[0].Type = b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b[0].Transition.pResource = g_output;
+  b[0].Transition.Subresource = b[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  b[0].Transition.StateBefore = ::rex::ui::ngpu_d3d12::D3D12Presenter::kGuestOutputInternalState;
+  b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  b[1].Transition.pResource = shared[i].Get();
+  b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+  b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+  list->ResourceBarrier(2, b);
+  list->CopyResource(shared[i].Get(), g_output);
+  std::swap(b[0].Transition.StateBefore, b[0].Transition.StateAfter);
+  std::swap(b[1].Transition.StateBefore, b[1].Transition.StateAfter);
+  list->ResourceBarrier(2, b);
+  list->Close();
+  // Do not overwrite the slot until the plugin has copied its previous frame out.
+  if (frame > 3) queue->Wait(consumed.Get(), frame - 3);
+  ID3D12CommandList* lists[] = {list.Get()};
+  queue->ExecuteCommandLists(1, lists);
+  queue->Signal(ready.Get(), frame);
+  set_frame(shared_h[i], ready_h, consumed_h, frame, g_output_w, g_output_h, g_output_is_8bpc ? 1 : 0);
+  return true;
+}
+
+}  // namespace fable2::ngpu::backend
+
+namespace fable2::ngpu::rtc {
+// Stands in for the presenter's RefreshGuestOutput (presenter.cpp): a guest-output texture of the frontbuffer size in
+// the presenter's format and state, handed to the plugin's refresher, which applies the gamma ramp / FXAA into it and
+// submits. The native frame then samples it (backend::GuestOutput).
+bool NativeRefreshGuestOutput(uint32_t frontbuffer_width, uint32_t frontbuffer_height, uint32_t, uint32_t,
+                              const std::function<bool(::rex::ui::Presenter::GuestOutputRefreshContext& context)>& refresher) {
+  using namespace ::fable2::ngpu::backend;
+  if (!frontbuffer_width || !frontbuffer_height) return false;
+  if (!g_output || g_output_w != frontbuffer_width || g_output_h != frontbuffer_height) {
+    // The previous one may still be in flight in a native frame; the native frame waits for its fence every frame
+    // and the command processor's submissions precede it on the same queue, so it is released after that.
+    static ID3D12Resource* retired = nullptr;
+    if (retired) retired->Release();
+    retired = g_output;
+    g_output = nullptr;
+    D3D12_HEAP_PROPERTIES hp = {D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = frontbuffer_width;
+    rd.Height = frontbuffer_height;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = ::rex::ui::ngpu_d3d12::D3D12Presenter::kGuestOutputFormat;
+    rd.SampleDesc.Count = 1;
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (FAILED(Native().device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                        ::rex::ui::ngpu_d3d12::D3D12Presenter::kGuestOutputInternalState,
+                                                        nullptr, IID_PPV_ARGS(&g_output)))) {
+      g_output = nullptr;
+      REXLOG_ERROR("[ngpu] BACKEND: could not create the {}x{} guest output", frontbuffer_width, frontbuffer_height);
+      return false;
+    }
+    g_output_w = frontbuffer_width;
+    g_output_h = frontbuffer_height;
+  }
+  bool is_8bpc = false;
+  ::rex::ui::ngpu_d3d12::D3D12Presenter::D3D12GuestOutputRefreshContext ctx(is_8bpc, g_output);
+  const bool ok = refresher(ctx);
+  ::fable2::ngpu::backend::g_output_is_8bpc = is_8bpc;
+  return ok;
+}
+}  // namespace fable2::ngpu::rtc

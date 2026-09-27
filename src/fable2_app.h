@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "ngpu_backend_dll/ngpu_backend_api.h"
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
@@ -382,9 +383,33 @@ class Fable2App : public rex::ReXApp {
                 settings_.skip_intro ? ", chapter auto-skip enabled" : "");
   }
 
+  // ngpu_backend.dll (the game-agnostic native backend, src/ngpu_backend_dll): with ngpu_backend_dll=true the
+  // executable loads it here - the plugin and the runtime exist, the guest has not started - in SELF-CONTAINED mode
+  // (own device, queue, window; it registers the plugin's callbacks itself). This is how another title would use it;
+  // Fable II runs it to prove the DLL. Pair with gpu_offload_to_native=true and ngpu_bridge=false / ngpu_shadow=false.
+  void StartNgpuBackendDllIfAsked() {
+    if (rex::cvar::GetFlagByName("ngpu_backend_dll") != "true") return;
+    HMODULE m = LoadLibraryW(L"ngpu_backend.dll");
+    auto defaults = m ? reinterpret_cast<void (*)(NgpuBackendOptions*)>(GetProcAddress(m, "NgpuBackendDefaultOptions")) : nullptr;
+    auto start = m ? reinterpret_cast<int (*)(const NgpuBackendOptions*, ID3D12Device*, ID3D12CommandQueue*)>(
+                         GetProcAddress(m, "NgpuBackendStart")) : nullptr;
+    if (!defaults || !start) {
+      REXLOG_ERROR("ngpu_backend_dll: ngpu_backend.dll not loadable (or missing exports)");
+      return;
+    }
+    NgpuBackendOptions o;
+    defaults(&o);
+    o.window_title = L"Fable II - ngpu_backend.dll";
+    const std::string every = rex::cvar::GetFlagByName("ngpu_backend_selfcheck_every");
+    if (!every.empty()) o.selfcheck_every = std::atoi(every.c_str());
+    REXLOG_INFO("ngpu_backend_dll: ngpu_backend.dll ABI {} {}", reinterpret_cast<uint32_t (*)()>(GetProcAddress(m, "NgpuBackendAbiVersion"))(),
+                start(&o, nullptr, nullptr) ? "started (self-contained)" : "FAILED to start");
+  }
+
   void OnPostSetup() override {
     if (const char* dump = std::getenv("FABLE2_DUMP_CVARS"); dump && *dump)
       DumpCvars(dump);
+    StartNgpuBackendDllIfAsked();
 
     // Read back what the plugin actually took, now that its cvars exist. This
     // is the only honest check that the deferred config reached it - the
@@ -850,6 +875,12 @@ class Fable2App : public rex::ReXApp {
   // for why setting them directly cannot work.
   void ApplyTuning() {
     auto entries = Fable2Tuning::Fixed();
+    if (settings_.renderer == "native") {
+      for (auto& e : Fable2Tuning::Native()) entries.push_back(std::move(e));
+      REXLOG_INFO("Renderer: native (the Xenos plugin parses, the native backend draws)");
+    } else {
+      REXLOG_INFO("Renderer: Xenos plugin (renderer=plugin)");
+    }
     const auto mappings =
         rex::filesystem::GetExecutableFolder() / "gamecontrollerdb.txt";
     std::error_code ec;

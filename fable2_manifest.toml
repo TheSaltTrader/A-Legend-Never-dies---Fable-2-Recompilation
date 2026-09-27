@@ -11,6 +11,7 @@ out_directory_path = "generated/default"
 includes = [
   "config/functions.toml",
   "config/hooks/patches.toml",
+  "config/hooks/native_gpu_trace.toml",
 ]
 
 # setjmp/longjmp. The recompiler has to model these specially: a longjmp must

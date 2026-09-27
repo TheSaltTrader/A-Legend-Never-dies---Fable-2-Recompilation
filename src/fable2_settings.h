@@ -67,6 +67,10 @@ struct Fable2Settings {
   // with a stock plugin the app logs the miss and falls back rather than
   // failing to start.
   std::string gpu_backend = "d3d12";   // vulkan | d3d12
+  // Who draws the frame (1.1.0). native: the in-app D3D12 renderer draws what
+  // the Xenos plugin parses (Fable2Tuning::Native). plugin: the plugin draws, as
+  // in 1.0.x - the fallback if the native renderer misbehaves on a machine.
+  std::string renderer = "native";     // native | plugin
 
   // True internal supersampling: the guest's framebuffer is rendered at this
   // multiple and downsampled. The cvar's own range is 1..8.
@@ -325,6 +329,7 @@ struct Fable2Settings {
         << "fps=" << fps << "\n"
         << "vsync=" << (vsync ? 1 : 0) << "\n"
         << "gpu_backend=" << gpu_backend << "\n"
+        << "renderer=" << renderer << "\n"
         << "resolution_scale=" << resolution_scale << "\n"
         << "anisotropic=" << anisotropic << "\n"
         << "antialias=" << antialias << "\n"
@@ -408,7 +413,9 @@ struct Fable2Settings {
     window_width = std::clamp(window_width, 640, 7680);
     window_height = std::clamp(window_height, 480, 4320);
     monitor = std::clamp(monitor, 0, 16);
-    fps = std::clamp(fps, 24, 240);
+    // 60 at most (the user, 2026-09-27): above 60 the game does not run at
+    // normal speed, so a saved 120/144 - or FABLE2_FPS - comes back as 60.
+    fps = std::clamp(fps, 24, 60);
     resolution_scale = std::clamp(resolution_scale, 1, 8);
     nan_constant_repair = std::clamp(nan_constant_repair, 0, 2);
     texture_cache_mb = std::clamp(texture_cache_mb, 0, 8192);
@@ -438,6 +445,8 @@ struct Fable2Settings {
       readback = "some";
     if (gpu_backend != "vulkan" && gpu_backend != "d3d12")
       gpu_backend = "d3d12";
+    if (renderer != "native" && renderer != "plugin")
+      renderer = "native";
     // Dumping and loading together put the disk on the GPU thread and starve
     // the command stream. The menu makes the pair impossible to select; this
     // makes it impossible to arrive with, from an older config or a hand edit.
@@ -460,6 +469,7 @@ struct Fable2Settings {
     else if (k == "fps") fps = std::atoi(v.c_str());
     else if (k == "vsync") vsync = Truthy(v);
     else if (k == "gpu_backend") gpu_backend = v;
+    else if (k == "renderer") renderer = v;
     else if (k == "resolution_scale") resolution_scale = std::atoi(v.c_str());
     else if (k == "anisotropic") anisotropic = std::atoi(v.c_str());
     else if (k == "antialias") antialias = v;
