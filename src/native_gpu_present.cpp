@@ -2203,6 +2203,7 @@ std::atomic<uint32_t> g_bin_filter_match{0}, g_bin_filter_skip{0};
 std::atomic<uint32_t> g_bin_swap_ticks{0};
 
 void BackendLockstepSync(const uint32_t* regs);   // defined with OnBridgeDraw
+void TilingCensusSwap();                          // [tiling census], defined with BackendLockstepDraw
 // FRAME TRACE (ngpu_backend_frame_trace, 2026-09-26 night): one record per backend swap on the plugin GPU thread - the "no dips"
 // question needs, per guest frame, whether the GPU thread was BUSY (renderer / parser owns the stall) or WAITING (the
 // guest was late submitting, e.g. stalled on a readback). Hot path: two clock reads and a store. Records are flushed
@@ -2396,6 +2397,7 @@ void OnBridgeSwap(uint32_t fb, uint32_t fb_w, uint32_t fb_h) {
       }
     }
   }
+  TilingCensusSwap();  // [tiling census]
   ngc::MaybeReport();  // per-swap coverage census (fires whether or not anything drew - point c)
   // Independent of EndFrame, because a filter that skips every draw leaves no
   // native frame and would silence its own diagnosis.
@@ -2609,8 +2611,33 @@ bool BackendLockstepReady() {
   REXLOG_INFO("[ngpu] BACKEND LOCKSTEP: {}", g_backend_on ? "the plugin's draw callback feeds the transplanted backend directly" : "initialisation FAILED");
   return g_backend_on;
 }
+// [tiling census] (2026-09-27, full-native P1): how many of a frame's draws are predicated-tiling passes of the same
+// scene. Per frame: draws by bin_select (the tile pass) and how many were predicated. Logged every 300 frames, the
+// LAST frame's counts (a stand is steady). Cheap: a few adds per draw.
+struct TilingCensus { uint64_t sel[8] = {}; uint32_t n[8] = {}; uint32_t other = 0, predicated = 0, draws = 0; };
+TilingCensus g_tc_cur, g_tc_last;
+void TilingCensusDraw(const RexNgpuDraw* d) {
+  ++g_tc_cur.draws;
+  if (d->predicated) ++g_tc_cur.predicated;
+  for (int i = 0; i < 8; ++i) {
+    if (g_tc_cur.n[i] && g_tc_cur.sel[i] == d->bin_select) { ++g_tc_cur.n[i]; return; }
+    if (!g_tc_cur.n[i]) { g_tc_cur.sel[i] = d->bin_select; g_tc_cur.n[i] = 1; return; }
+  }
+  ++g_tc_cur.other;
+}
+void TilingCensusSwap() {
+  g_tc_last = g_tc_cur;
+  g_tc_cur = TilingCensus{};
+  static uint32_t frames = 0;
+  if (++frames % 300 != 0) return;
+  std::string s;
+  for (int i = 0; i < 8 && g_tc_last.n[i]; ++i) s += fmt::format(" sel {:#x}: {}", g_tc_last.sel[i], g_tc_last.n[i]);
+  REXLOG_INFO("[ngpu] TILING CENSUS last frame: {} draws, {} predicated;{}{}", g_tc_last.draws, g_tc_last.predicated, s,
+              g_tc_last.other ? fmt::format(" (+{} in more selects)", g_tc_last.other) : std::string());
+}
 void BackendLockstepDraw(const RexNgpuDraw* d) {
   if (!BackendLockstepReady()) return;
+  TilingCensusDraw(d);
   BackendLockstepSync(d->regs);
   auto code = [](int stage, uint32_t addr, uint32_t& dwords, bool inl, const uint8_t* inline_code, uint32_t inline_dwords) -> const uint32_t* {
     if (inl) {

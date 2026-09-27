@@ -21,6 +21,19 @@ The game's render thread spends ~60% waiting on this thread.
 **So full native alone is worth ~6 ms at the castle (to ~45-50 fps); reaching 60 also needs the per-draw cost down.**
 Both are in this plan; the per-draw work does not wait for the rest.
 
+**UPDATE, tiling census (2026-09-27 10:00): the draw count itself comes down with full native.** Per frame, by the
+tiling pass each bridge draw belongs to (bin_select):
+
+| | draws | predicated | 0x80000001 | 0x2 | 0x8 | all tiles | 0x80000003 + 0xc |
+|---|---|---|---|---|---|---|---|
+| Fairfax | 14,409 | 96% | 3,981 | 4,020 | 3,990 | 1,494 | ~920 |
+| Market | 7,891 | 94% | 1,609 | 1,645 | 1,615 | 1,921 | ~1,100 |
+
+The game records the scene once and the console GPU replays it per tile (predicated tiling: a 1280x720 2x-MSAA frame
+does not fit the 10 MB EDRAM), so the bridge issues every scene draw three times. A front end at the device level sees
+each draw ONCE and tiling disappears (M4_DESIGN: SetPredication -> no-op): Fairfax ~14.4k -> ~6k draws. With the ~6 ms
+of parsing gone as well, **P3 is the path to 60 at the castle**, not only a purity goal.
+
 ## The measure of "100%"
 
 A census, not a claim. Two numbers, driven to zero:
