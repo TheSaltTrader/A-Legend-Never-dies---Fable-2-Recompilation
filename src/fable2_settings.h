@@ -222,7 +222,7 @@ struct Fable2Settings {
   // rest are genuine off-by-default preferences.
   bool patch_60fps = true;
   bool patch_720p = true;
-  bool patch_disable_msaa = false;
+  bool patch_disable_msaa = true;   // forced on in fable2_tuning.h since 1.1.2; kept so old files parse
   bool patch_disable_texture_morph = false;
   bool patch_high_tick_rate = false;
 

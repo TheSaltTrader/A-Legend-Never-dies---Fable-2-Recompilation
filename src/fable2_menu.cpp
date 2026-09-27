@@ -1005,7 +1005,6 @@ std::vector<const char*> PendingRestart(const Fable2Settings& now, const Fable2S
   add(now.renderer != start.renderer, "Renderer");
   add(now.readback != start.readback, "Black texture fix");
   add(now.present_dither != start.present_dither, "Dither the output");
-  add(now.patch_disable_msaa != start.patch_disable_msaa, "Disable MSAA");
   add(now.patch_high_tick_rate != start.patch_high_tick_rate, "30 Hz tick rate");
   add(now.patch_disable_texture_morph != start.patch_disable_texture_morph,
       "Disable texture morphing");
@@ -1629,19 +1628,14 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
                 "proven, beneficial pair and cannot be turned off. The black "
                 "texture fix is on by default in Textures above. The rest below "
                 "are optional and off by default.");
-  Muted("Always on: 60 fps, render at 1280 wide, and the black-texture fix.");
+  Muted("Always on: 60 fps, render at 1280 wide, MSAA off (it cost a third of the "
+        "frame rate and changed nothing visible), and the black-texture fix.");
   TightRows tight_patches;
   if (ImGui::BeginTable("patches", 2, kRowTableFlags)) {
     ImGui::TableSetupColumn("l", ImGuiTableColumnFlags_WidthFixed, kLabelWidth);
     ImGui::TableSetupColumn("c", ImGuiTableColumnFlags_WidthFixed, kControlWidth);
 
     ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
-
-    RowStart("Disable MSAA",
-             "Turns off the game's own multisampling. Cheaper, and it frees "
-             "EDRAM. Use the antialiasing setting above instead.");
-    changed |= ImGui::Checkbox("##pmsaa", &s.patch_disable_msaa);
-    if (!live) RestartTag();
 
     RowStart("30 Hz tick rate",
              "The simulation ticks at 15 Hz. This doubles it to 30, which its "

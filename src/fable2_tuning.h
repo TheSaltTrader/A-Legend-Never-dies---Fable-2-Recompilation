@@ -254,9 +254,12 @@ struct Fable2Tuning {
     out.push_back({"fable2_60fps", "true", "[Xenia/Margen67] 60 fps (always on)"});
     out.push_back({"fable2_720p", "true",
                    "[Xenia/Margen67] render 1280 wide instead of 1120 (always on)"});
-    out.push_back({"fable2_disable_msaa",
-                   s.patch_disable_msaa ? "true" : "false",
-                   "[Xenia/Margen67] disable MSAA"});
+    // MSAA off, ALWAYS (user, 2026-09-27: "Picture looks 100% the same, I say we remove MSAA by default"). The game's
+    // 2x MSAA frame does not fit the 10 MB EDRAM, so the console draws the scene in 3 predicated-tiling passes and the
+    // renderer issues every scene draw 3 times; without it, 2 passes. Fairfax stand: 41 -> 60 fps (vsync cap), p99
+    // 25.6 -> 18.9 ms, 14.4k -> 10.2k draws. At 2x internal scale the supersampling already smooths edges, and FXAA
+    // stays available. The field stays only so an old settings file parses.
+    out.push_back({"fable2_disable_msaa", "true", "[Xenia/Margen67] disable MSAA (always on)"});
     out.push_back({"fable2_disable_texture_morph",
                    s.patch_disable_texture_morph ? "true" : "false",
                    "[Xenia/Guy] disable texture morphing"});

@@ -3,6 +3,20 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.1.2 — 2026-09-27
+
+### Changed — MSAA is off, for everyone
+
+- **The game's own 2x multisampling is always off, and its menu row is gone.**
+  It changed nothing you can see at the 2x internal resolution this port
+  renders at (the supersampling already smooths edges, and FXAA stays
+  available), but it cost a third of the frame rate: a 2x-MSAA frame does not
+  fit the console's 10 MB of EDRAM, so the scene was drawn in three tiled
+  passes. Without it, two. Fairfax castle stand: 41 -> 60 fps (the vsync cap),
+  draws per frame 14,400 -> 10,200.
+
+Only fable2.exe changes.
+
 ## 1.1.1 — 2026-09-27
 
 ### Fixed — frame rate on the native renderer
