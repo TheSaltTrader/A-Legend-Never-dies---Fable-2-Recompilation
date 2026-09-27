@@ -306,7 +306,7 @@ constexpr QualityPreset kPresets[] = {
     {"Performance", 1, "none", -1},
     {"Balanced", 1, "fxaa", 2},
     {"Quality", 2, "fxaa", 4},
-    {"Maximum", 3, "fxaa_extreme", 4},
+    {"Maximum", 3, "fxaa_extreme", 5},
 };
 constexpr int kPresetCount = IM_ARRAYSIZE(kPresets);
 const char* const kPresetNames[] = {"Performance", "Balanced", "Quality",
@@ -1175,6 +1175,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
              "more risk of crackling if the machine cannot keep up. 8 is the "
              "runtime's own default.");
     changed |= ImGui::SliderInt("##aqframes", &s.audio_queue_frames, 4, 32);
+    if (!live) RestartTag();   // sizes a buffer the audio system allocates at startup
 
     ImGui::EndTable();
   }
@@ -1197,6 +1198,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
         changed = true;
       }
     }
+    if (!live) RestartTag();   // supersampling, antialiasing and filtering all apply at the next start
 
     ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
     RowStart("Supersampling",
@@ -1446,8 +1448,10 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     }
     ImGui::EndDisabled();
 
-    // Not restart-bound: the plugin applies this post-process per swap, so it
-    // changes with the next frame even in the overlay.
+    // Restart-bound (F10 audit 2026-09-27): the plugin applies the post-process
+    // per swap, but it takes the CHOICE from swap_post_effect only once, in
+    // GraphicsSystem::SetupGuestGpu (the cvar is kRequiresRestart). A live write
+    // is accepted by the registry and never read again.
     RowStart("Antialiasing",
              "Post-process FXAA over the finished frame. Cheap, and it softens "
              "the image a little; supersampling is the higher-quality route if "
@@ -1463,14 +1467,17 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       s.antialias = aa_values[aa_index];
       changed = true;
     }
+    if (!live) RestartTag();
 
     ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
     RowStart("Anisotropic filtering",
              "Forces a filtering level on every texture the game samples. "
-             "\"Game default\" leaves the title's own sampler settings alone.");
-    const char* aniso[] = {"Game default", "1x", "2x", "4x", "8x", "16x"};
-    int aniso_index = std::clamp(s.anisotropic + 1, 0, 5);
-    if (ImGui::Combo("##aniso", &aniso_index, aniso, 6)) {
+             "\"Default\" is the GPU plugin's own setting, 4x.");
+    // Index = value + 1 over anisotropic_override's range -1..5 (0 = off,
+    // 1 = 1x ... 5 = 16x). The labels were one level high until 1.0.3.
+    const char* aniso[] = {"Default (4x)", "Off", "1x", "2x", "4x", "8x", "16x"};
+    int aniso_index = std::clamp(s.anisotropic + 1, 0, 6);
+    if (ImGui::Combo("##aniso", &aniso_index, aniso, 7)) {
       s.anisotropic = aniso_index - 1;
       changed = true;
     }
@@ -1523,6 +1530,7 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
 
     RowStart("Dither the output", "Hides colour banding on 8-bit displays.");
     changed |= ImGui::Checkbox("##dither", &s.present_dither);
+    if (!live) RestartTag();   // the presenter reads it once, when its paint config is built
 
     ImGui::EndTable();
   }
@@ -1674,9 +1682,10 @@ void ApplyMenuStyle(ImGuiStyle& s) {
 }
 
 void ApplyLiveSettings(const Fable2Settings& s, rex::ui::Window* window) {
-  // FXAA is a post-process the plugin applies per swap, so it changes with the
-  // next frame - which is why the antialiasing row is not restart-bound in the
-  // overlay even though it belongs to the GPU plugin.
+  // swap_post_effect and present_dither are written here too, but the SDK reads
+  // both only once (GraphicsSystem::SetupGuestGpu; the presenter's paint config
+  // build), so these writes take effect at the next start - the rows carry the
+  // restart tag. Kept so the registry holds the value the next start will use.
   SetCvar("swap_post_effect", s.antialias);
   SetCvar("present_dither", s.present_dither ? "true" : "false");
   // Ultrawide owns the letterbox while it is on (the HUD overlay decides per
@@ -1706,8 +1715,8 @@ void ApplyLiveSettings(const Fable2Settings& s, rex::ui::Window* window) {
   // system allocates at startup, and anisotropic_override /
   // draw_resolution_scale_* are read by the GPU plugin at init. Writing them
   // here would report success and do nothing - which is exactly the trap that
-  // made internal scaling look impossible on ng2recomp. Both rows are shown
-  // restart-bound in the overlay instead.
+  // made internal scaling look impossible on ng2recomp. Those rows carry the
+  // restart tag in the overlay instead.
   if (window != nullptr) {
     window->SetFullscreen(s.fullscreen);
     // The window hides the pointer only while its visibility is in the
@@ -2336,8 +2345,7 @@ void SettingsOverlay::OnDraw(ImGuiIO& io) {
     }
 
     ImGui::Separator();
-    Muted("Greyed settings are fixed for this session - the window and the "
-          "guest video mode are built during startup.");
+    Muted("Settings marked (restart) take effect the next time the game starts.");
 
     if (on_advanced_ && ImGui::Button("Advanced settings...")) {
       on_advanced_();

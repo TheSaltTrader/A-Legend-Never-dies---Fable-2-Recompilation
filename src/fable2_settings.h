@@ -72,7 +72,8 @@ struct Fable2Settings {
   // multiple and downsampled. The cvar's own range is 1..8.
   int resolution_scale = 1;
 
-  // -1 = leave the game's own sampler settings alone, 0..5 = force a level.
+  // -1 = send nothing, so the plugin's default applies (forced 4x); 0..5 = the
+  // cvar's own levels (0 off, 1 1x, 2 2x, 3 4x, 4 8x, 5 16x).
   // Range read off anisotropic_override, which is -1..5 here (ng2recomp's
   // notes say -1..4; do not trust that, trust the dump).
   int anisotropic = -1;

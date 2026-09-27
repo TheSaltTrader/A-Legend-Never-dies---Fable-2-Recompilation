@@ -170,8 +170,10 @@ struct Fable2Tuning {
     out.push_back({"present_letterbox", (s.letterbox && !s.ultrawide) ? "true" : "false",
                    "keep the guest aspect ratio instead of stretching"});
 
-    // -1 means "leave the game's own samplers alone", so it is only sent when
-    // the player actually overrode it. The dump gives the range as -1..5.
+    // -1 = the menu's "Default (4x)": nothing is sent, so the plugin's own
+    // default (anisotropic_override = 3, forced 4x) applies - not the game's own
+    // samplers, as this comment used to say (F10 audit 2026-09-27). Values
+    // 0..5 are the cvar's own: 0 off, 1 1x, 2 2x, 3 4x, 4 8x, 5 16x.
     if (s.anisotropic >= 0) {
       out.push_back({"anisotropic_override", std::to_string(s.anisotropic),
                      "forced anisotropic filtering level"});

@@ -3,6 +3,29 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.0.3 — 2026-09-27
+
+### Fixed — the settings menu tells the truth about what each setting does and when
+
+An audit of every row of the F10 menu against where the GPU plugin and the
+runtime actually read the setting found:
+
+- **Anisotropic filtering was labelled one level too high.** "1x" turned
+  filtering off, "16x" gave 8x, and real 16x could not be chosen. The list is
+  now Default (4x), Off, 1x, 2x, 4x, 8x, 16x, each doing what it says. The
+  Maximum preset, which showed 16x and ran 8x, now runs 16x.
+- **"Game default" filtering was really 4x.** Choosing it sends nothing, so the
+  plugin's own default applies, which is 4x. It is now labelled "Default (4x)";
+  what you see on screen does not change.
+- **Antialiasing and "Dither the output" only change at the next start.** The
+  menu implied they applied at once; the plugin and the presenter read them
+  when the game starts. Both rows now carry the (restart) tag, as do Audio
+  buffering and the Quality preset, which had the same problem.
+- The overlay's footer said greyed rows were fixed for the session; nothing is
+  greyed. It now says settings marked (restart) take effect at the next start.
+
+Only fable2.exe changes; both DLLs are the 1.0.2 ones.
+
 ## 1.0.2 — 2026-09-26
 
 ### Fixed — the settings menu now counts the textures the AI texture pack replaced
