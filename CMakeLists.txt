@@ -35,6 +35,7 @@ set(FABLE2_SOURCES
     src/native_gpu_trace.cpp
     src/fable2_p2_census.cpp
     src/fable2_native_gs.cpp
+    src/fable2_gpu_cvars.cpp
     src/native_gpu_dump.cpp
     src/native_gpu_present.cpp
     src/native_gpu_census.cpp
@@ -140,9 +141,10 @@ if(FABLE2_COMPILED_WITH_PATCH)
     target_compile_definitions(fable2 PRIVATE FABLE2_COMPILED_WITH_PATCH=1)
 endif()
 
-# GPU_PLUGINS stages the SDK's Xenos emulation plugin (rexgpu-xenos.dll) next
-# to the executable. It is runtime-loaded, never linked.
-rexglue_setup_target(fable2 GPU_PLUGINS xenos)
+# No GPU plugin since 1.2.0 (2026-09-28): the game's own graphics system (src/fable2_native_gs.cpp) is the only
+# renderer and the exe registers every GPU setting itself (src/fable2_gpu_cvars.cpp), so rexgpu-xenos.dll is neither
+# staged nor loaded.
+rexglue_setup_target(fable2)
 
 # Line tables for the app's OWN sources and a PDB to hold them. Release builds
 # the ~500 recompiled units with -g0 (see tools/build.cmd) and that flag rides

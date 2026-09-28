@@ -242,40 +242,40 @@ class Fable2App : public rex::ReXApp {
     fable2::FPTrap::InstallIfRequested();
     // The settings file is the player's choice; the cvar is the override, so
     // a command line still wins for scripted runs.
-    // [gs] FULL NATIVE (FABLE2_NATIVE_GS=1, NG2 alt 6f02c22 ported): the game's own graphics system instead of
-    // rexgpu-xenos's. The plugin DLL is still loaded as a plain library so the settings it defines (vsync, the texture
-    // pack, the readback flags the native backend mirrors) stay registered; its graphics system is never created.
-    // 1.1.4 (user, 2026-09-28: "fully native by default, we are getting away from emulation"): always, unless the
-    // diagnostic-only environment switch FABLE2_NATIVE_GS=0 is set.
+    // [gs] FULL NATIVE: the game's own graphics system (NG2 alt 6f02c22 ported; default since 1.1.4).
+    // [dll removal] (2026-09-28, user: "remove it entirely"): rexgpu-xenos.dll is no longer loaded. Its settings are
+    // registered by the exe itself (fable2_gpu_cvars.cpp, generated from the shipped DLL's own registry), and the
+    // game's own graphics system is the only one - there is no plugin fallback any more.
     settings_.renderer = "native";
-    if (fable2::gs::Requested(true)) {
-      const HMODULE plugin = LoadLibraryA("rexgpu-xenos.dll");
-      config.graphics = fable2::gs::Create();
-      REXLOG_INFO("[gs] FABLE2_NATIVE_GS: own graphics system {} (plugin library {} for its settings)",
-                  config.graphics ? "created" : "UNAVAILABLE - falling back to the plugin", plugin ? "loaded" : "missing");
-      if (config.graphics) {
-        ApplyDisplaySettings();
-        ApplyTuning();
-        return;
+    // FABLE2_CVARDUMP=<prefix> writes the registry (<prefix>.nodll.tsv) so it can be compared with the DLL's.
+    if (const char* prefix = std::getenv("FABLE2_CVARDUMP"); prefix && *prefix) {
+      if (std::FILE* f = std::fopen((std::string(prefix) + ".nodll.tsv").c_str(), "w")) {
+        auto clean = [](std::string s) {
+          for (char& c : s)
+            if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+          return s;
+        };
+        for (const auto& e : rex::cvar::GetRegistry()) {
+          std::string allowed;
+          for (const auto& v : e.constraints.allowed_values) allowed += (allowed.empty() ? "" : "|") + v;
+          std::fprintf(f, "%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", e.name.c_str(), int(e.type),
+                       clean(e.category).c_str(), int(e.lifecycle), clean(e.default_value).c_str(),
+                       e.constraints.min ? std::to_string(*e.constraints.min).c_str() : "",
+                       e.constraints.max ? std::to_string(*e.constraints.max).c_str() : "", clean(allowed).c_str(),
+                       clean(e.description).c_str());
+        }
+        std::fclose(f);
       }
     }
-    std::string backend = REXCVAR_GET(gpu_backend);
-    if (backend == "any" && !settings_.gpu_backend.empty())
-      backend = settings_.gpu_backend;
-    if (backend != "any") {
-      // Load the plugin ourselves so the backend can be named. Setting
-      // config.graphics directly bypasses ReXApp's own load, which always
-      // passes "any".
-      config.graphics = rex::system::LoadGpuPlugin("xenos", backend);
-      if (config.graphics) {
-        REXLOG_INFO("GPU: requested backend '{}'", backend);
-      } else {
-        REXLOG_ERROR("GPU: backend '{}' unavailable - is this plugin built "
-                     "with it? Falling back to the default.", backend);
-        config.gpu_plugin = "xenos";
-      }
+    config.graphics = fable2::gs::Create();
+    if (!config.graphics) {
+      REXLOG_ERROR("[gs] the game's graphics system could not start: Direct3D 12 is required (no plugin fallback)");
+      MessageBoxA(nullptr,
+                  "Fable II could not start its graphics: this port needs a Direct3D 12 capable graphics card and "
+                  "driver.\n\nPlease update your graphics driver and try again.",
+                  "Fable II", MB_OK | MB_ICONERROR);
     } else {
-      config.gpu_plugin = "xenos";
+      REXLOG_INFO("[gs] own graphics system created (no GPU plugin)");
     }
     ApplyDisplaySettings();
     ApplyTuning();

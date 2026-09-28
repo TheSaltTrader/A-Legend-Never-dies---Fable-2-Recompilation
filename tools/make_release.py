@@ -49,7 +49,9 @@ BUILD_DIR = os.path.join(ROOT, "out", "build", "win-amd64-Release")
 PAYLOAD = [
     "fable2.exe",
     "rexruntime.dll",
-    "rexgpu-xenos.dll",
+    # rexgpu-xenos.dll is gone (1.2.0, 2026-09-28): the game's own graphics system is the only renderer and the exe
+    # registers every GPU setting itself (src/fable2_gpu_cvars.cpp). An install updated over an older one keeps its
+    # old copy of the DLL; nothing loads it.
     "gamecontrollerdb.txt",
     # The native renderer (1.1.0) loads these from BESIDE THE EXE; without them
     # every native draw is skipped and the screen shows nothing drawn - the
@@ -363,13 +365,11 @@ def sdk_dll_origin(name):
 
 
 def check_sdk_pair():
-    """Refuse to ship a DLL that is not the deployed one."""
-    origins = {n: sdk_dll_origin(n) for n in ("rexruntime.dll", "rexgpu-xenos.dll")}
-    off = [n for n, o in origins.items() if not o.startswith("deployed pair")]
-    if off:
-        die("%s in the build directory is not the deployed pair in %s\\bin. Deploy both "
-            "from the same plugin build before cutting." % (", ".join(off), SDK_DIR))
-    print("  SDK pair: both the deployed pair (RexBlue\\win-amd64\\bin)")
+    """Refuse to ship a runtime DLL that is not the deployed one. One SDK DLL since 1.2.0 (no GPU plugin)."""
+    origin = sdk_dll_origin("rexruntime.dll")
+    if not origin.startswith("deployed pair"):
+        die("rexruntime.dll in the build directory is not the deployed one in %s\\bin (%s)." % (SDK_DIR, origin))
+    print("  SDK runtime: the deployed rexruntime.dll (RexBlue\\win-amd64\\bin); no GPU plugin")
 
 
 def sdk_version():

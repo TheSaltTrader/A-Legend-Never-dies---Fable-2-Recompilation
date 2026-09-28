@@ -3,6 +3,27 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.2.0 — 2026-09-28
+
+### Changed — the GPU emulation plugin is gone
+
+- **`rexgpu-xenos.dll` is no longer shipped or loaded.** Since 1.1.4 the game
+  drew everything with its own native graphics system, but the old GPU
+  emulation plugin was still loaded because its settings lived in it (vsync,
+  the texture pack, resolution scale and about 120 more). Those settings are
+  now part of `fable2.exe` itself, with exactly the same defaults and allowed
+  values, so your settings file and the F10 menu behave as before.
+- The troubleshooting fallback (`FABLE2_NATIVE_GS=0`) is gone with it - there is
+  no emulated renderer left to fall back to. A DirectX 12 capable graphics card
+  and driver are required; without one the game now says so instead of
+  starting on the emulator.
+- Checked: every setting the plugin registered is registered by the game with
+  the same type, default and limits (577 of 577); every value the renderer
+  reads at startup is identical; a 10-destination fast-travel route runs clean
+  at 60 fps with the DLL absent.
+- Updating over an older install leaves its `rexgpu-xenos.dll` behind; nothing
+  loads it, and it can be deleted.
+
 ## 1.1.5 — 2026-09-28
 
 ### Faster — more headroom for slower PCs

@@ -2802,6 +2802,27 @@ void FrontEndDrawCore(const ::fable2::ngpu::FeDrawInfo& d, LARGE_INTEGER t0) {
   LARGE_INTEGER t1;
   QueryPerformanceCounter(&t1);
   g_ft_backend_qpc += uint64_t(t1.QuadPart - t0.QuadPart);
+  // [draw cost by mode] (2026-09-28, depth-only fast path measurement) the recording cost of a draw by its EDRAM mode
+  // (RB_MODECONTROL: 4 colour+depth, 5 depth-only, 6 resolve), per 5 s window.
+  {
+    static uint64_t n[8], q[8];
+    static LARGE_INTEGER qf{}, w0{};
+    if (!qf.QuadPart) { QueryPerformanceFrequency(&qf); w0 = t1; }
+    const uint32_t mode = fable2::ngpu::backend::ReadRegister(0x2208) & 7;
+    ++n[mode];
+    q[mode] += uint64_t(t1.QuadPart - t0.QuadPart);
+    if (t1.QuadPart - w0.QuadPart >= 5 * qf.QuadPart) {
+      const double win = double(t1.QuadPart - w0.QuadPart) / double(qf.QuadPart);
+      auto us = [&](int m) { return n[m] ? 1e6 * double(q[m]) / double(qf.QuadPart) / double(n[m]) : 0.0; };
+      auto ms = [&](int m) { return 1e3 * double(q[m]) / double(qf.QuadPart) / (win * 60.0); };
+      REXLOG_INFO("[drawcost] per draw: colour+depth {:.2f} us x {}/frame = {:.2f} ms; depth-only {:.2f} us x {}/frame = "
+                  "{:.2f} ms; resolve {:.2f} us x {}/frame = {:.2f} ms", us(4), uint64_t(n[4] / (win * 60.0)), ms(4),
+                  us(5), uint64_t(n[5] / (win * 60.0)), ms(5), us(6), uint64_t(n[6] / (win * 60.0)), ms(6));
+      std::memset(n, 0, sizeof(n));
+      std::memset(q, 0, sizeof(q));
+      w0 = t1;
+    }
+  }
 }
 void SplitDraw(const uint32_t* regs, uint64_t* dirty, const ::fable2::ngpu::FeDrawInfo& d);
 void SplitSwap(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* regs, uint64_t* dirty);

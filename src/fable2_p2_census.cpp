@@ -279,6 +279,31 @@ uint64_t g_fe_mis_memsrc = 0, g_fe_mis_memsrc_now_bridge = 0, g_fe_mis_packet = 
 thread_local int t_fe_depth = 0;
 uint64_t g_fe_bin_mask = ~0ull, g_fe_bin_select = ~0ull;
 std::atomic<uint64_t> g_fe_predicated_skips{0};
+// [tile trace] FABLE2_TILETRACE=<swap number>: one frame's predicated-tiling structure into tiletrace.csv - bin state
+// changes (B), predicated-off packets (S), draws (D) with the registers that define a tile pass (render-target EDRAM
+// bases, window offset / scissors, the mode - kCopy = a resolve - and the resolve destination), and the swap (W).
+// Measurement for the draw-once design (2026-09-28); off unless the variable is set.
+uint32_t g_tt_frame = [] { const char* e = std::getenv("FABLE2_TILETRACE"); return e ? uint32_t(std::atoi(e)) : 0u; }();
+std::FILE* g_tt_f = nullptr;
+uint32_t g_tt_seq = 0;
+extern std::atomic<uint64_t> g_fe_swaps_issued;
+void TileTrace(char kind, uint32_t op, uint32_t h, uint32_t init, uint32_t addr, const uint32_t* regs, uint64_t mask, uint64_t sel) {
+  if (!g_tt_frame || g_fe_swaps_issued.load(std::memory_order_relaxed) != g_tt_frame) return;
+  if (!g_tt_f) {
+    g_tt_f = std::fopen("tiletrace.csv", "w");
+    if (!g_tt_f) return;
+    std::fprintf(g_tt_f, "seq,kind,op,pred,mask,select,init,addr,surface_info,color_info,depth_info,color1_info,"
+                         "window_offset,win_scissor_tl,win_scissor_br,scr_scissor_tl,scr_scissor_br,modecontrol,"
+                         "copy_control,copy_dest_base,copy_dest_pitch,copy_dest_info\n");
+  }
+  static const uint32_t kR[] = {0x2000, 0x2001, 0x2002, 0x2003, 0x2080, 0x2081, 0x2082, 0x200E, 0x200F,
+                                0x2208, 0x2318, 0x2319, 0x231A, 0x231B};
+  std::fprintf(g_tt_f, "%u,%c,%02X,%u,%016llX,%016llX,%08X,%08X", g_tt_seq++, kind, op, h & 1,
+               (unsigned long long)mask, (unsigned long long)sel, init, addr);
+  for (uint32_t r : kR) std::fprintf(g_tt_f, ",%08X", regs[r]);
+  std::fprintf(g_tt_f, "\n");
+  if (kind == 'W') std::fflush(g_tt_f);
+}
 // [p3 src] VALUE HUNT (SRC8: the per-draw VS c0-c3 are written into the packets by the XDK's dirty-state flush, hook
 // 65/64, and appear in no argument, no 256-byte sample and no device word at its exit): for the first draws of the
 // census frame with a non-trivial c0-c3, scan guest physical memory for those 16 dwords (big-endian, as stored) and log
@@ -521,6 +546,7 @@ uint32_t FeDecode(const uint8_t* body, uint32_t n, uint32_t phys_base) {
       // predicated packet (header bit 0) runs only when mask & select overlap.
       if ((op == 0x50 || op == 0x51) && i + 2 < w) {   // SET_BIN_MASK / SET_BIN_SELECT, 64-bit (hi, lo)
         (op == 0x50 ? g_fe_bin_mask : g_fe_bin_select) = (uint64_t(be(i + 1)) << 32) | be(i + 2);
+        TileTrace('B', op, h, 0, 0, g_fe_regs, g_fe_bin_mask, g_fe_bin_select);
         i += 1 + cnt;
         continue;
       }
@@ -528,10 +554,12 @@ uint32_t FeDecode(const uint8_t* body, uint32_t n, uint32_t phys_base) {
         const uint64_t v = be(i + 1);
         uint64_t& tgt = op <= 0x61 ? g_fe_bin_mask : g_fe_bin_select;
         tgt = (op & 1) ? ((tgt & 0xFFFFFFFFull) | (v << 32)) : ((tgt & ~0xFFFFFFFFull) | v);
+        TileTrace('B', op, h, 0, 0, g_fe_regs, g_fe_bin_mask, g_fe_bin_select);
         i += 1 + cnt;
         continue;
       }
       if ((h & 1) && (g_fe_bin_mask & g_fe_bin_select) == 0) {
+        TileTrace('S', op, h, 0, 0, g_fe_regs, g_fe_bin_mask, g_fe_bin_select);
         g_fe_predicated_skips.fetch_add(1, std::memory_order_relaxed);
         g_fe_next_addr_valid = false;   // [p3 rec] a skipped draw's marker must not label the next draw (FR_C8)
         i += 1 + cnt;
@@ -610,6 +638,7 @@ uint32_t FeDecode(const uint8_t* body, uint32_t n, uint32_t phys_base) {
         (ps ? g_fe_ps_inline : g_fe_vs_inline) = true;
         (ps ? g_fe_ps_dwords : g_fe_vs_dwords) = dwords;
       } else if (op == 0x64 && cnt >= 4 && g_p3draw && i + 4 < w) {      // XE_SWAP: magic, front buffer, width, height
+        TileTrace('W', op, h, 0, 0, g_fe_regs, g_fe_bin_mask, g_fe_bin_select);
         ::fable2::ngpu::FrontEndSwap(be(i + 2), be(i + 3), be(i + 4), g_fe_regs, g_fe_dirty);
         if (g_p5exec) Px(5, be(i + 2), be(i + 3), be(i + 4));   // [p5 exec] the plugin's swap: gamma, present, counter
         g_fe_swaps_issued.fetch_add(1, std::memory_order_relaxed);
@@ -619,6 +648,7 @@ uint32_t FeDecode(const uint8_t* body, uint32_t n, uint32_t phys_base) {
         const uint32_t d0 = op == 0x22 ? i + 2 : i + 1;
         const uint32_t this_init = d0 < w ? be(d0) : 0;
         g_fe_draws.fetch_add(1, std::memory_order_relaxed);
+        TileTrace('D', op, h, this_init, g_fe_next_addr_valid ? g_fe_next_addr : 0, g_fe_regs, g_fe_bin_mask, g_fe_bin_select);
         if (g_p3draw) {   // BEFORE the packet's own registers, like the plugin's callback (it sees the previous 21FA-C)
           ::fable2::ngpu::FeDrawInfo d{};
           d.draw_initiator = this_init;
