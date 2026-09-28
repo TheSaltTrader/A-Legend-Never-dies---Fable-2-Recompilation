@@ -11,7 +11,9 @@ numbering, not the game's.
   renderer** in the settings (a row removed in 1.1.4, and a plugin removed in
   1.2.0) and quoted frame rates from before 1.1.2. It now says what is true: a
   DirectX 12 capable card and driver are required, and Fairfax castle and
-  Bowerstone Market hold 60 fps on the development PC.
+  Bowerstone Market hold 60 fps on the development PC. Its opening paragraph
+  also still said the SDK supplied "GPU emulation"; it now says the port draws
+  with its own native DirectX 12 renderer.
 
 Only the readme changes; `fable2.exe` differs only in its version number.
 

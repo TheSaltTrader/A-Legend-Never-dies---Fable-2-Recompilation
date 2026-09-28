@@ -134,7 +134,8 @@ README_TEMPLATE = """\
 
 This is not an emulator. The game's PowerPC code was translated to C++ and
 compiled into a native x86-64 executable; the ReXGlue SDK {sdk} supplies the
-Xbox 360 kernel, filesystem, audio and GPU emulation around it.
+Xbox 360 kernel, filesystem and audio around it, and the port draws everything
+with its own native DirectX 12 renderer (no GPU emulation).
 
 REQUIRES YOUR OWN COPY OF THE GAME. No game code or data is included here.
 
