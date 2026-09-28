@@ -1841,7 +1841,7 @@ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
       // once suspected of corrupting the guest command stream, but the ring
       // buffer errors it was blamed for occur with it disabled too; they belong
       // to the attract demo, not to this.
-      command_processor_.ClearCaches();
+      command_processor_.ClearTextureCache();
     }
   }
 
@@ -1865,7 +1865,7 @@ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
         REXLOG_INFO("[texpack] dumping to '{}' - reloading every texture so the scene in "
                     "memory is written too",
                     want_dump);
-        command_processor_.ClearCaches();
+        command_processor_.ClearTextureCache();
       }
     }
   }
@@ -3819,6 +3819,13 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, 
           dumped_dir = dir;
           dumped_this_session = 0;
           std::error_code ec;
+          // The folder must exist before the first fopen below. The GPU plugin created it; this native path never
+          // did, so from 1.1.0 every dump write failed silently into a folder that was not there (user, 2026-09-28:
+          // "no files to process").
+          std::filesystem::create_directories(dir, ec);
+          if (ec)
+            REXLOG_WARN("[texpack] cannot create the dump folder '{}': {}", dir, ec.message());
+          ec.clear();
           for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
             const std::string n = e.path().filename().string();
             unsigned long long fid = 0;
@@ -3871,6 +3878,12 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, 
             std::fputc(10, ix);
             std::fclose(ix);
           }
+        } else {
+          // Said, not swallowed: a failing write is what hid the missing folder for four releases.
+          static std::atomic<uint32_t> failed{0};
+          const uint32_t n = ++failed;
+          if (n <= 5 || n % 500 == 0)
+            REXLOG_WARN("[texpack] dump write failed: '{}' ({} so far)", path, n);
         }
       }
     }

@@ -80,6 +80,11 @@ class D3D12CommandProcessor : public CommandProcessor {
   ~D3D12CommandProcessor();
 
   void ClearCaches() override;
+  // [texpack] Drop only the textures, at the end of the frame after the GPU drained: what a texture-pack or dump
+  // switch needs. ClearCaches also drops the render-target (EDRAM) model and re-marks all memory GPU-written, which
+  // mid-play at a draw resolution scale above 1 left the game's own rendered textures reloading from stale memory -
+  // white/magenta frames that kept flashing (user, 2026-09-28, toggling dumping and the texture pack in play).
+  void ClearTextureCache() { texture_clear_requested_ = true; }
   void InvalidateGpuMemory() override;
 
   void InitializeShaderStorage(const std::filesystem::path& cache_root, uint32_t title_id,
@@ -459,6 +464,7 @@ class D3D12CommandProcessor : public CommandProcessor {
   bool device_removed_ = false;
 
   bool cache_clear_requested_ = false;
+  bool texture_clear_requested_ = false;
 
   HANDLE fence_completion_event_ = nullptr;
   // Why the next fence wait happens, for the per-reason wait statistics in
