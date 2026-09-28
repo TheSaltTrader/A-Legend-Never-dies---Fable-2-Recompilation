@@ -23,8 +23,11 @@ numbering, not the game's.
 
 ### Fixed — ultrawide arriving a frame late after a load
 
-- **After a loading screen, the first frame of the new area was shown in 16:9
-  and then expanded to ultrawide.** It now arrives at full width.
+- **After a fast travel, the new area appeared in 16:9 and then expanded to
+  ultrawide.** Travelling within a region (Bloodstone to Bloodstone Mansion)
+  showed about a second of 16:9 as the area faded in; after a loading screen,
+  the first frame was 16:9. Both now arrive at full width (checked frame by
+  frame for both kinds of travel).
 
 Only fable2.exe changes.
 

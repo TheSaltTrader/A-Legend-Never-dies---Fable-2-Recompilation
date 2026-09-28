@@ -545,7 +545,11 @@ void fable2PatchFieldOfView(PPCRegister& f8, PPCRegister& f30, PPCRegister& r31)
     // the map, pauses, then shows it - and this camera is a NEW object the
     // moment the world is shown (build 51 trace, both loads). That, not
     // the warm-up builds, ends the loading scene.
-    if (is_new && Scene(g_scene.load(std::memory_order_relaxed)) == Scene::kLoading &&
+    // The HUD camera RESUMING (built again after a pause) counts too (2026-09-28): a fast travel inside a region is
+    // shorter than the 2 s after which a camera is forgotten, so its HUD camera comes back as the SAME object, and the
+    // world faded in pillarboxed for ~1.2 s until the steady-build fallback fired (RV1 burst capture, Bloodstone
+    // Mansion: HUD resumed 11:00:33.682 after 842 ms, world visible 33.75, scene switched only at 34.880).
+    if ((is_new || gap_ms > 250) && Scene(g_scene.load(std::memory_order_relaxed)) == Scene::kLoading &&
         g_world_builds_in_loading > 0)
       SetScene(Scene::kWorld);
     return;
