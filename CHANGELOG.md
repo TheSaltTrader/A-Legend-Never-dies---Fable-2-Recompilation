@@ -3,6 +3,31 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.3.2 — 2026-09-28
+
+### Fixed — flashing after switching the texture pack or dumping
+
+- **Switching the texture pack or dumping on or off during play could leave
+  the picture flashing** - single frames washed red, white or cyan, again and
+  again for the rest of the session - at internal resolutions above
+  1280 x 720. Switching made the renderer throw away far more than the
+  textures, including its model of the Xbox's render memory, so textures the
+  game renders itself were sometimes drawn from stale memory. It now drops
+  only the textures.
+- Measured in Bowerstone Cemetery at 3840 x 2160, walking and turning the
+  camera after switching dumping (and in a second run the texture pack) on,
+  off and on: 16 and 13 flashed frames in two runs before, none in two runs
+  after. The detector counts single-frame flashes; a second test that can see
+  longer ones agreed.
+
+### Fixed — dumping wrote nothing
+
+- **"Dump while playing" had not written a single file since 1.1.0.** The
+  dump folder (`textures\dump`) was never created, and every write into the
+  missing folder failed without a word. The folder is now created, and a
+  write that fails is logged. Dumped textures show up in F10 as "waiting to be
+  processed", ready for the Process button.
+
 ## 1.3.1 — 2026-09-28
 
 ### Fixed — the readme and the frame-rate figures
