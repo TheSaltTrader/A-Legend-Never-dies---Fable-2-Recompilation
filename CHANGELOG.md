@@ -21,6 +21,11 @@ numbering, not the game's.
 - This matters most on slower CPUs, where Fairfax could previously dip below
   60 fps.
 
+### Fixed — ultrawide arriving a frame late after a load
+
+- **After a loading screen, the first frame of the new area was shown in 16:9
+  and then expanded to ultrawide.** It now arrives at full width.
+
 Only fable2.exe changes.
 
 ## 1.1.4 — 2026-09-28

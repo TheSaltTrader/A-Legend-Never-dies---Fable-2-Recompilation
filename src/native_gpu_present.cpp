@@ -2343,6 +2343,11 @@ bool RevealHold() {
     REXLOG_INFO("[ngpu] REVEAL: showing the stage after {} held swaps / {} ms ({}) - run total: {} complete, {} at the CAP",
                 held_frames, held_ms, done ? kTerm[pace_term] : "the cap - the stage was still changing",
                 released_complete, released_cap);
+    // The letterbox is decided by the overlay that paints WITH each frame, so it lifted one frame after this release:
+    // the first world frame went out in 16:9 and then expanded (user, 2026-09-28, Bloodstone; 1.1.4 did the same -
+    // Z114A reveal 01:56:36.431, fill .437). Lift it here, for this frame, on the overlay's own conditions.
+    if (rex::cvar::GetFlagByName("fable2_ultrawide") == "true" && fable2::WorldCameraLive() && !fable2::PauseMenuOpen())
+      rex::cvar::SetFlagByName("present_letterbox", "false");
     return false;
   }
   return true;
