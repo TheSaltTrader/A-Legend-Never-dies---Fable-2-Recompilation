@@ -98,7 +98,7 @@ std::string& FLAGS_texture_pack_path_storage_() { static std::string s = ::fable
 
 // Generated with `xb buildshaders`.
 
-namespace fable2::ngpu::rtc { bool TextureHeapsEnabled(); bool TexContentCensusEnabled(); bool TexpackPrebuildEnabled(); bool GameTexPrecreateEnabled(); bool TexpackAsyncEnabled(); }   // facade.cpp
+namespace fable2::ngpu::rtc { bool TextureHeapsEnabled(); bool TexContentCensusEnabled(); bool TexpackPrebuildEnabled(); bool GameTexPrecreateEnabled(); bool TexpackAsyncEnabled(); bool OptSamplerMemo(); }   // facade.cpp / native_gpu_present.cpp
 namespace rex::graphics::ngpu_d3d12 {
 extern std::atomic<uint64_t> g_ngpu_res_created_total, g_ngpu_res_create_us_total;   // [frame trace v3], defined below
 // [frame trace v4] the LONGEST single creation since the last frame record (peer: a per-frame total cannot tell one 13 ms
@@ -1711,6 +1711,9 @@ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
   // here, every submission. The list was only drained on the in-frame build path, which the prebuild + async build
   // now bypass almost always, so every prebuilt upload buffer (system memory) and resource (VRAM) ever copied stayed
   // alive: 31 GB of VRAM and 62 GB of private memory after 50 fast travels, and the frame rate fell to 3-30 fps.
+  sampler_memo_on_ = ::fable2::ngpu::rtc::OptSamplerMemo();   // [sampler memo] the cvars, once per submission
+  sampler_memo_aniso_ = REXCVAR_GET(anisotropic_override);
+  sampler_memo_allow_invalid_ = REXCVAR_GET(gpu_allow_invalid_fetch_constants);
   {
     const uint64_t completed = command_processor_.GetCompletedSubmission();
     g_texpack_uploads.erase(
@@ -2142,6 +2145,28 @@ uint32_t D3D12TextureCache::GetActiveTextureBindlessSRVIndex(
 }
 
 D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
+    const D3D12Shader::SamplerBinding& binding) const {
+  if (binding.fetch_constant >= 32 || !sampler_memo_on_) return GetSamplerParametersUncached(binding);
+  const xenos::xe_gpu_texture_fetch_t fetch = register_file().GetTextureFetch(binding.fetch_constant);
+  static_assert(sizeof(fetch) == sizeof(uint32_t) * 6, "fetch constant is six words");
+  const uint32_t filters = uint32_t(binding.mag_filter) | (uint32_t(binding.min_filter) << 8) |
+                           (uint32_t(binding.mip_filter) << 16) | (uint32_t(binding.aniso_filter) << 24);
+  const int32_t aniso_override = sampler_memo_aniso_;
+  const bool allow_invalid = sampler_memo_allow_invalid_;
+  SamplerMemo& m = sampler_memo_[binding.fetch_constant];
+  if (m.valid && m.filters == filters && m.aniso_override == aniso_override && m.allow_invalid == allow_invalid &&
+      std::memcmp(m.fetch, &fetch, sizeof(m.fetch)) == 0)
+    return m.result;
+  m.result = GetSamplerParametersUncached(binding);
+  std::memcpy(m.fetch, &fetch, sizeof(m.fetch));
+  m.filters = filters;
+  m.aniso_override = aniso_override;
+  m.allow_invalid = allow_invalid;
+  m.valid = true;
+  return m.result;
+}
+
+D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParametersUncached(
     const D3D12Shader::SamplerBinding& binding) const {
   const auto& regs = register_file();
   xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(binding.fetch_constant);

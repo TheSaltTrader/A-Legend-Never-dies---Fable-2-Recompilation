@@ -3,6 +3,26 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.1.5 — 2026-09-28
+
+### Faster — more headroom for slower PCs
+
+- **The native renderer's busiest thread does about 2 ms less work per frame**
+  at Fairfax castle, the heaviest spot measured (roughly 14.7 → 12.9 ms of
+  the 16.7 ms a 60 fps frame allows):
+  - Decoding the game's GPU commands now runs on its own thread, and the
+    drawing on another, so the work is shared across two CPU cores instead of
+    one (about 1.3 ms).
+  - Texture sampler settings are reused while they have not changed, instead
+    of being worked out again for every draw (about 0.7 ms).
+- The picture is unchanged, and the frame rate stays at 60. Checked by
+  switching each change on and off while standing in the same spot, and over
+  a 10-destination fast-travel route (towns, crypts, in-region travel).
+- This matters most on slower CPUs, where Fairfax could previously dip below
+  60 fps.
+
+Only fable2.exe changes.
+
 ## 1.1.4 — 2026-09-28
 
 ### Changed — fully native, no emulated GPU

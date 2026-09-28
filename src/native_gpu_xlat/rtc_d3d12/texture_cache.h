@@ -134,6 +134,9 @@ class D3D12TextureCache final : public TextureCache {
   uint32_t GetActiveTextureBindlessSRVIndex(const D3D12Shader::TextureBinding& host_shader_binding);
 
   SamplerParameters GetSamplerParameters(const D3D12Shader::SamplerBinding& binding) const;
+  // NATIVE PATCH: [sampler memo] (2026-09-28 optimisation) the uncached computation; GetSamplerParameters returns the
+  // last result for the same fetch-constant words, binding filters and cvars (7% of the recording thread at Fairfax).
+  SamplerParameters GetSamplerParametersUncached(const D3D12Shader::SamplerBinding& binding) const;
   void WriteSampler(SamplerParameters parameters, D3D12_CPU_DESCRIPTOR_HANDLE handle) const;
 
   // Returns whether the actual scale is not smaller than the requested one.
@@ -627,6 +630,23 @@ class D3D12TextureCache final : public TextureCache {
   // point-filtered. Canary 197929d96.
   uint64_t host_filterable_unsigned_ = 0;
   uint64_t host_filterable_signed_ = 0;
+
+  // NATIVE PATCH: [sampler memo] one entry per fetch constant: the key is everything GetSamplerParametersUncached
+  // reads (the six fetch words, the binding's filter overrides, two cvars); the host filterable masks are fixed at init.
+  struct SamplerMemo {
+    uint32_t fetch[6];
+    uint32_t filters;
+    int32_t aniso_override;
+    bool allow_invalid;
+    bool valid;
+    SamplerParameters result;
+  };
+  mutable SamplerMemo sampler_memo_[32] = {};
+  // Read once per submission (a REXCVAR_GET is a cross-module call with a static-init guard; three per sampler cost
+  // more than the memo saved - ABX1, 2026-09-28).
+  bool sampler_memo_on_ = true;
+  int32_t sampler_memo_aniso_ = -1;
+  bool sampler_memo_allow_invalid_ = false;
 
   Microsoft::WRL::ComPtr<ID3D12RootSignature> load_root_signature_;
   std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kLoadShaderCount> load_pipelines_;

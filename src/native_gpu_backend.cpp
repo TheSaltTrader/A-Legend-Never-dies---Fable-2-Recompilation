@@ -102,6 +102,23 @@ class Driver {
   bool PresentInto(rex::ui::Presenter* presenter);   // [gs] defined after the guest-output globals
 
   void WriteRegister(uint32_t index, uint32_t value) { cp_->WriteRegister(index, value); }
+  uint32_t ReadRegister(uint32_t index) const { return regs_->values[index]; }
+  // [split] the draw thread's bulk paths: register pairs, and a LOAD_ALU_CONSTANT's big-endian words - only the values
+  // that differ from the file are written (direct mode forwarded changed registers only; SPL3 wrote every loaded one).
+  void WriteRegisterPairs(const uint32_t* pairs, uint32_t n) {
+    for (uint32_t k = 0; k < n; ++k) cp_->WriteRegister(pairs[2 * k], pairs[2 * k + 1]);
+  }
+  uint32_t WriteRegistersBEIfChanged(uint32_t first, const uint8_t* src, uint32_t count) {
+    uint32_t written = 0;
+    for (uint32_t k = 0; k < count && first + k < 0x5000; ++k) {
+      const uint8_t* p = src + size_t(k) * 4;
+      const uint32_t v = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+      if (regs_->values[first + k] == v) continue;
+      cp_->WriteRegister(first + k, v);
+      ++written;
+    }
+    return written;
+  }
 
   rex::graphics::Shader* Load(xenos::ShaderType type, uint32_t addr, const uint32_t* code, uint32_t dwords,
                               const uint32_t*& last_code, uint32_t& last_dwords, rex::graphics::Shader*& last) {
@@ -368,6 +385,11 @@ bool PresentAsync(rex::ui::Presenter* presenter) {
 bool Init(ID3D12Device* device, ID3D12CommandQueue* queue) { return g_driver.Ready() || g_driver.Init(device, queue); }
 bool Ready() { return g_driver.Ready(); }
 void WriteRegister(uint32_t index, uint32_t value) { g_driver.WriteRegister(index, value); }
+uint32_t ReadRegister(uint32_t index) { return g_driver.ReadRegister(index); }
+void WriteRegisterPairs(const uint32_t* pairs, uint32_t n) { g_driver.WriteRegisterPairs(pairs, n); }
+uint32_t WriteRegistersBEIfChanged(uint32_t first, const uint8_t* src, uint32_t count) {
+  return g_driver.WriteRegistersBEIfChanged(first, src, count);
+}
 bool Draw(const DrawRecord& d) { return g_driver.Draw(d); }
 void Swap(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* fetch0, const uint32_t* table, const uint32_t* pwl) { g_driver.Swap(fb, w, h, fetch0, table, pwl); }
 void EndFrameNoSwap() { g_driver.EndFrameNoSwap(); }

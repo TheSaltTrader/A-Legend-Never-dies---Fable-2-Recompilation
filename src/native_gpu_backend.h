@@ -20,6 +20,11 @@ bool Ready();
 
 // Register write, exactly as the PM4 parser would perform it (the command processor tracks dirty constants here).
 void WriteRegister(uint32_t index, uint32_t value);
+// [split] The backend's own register file (what the draws actually use).
+uint32_t ReadRegister(uint32_t index);
+// [split] bulk forms for the draw thread: (register, value) pairs; big-endian words written only where they differ.
+void WriteRegisterPairs(const uint32_t* pairs, uint32_t n);
+uint32_t WriteRegistersBEIfChanged(uint32_t first, const uint8_t* src, uint32_t count);
 
 struct DrawRecord {
   uint32_t draw_initiator;     // VGT_DRAW_INITIATOR as the packet gave it

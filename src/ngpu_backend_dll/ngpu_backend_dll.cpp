@@ -422,6 +422,7 @@ bool NgpuTexSkipUnchangedCvar() { return false; }
 bool NgpuTexpackPrebuildCvar() { return false; }
 bool NgpuGameTexPrecreateCvar() { return false; }
 bool NgpuTexpackAsyncCvar() { return false; }
+bool OptSamplerMemo() { return true; }   // [sampler memo] exact (keyed on every input), so on in the DLL too
 bool NgpuShaderStorageCvar() { return false; }   // [pipeline storage] exe-only until measured   // [texpack async build] exe-only until measured   // [game texture pre-create] exe-only until measured   // [texpack prebuild] exe-only until measured   // [skip unchanged] exe-only until measured   // [content census] exe-only diagnostic   // [texture heaps] exe-only until measured; not in the ABI 1 options
 }  // namespace fable2::ngpu::rtc
 

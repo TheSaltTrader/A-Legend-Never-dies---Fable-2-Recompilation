@@ -178,6 +178,7 @@ struct PadCommand {
   bool wait_only = false;                  // "wait:N": nothing pressed
   bool release = false;                    // "release": clear and stop
   int dump_frames = 0;                     // "dump:N": the plugin's per-draw dump
+  std::string set_name, set_value;         // "set:cvar=value": a live setting change (A/B within one session)
   std::string text;                        // for the log
 };
 
@@ -240,6 +241,15 @@ bool ParsePadCommand(const std::string& raw, PadCommand& out) {
     return true;
   }
   if (head == "wait") { out.wait_only = true; out.seconds = secs_at(1, 0.5); return true; }
+  if (head == "set") {   // [opt] set:name=value (2026-09-28): flips a live cvar at this point of the script
+    const size_t eq = parts.size() > 1 ? parts[1].find('=') : std::string::npos;
+    if (eq == std::string::npos) return false;
+    out.wait_only = true;
+    out.seconds = 0;
+    out.set_name = parts[1].substr(0, eq);
+    out.set_value = parts[1].substr(eq + 1);
+    return true;
+  }
   if (head == "l" || head == "r") {
     if (parts.size() < 2) return false;
     const size_t comma = parts[1].find(',');
@@ -322,6 +332,10 @@ class PadFile {
         current_until_ = now + current_.seconds;
         gap_until_ = current_until_ + 0.1;
         if (current_.dump_frames > 0) StartDrawDump(current_.dump_frames);
+        if (!current_.set_name.empty()) {
+          const bool ok = rex::cvar::SetFlagByName(current_.set_name, current_.set_value);
+          REXLOG_INFO("[padfile] set {}={}{}", current_.set_name, current_.set_value, ok ? "" : " (REJECTED)");
+        }
         if (!current_.wait_only && !current_.release)
           REXLOG_INFO("[padfile] {} for {:.2f} s", current_.text, current_.seconds);
       }

@@ -119,6 +119,7 @@ bool g_p3draw = false;
 uint32_t g_fe_vs = 0, g_fe_vs_dwords = 0, g_fe_ps = 0, g_fe_ps_dwords = 0;
 bool g_fe_vs_inline = false, g_fe_ps_inline = false;
 std::vector<uint8_t> g_fe_imm_vs, g_fe_imm_ps;
+uint32_t g_fe_imm_vs_gen = 0, g_fe_imm_ps_gen = 0;   // [split] bumped at each IM_LOAD_IMMEDIATE
 uint64_t g_fe_dirty[(0x5000 + 63) / 64];
 std::atomic<uint64_t> g_fe_draws_issued{0}, g_fe_swaps_issued{0};
 std::mutex g_fe_kick_mu;
@@ -568,7 +569,9 @@ uint32_t FeDecode(const uint8_t* body, uint32_t n, uint32_t phys_base) {
       } else if (op == 0x2F && i + 3 < w && ks && ks->memory()) {   // LOAD_ALU_CONSTANT: from guest memory
         const uint32_t addr = be(i + 1) & 0x3FFFFFFF, d = be(i + 2), size = be(i + 3) & 0xFFF;
         const uint32_t idx = d & 0x7FF, typ = (d >> 16) & 0xFF;
-        const uint8_t* src = ks->memory()->TranslatePhysical<const uint8_t*>(addr);
+        // [split] the draw thread reads it at record time; the decode thread's file does not get these values
+        const bool deferred = typ < 5 && ::fable2::ngpu::FrontEndLoadConstants(addr, kSpace[typ] + idx, size, g_fe_regs, g_fe_dirty);
+        const uint8_t* src = deferred ? nullptr : ks->memory()->TranslatePhysical<const uint8_t*>(addr);
         if (src && typ < 5)
           for (uint32_t k = 0; k < size; ++k) {
             const uint32_t reg = kSpace[typ] + idx + k;
@@ -603,6 +606,7 @@ uint32_t FeDecode(const uint8_t* body, uint32_t n, uint32_t phys_base) {
         const uint32_t dwords = std::min<uint32_t>(be(i + 2) & 0xFFFF, cnt - 2);
         std::vector<uint8_t>& dst = ps ? g_fe_imm_ps : g_fe_imm_vs;
         dst.assign(body + (i + 3) * 4, body + (i + 3 + dwords) * 4);   // copied: the ring words are reused later
+        ++(ps ? g_fe_imm_ps_gen : g_fe_imm_vs_gen);
         (ps ? g_fe_ps_inline : g_fe_vs_inline) = true;
         (ps ? g_fe_ps_dwords : g_fe_vs_dwords) = dwords;
       } else if (op == 0x64 && cnt >= 4 && g_p3draw && i + 4 < w) {      // XE_SWAP: magic, front buffer, width, height
@@ -624,6 +628,7 @@ uint32_t FeDecode(const uint8_t* body, uint32_t n, uint32_t phys_base) {
           d.vs_code = g_fe_imm_vs.empty() ? nullptr : g_fe_imm_vs.data();
           d.ps_code = g_fe_imm_ps.empty() ? nullptr : g_fe_imm_ps.data();
           d.vs_code_dwords = uint32_t(g_fe_imm_vs.size() / 4); d.ps_code_dwords = uint32_t(g_fe_imm_ps.size() / 4);
+          d.vs_code_gen = g_fe_imm_vs_gen; d.ps_code_gen = g_fe_imm_ps_gen;
           ::fable2::ngpu::FrontEndDraw(g_fe_regs, g_fe_dirty, d);
           g_fe_draws_issued.fetch_add(1, std::memory_order_relaxed);
         }
@@ -809,10 +814,16 @@ void RecorderThread() {
     if (!qf.QuadPart) { QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&win0); }
     LARGE_INTEGER b0, b1;
     QueryPerformanceCounter(&b0);
+    // [split] own graphics system, no census or comparison: the ngpu_opt_split switch applies at this batch boundary
+    if (g_push == &::fable2::gs::PushSideEffects && !g_fe_every && !g_src) ::fable2::ngpu::FrontEndSplitUpdate();
     FeDecode(batch.bytes.data(), uint32_t(batch.bytes.size()), 0);
     if (g_p5exec && g_push) {   // [p5 exec] this batch's side effects, after its draws are recorded; the read pointer last
       Px(3, batch.rptr_end);
-      g_push(t_px.data(), uint32_t(t_px.size() / 4));
+      // [split] queued behind the batch's draws (the draw thread pushes them once it has recorded those)
+      bool more_pending;
+      { std::lock_guard<std::mutex> lock(g_rec_mu); more_pending = !g_rec_queue.empty(); }
+      if (!::fable2::ngpu::FrontEndBatchEnd(t_px.data(), uint32_t(t_px.size() / 4), g_push, more_pending))
+        g_push(t_px.data(), uint32_t(t_px.size() / 4));
       t_px.clear();
       g_px_batches.fetch_add(1, std::memory_order_relaxed);
     }

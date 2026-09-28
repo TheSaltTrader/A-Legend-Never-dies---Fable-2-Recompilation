@@ -322,6 +322,9 @@ REXCVAR_DEFINE_BOOL(ngpu_backend_tex_skip_unchanged, true, "GPU", "Native-GPU BA
 namespace fable2::ngpu::rtc { bool NgpuTexSkipUnchangedCvar() { return REXCVAR_GET(ngpu_backend_tex_skip_unchanged); } }
 REXCVAR_DEFINE_BOOL(ngpu_backend_texpack_prebuild, true, "GPU", "Native-GPU BACKEND (default ON since 2026-09-27): at a stage change, build the stage list's texture-pack replacements GPU-ready on a worker, smallest first, within 15% of video memory capped at 1.5 GB so streamed textures take a finished resource instead of a file read + creation + upload in the frame. Read once at start");
 namespace fable2::ngpu::rtc { bool NgpuTexpackPrebuildCvar() { return REXCVAR_GET(ngpu_backend_texpack_prebuild); } }
+// [opt] (2026-09-28 optimisation) each optimisation has a LIVE switch, so one session can A/B it (pad file set:).
+REXCVAR_DEFINE_BOOL(ngpu_opt_sampler_memo, true, "GPU", "Native-GPU: reuse sampler parameters while the fetch constant is unchanged (live)");
+namespace fable2::ngpu::rtc { bool OptSamplerMemo() { return REXCVAR_GET(ngpu_opt_sampler_memo); } }
 REXCVAR_DEFINE_BOOL(ngpu_backend_game_tex_precreate, false, "GPU", "Native-GPU BACKEND: record the texture shapes each stage creates and, at the next load of that stage, pre-create that many resources of each shape on a worker (512 MB, smallest first) so the game's own textures do not pay the driver's creation cost mid-play. Works with the texture pack off. Read once at start");
 namespace fable2::ngpu::rtc { bool NgpuGameTexPrecreateCvar() { return REXCVAR_GET(ngpu_backend_game_tex_precreate); } }
 REXCVAR_DEFINE_BOOL(ngpu_backend_texpack_async, true, "GPU", "Native-GPU BACKEND (default ON since 2026-09-27: ASA/ASB A/B - in-frame builds 55|23 -> 0|0): with the texture-pack prebuild on, a replacement that was not prebuilt is built on a worker instead of in the frame; the texture shows its guest version until it lands. Read once at start");
@@ -2714,11 +2717,19 @@ void BackendLockstepDraw(const RexNgpuDraw* d) {
 
 // [p3 draw] The front end's register file into the backend: only the registers it wrote since the last draw (its
 // dirty bitmap), against what the backend has (g_ls_prev - the plugin path no longer writes the backend then).
-void FrontEndSync(const uint32_t* regs, uint64_t* dirty) {
+// [split] g_ls_force: registers the DRAW thread loaded from guest memory (LOAD_ALU_CONSTANT) - the decode thread's file
+// does not hold those values, so their next write is forwarded whatever g_ls_prev says, and the first full sync skips them.
+uint64_t g_ls_force[(0x5000 + 63) / 64];
+template <class Emit>
+void FrontEndDiffEach(const uint32_t* regs, uint64_t* dirty, Emit&& emit) {
   static const uint32_t kRanges[][2] = {{0x2000, 0x2400}, {0x4000, 0x4928}};
   if (!g_ls_prev_valid) {   // the first sync: everything in the ranges, so the backend starts from the file
     for (const auto& r : kRanges)
-      for (uint32_t k = r[0]; k < r[1]; ++k) { g_ls_prev[k] = regs[k]; fable2::ngpu::backend::WriteRegister(k, regs[k]); }
+      for (uint32_t k = r[0]; k < r[1]; ++k) {
+        if (g_ls_force[k >> 6] & (uint64_t(1) << (k & 63))) continue;   // [split] the draw thread loaded it
+        g_ls_prev[k] = regs[k];
+        emit(k, regs[k]);
+      }
     g_ls_prev_valid = true;
     std::memset(dirty, 0, sizeof(uint64_t) * ((0x5000 + 63) / 64));
     return;
@@ -2728,27 +2739,31 @@ void FrontEndSync(const uint32_t* regs, uint64_t* dirty) {
       uint64_t bits = dirty[w];
       if (!bits) continue;
       dirty[w] = 0;
+      const uint64_t force = g_ls_force[w];
       while (bits) {
         unsigned long b;
         _BitScanForward64(&b, bits);
         const uint32_t k = (w << 6) + uint32_t(b);
         bits &= bits - 1;
-        if (k < r[0] || k >= r[1] || g_ls_prev[k] == regs[k]) continue;
+        if (k < r[0] || k >= r[1]) continue;
+        const uint64_t bit = uint64_t(1) << b;
+        if (g_ls_prev[k] == regs[k] && !(force & bit)) continue;
+        g_ls_force[w] &= ~bit;
         g_ls_prev[k] = regs[k];
-        fable2::ngpu::backend::WriteRegister(k, regs[k]);
-        ++g_ls_regs_written;
+        emit(k, regs[k]);
       }
     }
   }
 }
-// [p3 draw] At a DRAW packet the front end decoded (guest thread): its registers, then the draw as
-// BackendLockstepDraw records the plugin's. Microcode at an address is COPIED now (the plugin path could point into
-// guest memory because it ran at the GPU's pace; the front end runs ahead of it).
-void FrontEndDrawImpl(const uint32_t* regs, uint64_t* dirty, const ::fable2::ngpu::FeDrawInfo& d) {
-  if (!REXCVAR_GET(ngpu_backend) || !BackendLockstepReady()) return;
-  LARGE_INTEGER t0, t1;
-  QueryPerformanceCounter(&t0);
-  FrontEndSync(regs, dirty);
+void FrontEndSync(const uint32_t* regs, uint64_t* dirty) {
+  FrontEndDiffEach(regs, dirty, [](uint32_t k, uint32_t v) {
+    fable2::ngpu::backend::WriteRegister(k, v);
+    ++g_ls_regs_written;
+  });
+}
+// [p3 draw] At a DRAW packet the front end decoded: its registers (FrontEndSync, or the draw thread's pairs in split
+// mode), then the draw as BackendLockstepDraw records the plugin's. FrontEndDrawCore is the part after the registers.
+void FrontEndDrawCore(const ::fable2::ngpu::FeDrawInfo& d, LARGE_INTEGER t0) {
   auto code = [](int stage, uint32_t addr, uint32_t& dwords, bool inl, const uint8_t* inline_code,
                  uint32_t inline_dwords) -> const uint32_t* {
     if (inl) {
@@ -2779,8 +2794,21 @@ void FrontEndDrawImpl(const uint32_t* regs, uint64_t* dirty, const ::fable2::ngp
   br.ps_code = code(1, d.ps_addr, br.ps_dwords, d.ps_inline, d.ps_code, d.ps_code_dwords);
   if (!fable2::ngpu::backend::Draw(br)) ++(br.vs_code ? g_ls_fail_withcode : g_ls_fail_nocode);
   ++g_ls_draws;
+  LARGE_INTEGER t1;
   QueryPerformanceCounter(&t1);
   g_ft_backend_qpc += uint64_t(t1.QuadPart - t0.QuadPart);
+}
+void SplitDraw(const uint32_t* regs, uint64_t* dirty, const ::fable2::ngpu::FeDrawInfo& d);
+void SplitSwap(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* regs, uint64_t* dirty);
+bool SplitRegisterNow(uint32_t reg, uint32_t value);
+extern bool g_split_on;
+void FrontEndDrawImpl(const uint32_t* regs, uint64_t* dirty, const ::fable2::ngpu::FeDrawInfo& d) {
+  if (!REXCVAR_GET(ngpu_backend) || !BackendLockstepReady()) return;
+  if (g_split_on) { SplitDraw(regs, dirty, d); return; }
+  LARGE_INTEGER t0;
+  QueryPerformanceCounter(&t0);
+  FrontEndSync(regs, dirty);
+  FrontEndDrawCore(d, t0);
 }
 // [p3 draw] GAMMA (2026-09-27 evening): RexNgpuGetGammaRamp returns the ramp only DURING the plugin's swap callback, so
 // FrontEndSwap - on the guest / recorder thread - always got "no ramp" and the backend kept a linear one. The ramp is
@@ -2804,16 +2832,15 @@ void FrontEndCaptureGamma() {
 // [p3 draw] At XE_SWAP (guest thread): the backend's swap from the front end's file (fetch constant 0 from it; the
 // gamma ramp from the plugin's export, which holds it), then the same present tail as the plugin path.
 void FrontEndRegisterNowImpl(uint32_t reg, uint32_t value) {
+  if (SplitRegisterNow(reg, value)) return;   // [split] queued behind the draws
   if (g_backend_on) fable2::ngpu::backend::WriteRegister(reg, value);
   else if (g_pending_now.size() < 65536) g_pending_now.push_back({reg, value});
 }
-void FrontEndSwapImpl(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* regs, uint64_t* dirty) {
-  if (!REXCVAR_GET(ngpu_backend) || !BackendLockstepReady() || !g_backend_lockstep) return;
-  LARGE_INTEGER s0, s1;
-  QueryPerformanceCounter(&s0);
-  FrontEndSync(regs, dirty);
+// The swap after the registers: the front buffer's fetch constant from the BACKEND's file (in split mode the decode
+// thread's may not hold a LOAD_ALU_CONSTANT-loaded fetch constant; in direct mode the two are equal after the sync).
+void FrontEndSwapCore(uint32_t fb, uint32_t w, uint32_t h, LARGE_INTEGER s0) {
   uint32_t fetch0[6];
-  for (uint32_t i = 0; i < 6; ++i) fetch0[i] = regs[0x4800 + i];
+  for (uint32_t i = 0; i < 6; ++i) fetch0[i] = fable2::ngpu::backend::ReadRegister(0x4800 + i);
   static uint32_t table[256], pwl[128 * 3];
   bool gamma = false;
   {
@@ -2821,9 +2848,241 @@ void FrontEndSwapImpl(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* regs,
     if (g_fe_gamma_valid) { std::memcpy(table, g_fe_gamma_table, sizeof(table)); std::memcpy(pwl, g_fe_gamma_pwl, sizeof(pwl)); gamma = true; }
   }
   fable2::ngpu::backend::Swap(fb, w, h, fetch0, gamma ? table : nullptr, gamma ? pwl : nullptr);
+  LARGE_INTEGER s1;
   QueryPerformanceCounter(&s1);
   g_ft_backend_qpc += uint64_t(s1.QuadPart - s0.QuadPart);
   LockstepAfterSwap();
+}
+void FrontEndSwapImpl(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* regs, uint64_t* dirty) {
+  if (!REXCVAR_GET(ngpu_backend) || !BackendLockstepReady() || !g_backend_lockstep) return;
+  if (g_split_on) { SplitSwap(fb, w, h, regs, dirty); return; }
+  LARGE_INTEGER s0;
+  QueryPerformanceCounter(&s0);
+  FrontEndSync(regs, dirty);
+  FrontEndSwapCore(fb, w, h, s0);
+}
+
+// ---- [split] (2026-09-28 optimisation, ngpu_opt_split) DECODE thread / DRAW thread ---------------------------------
+// The recorder was one saturated thread at Fairfax (PR1F: decode 14%, register sync 12%, drawing the rest). In split
+// mode the recorder only decodes and diffs registers; a draw thread applies the pairs and records the draws, from one
+// ordered stream of uint32 records. Everything that reaches the backend goes through the stream, in decode order, and a
+// batch's side effects (fences, interrupts, read pointer) are its last record - so every fence still follows the
+// recording of the draws before it. LOAD_ALU_CONSTANT memory is read by the DRAW thread, at record time.
+REXCVAR_DEFINE_BOOL(ngpu_opt_split, true, "GPU", "Native-GPU: decode and draw recording on two threads (default on since 2026-09-28: SPL1-4 at Fairfax, picture identical; live, switched at a batch boundary)");
+enum : uint32_t { kSpSync = 1, kSpDraw, kSpSwap, kSpRegNow, kSpLoad, kSpPx, kSpCodeVS, kSpCodePS };
+bool g_split_on = false;                          // decode thread
+bool g_sp_thread_started = false;                 // decode thread
+thread_local bool t_sp_draw_thread = false;
+std::mutex g_sp_mu;
+std::condition_variable g_sp_cv, g_sp_room_cv, g_sp_idle_cv;
+std::deque<std::vector<uint32_t>> g_sp_q;         // under g_sp_mu
+std::vector<std::vector<uint32_t>> g_sp_free;     // under g_sp_mu
+bool g_sp_busy = false;                           // under g_sp_mu: the draw thread is working on a chunk
+std::vector<uint32_t> g_sp_cur;                   // decode thread: the chunk being written
+uint32_t g_sp_cur_draws = 0;
+uint32_t g_sp_vs_gen = ~0u, g_sp_ps_gen = ~0u;    // decode thread: inline microcode last sent
+void (*g_sp_push)(const uint32_t*, uint32_t) = nullptr;
+constexpr size_t kSpMaxQueued = 8;                // backpressure: the decode thread runs at most this many chunks ahead
+constexpr uint32_t kSpDrawsPerChunk = 48;
+std::atomic<uint64_t> g_sp_chunks{0}, g_sp_records{0}, g_sp_loads{0}, g_sp_wait_qpc{0}, g_sp_load_writes{0};
+
+void SpPublish() {
+  if (g_sp_cur.empty()) return;
+  std::unique_lock<std::mutex> lock(g_sp_mu);
+  if (g_sp_q.size() >= kSpMaxQueued) {   // the draw thread is behind: this wait is not decode work (logged apart)
+    LARGE_INTEGER w0, w1;
+    QueryPerformanceCounter(&w0);
+    g_sp_room_cv.wait(lock, [] { return g_sp_q.size() < kSpMaxQueued; });
+    QueryPerformanceCounter(&w1);
+    g_sp_wait_qpc.fetch_add(uint64_t(w1.QuadPart - w0.QuadPart), std::memory_order_relaxed);
+  }
+  g_sp_q.push_back(std::move(g_sp_cur));
+  if (!g_sp_free.empty()) { g_sp_cur = std::move(g_sp_free.back()); g_sp_free.pop_back(); }
+  else g_sp_cur = std::vector<uint32_t>();
+  g_sp_cur.clear();
+  g_sp_cur_draws = 0;
+  lock.unlock();
+  g_sp_cv.notify_one();
+  g_sp_chunks.fetch_add(1, std::memory_order_relaxed);
+}
+// [tag, n, (reg, value) x n] - the registers written since the last record, against what the backend will have.
+void SpPairs(uint32_t tag, const uint32_t* regs, uint64_t* dirty) {
+  g_sp_cur.push_back(tag);
+  const size_t at = g_sp_cur.size();
+  g_sp_cur.push_back(0);
+  uint32_t n = 0;
+  FrontEndDiffEach(regs, dirty, [&](uint32_t k, uint32_t v) { g_sp_cur.push_back(k); g_sp_cur.push_back(v); ++n; });
+  g_sp_cur[at] = n;
+  g_ls_regs_written += n;
+}
+void SpCode(uint32_t tag, const uint8_t* code, uint32_t dwords) {
+  g_sp_cur.push_back(tag);
+  g_sp_cur.push_back(code ? dwords : 0);
+  if (code && dwords) {
+    const size_t at = g_sp_cur.size();
+    g_sp_cur.resize(at + dwords);
+    std::memcpy(&g_sp_cur[at], code, size_t(dwords) * 4);
+  }
+}
+void SplitDraw(const uint32_t* regs, uint64_t* dirty, const ::fable2::ngpu::FeDrawInfo& d) {
+  if (d.vs_inline && d.vs_code_gen != g_sp_vs_gen) { SpCode(kSpCodeVS, d.vs_code, d.vs_code_dwords); g_sp_vs_gen = d.vs_code_gen; }
+  if (d.ps_inline && d.ps_code_gen != g_sp_ps_gen) { SpCode(kSpCodePS, d.ps_code, d.ps_code_dwords); g_sp_ps_gen = d.ps_code_gen; }
+  SpPairs(kSpDraw, regs, dirty);
+  const uint32_t f[8] = {d.draw_initiator, d.index_addr, d.index_size, d.vs_addr, d.vs_dwords, d.ps_addr, d.ps_dwords,
+                         uint32_t(d.vs_inline) | (uint32_t(d.ps_inline) << 1)};
+  g_sp_cur.insert(g_sp_cur.end(), f, f + 8);
+  if (++g_sp_cur_draws >= kSpDrawsPerChunk) SpPublish();
+}
+void SplitSwap(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* regs, uint64_t* dirty) {
+  SpPairs(kSpSwap, regs, dirty);
+  g_sp_cur.push_back(fb); g_sp_cur.push_back(w); g_sp_cur.push_back(h);
+  SpPublish();
+}
+bool SplitRegisterNow(uint32_t reg, uint32_t value) {
+  if (!g_split_on || t_sp_draw_thread) return false;   // the draw thread applies it for real
+  g_sp_cur.push_back(kSpRegNow); g_sp_cur.push_back(reg); g_sp_cur.push_back(value);
+  return true;
+}
+bool SplitLoadConstants(uint32_t addr, uint32_t first, uint32_t count, const uint32_t* regs, uint64_t* dirty) {
+  if (!g_split_on) return false;
+  // Registers of the range written earlier in this stretch are overwritten by the load: their pending writes are
+  // dropped (a flush would only have cost a diff pass per load - SPL1: ~3,300 loads a frame). Registers outside the
+  // range do not care about the order. The loaded ones are the draw thread's: their next write is always forwarded.
+  (void)regs;
+  g_sp_cur.push_back(kSpLoad); g_sp_cur.push_back(addr); g_sp_cur.push_back(first); g_sp_cur.push_back(count);
+  for (uint32_t k = first; k < first + count && k < 0x5000; ++k) {
+    const uint64_t bit = uint64_t(1) << (k & 63);
+    g_ls_force[k >> 6] |= bit;
+    dirty[k >> 6] &= ~bit;
+  }
+  g_sp_loads.fetch_add(1, std::memory_order_relaxed);
+  return true;
+}
+bool SplitBatchEnd(const uint32_t* recs, uint32_t count4, void (*push)(const uint32_t*, uint32_t), bool more_pending) {
+  if (!g_split_on) return false;
+  g_sp_push = push;
+  g_sp_cur.push_back(kSpPx);
+  g_sp_cur.push_back(count4);
+  g_sp_cur.insert(g_sp_cur.end(), recs, recs + size_t(count4) * 4);
+  // Handed over when no batch is waiting (so a fence the game may wait on is never held in a half-filled chunk), else
+  // kept for the next batches up to the chunk size (SPL1: one hand-over per kick was ~190 a frame, a lock and a wake each).
+  if (!more_pending || g_sp_cur_draws >= kSpDrawsPerChunk || g_sp_cur.size() >= (1u << 16)) SpPublish();
+  return true;
+}
+void SplitDrawThread() {
+  SetThreadDescription(GetCurrentThread(), L"fable2 draw thread");
+  t_sp_draw_thread = true;
+  std::vector<uint8_t> vs_code, ps_code;
+  LARGE_INTEGER qf, win0;
+  QueryPerformanceFrequency(&qf);
+  QueryPerformanceCounter(&win0);
+  uint64_t busy = 0;
+  for (;;) {
+    std::vector<uint32_t> c;
+    {
+      std::unique_lock<std::mutex> lock(g_sp_mu);
+      g_sp_cv.wait(lock, [] { return !g_sp_q.empty(); });
+      c = std::move(g_sp_q.front());
+      g_sp_q.pop_front();
+      g_sp_busy = true;
+    }
+    g_sp_room_cv.notify_one();
+    LARGE_INTEGER b0, b1;
+    QueryPerformanceCounter(&b0);
+    auto apply = [&](size_t at, uint32_t n) { if (n) fable2::ngpu::backend::WriteRegisterPairs(&c[at], n); };
+    size_t i = 0;
+    while (i < c.size()) {
+      const uint32_t tag = c[i];
+      g_sp_records.fetch_add(1, std::memory_order_relaxed);
+      if (tag == kSpSync) {
+        const uint32_t n = c[i + 1];
+        apply(i + 2, n);
+        i += 2 + 2 * size_t(n);
+      } else if (tag == kSpDraw) {
+        LARGE_INTEGER t0;
+        QueryPerformanceCounter(&t0);
+        const uint32_t n = c[i + 1];
+        apply(i + 2, n);
+        const uint32_t* f = &c[i + 2 + 2 * size_t(n)];
+        ::fable2::ngpu::FeDrawInfo d{};
+        d.draw_initiator = f[0]; d.index_addr = f[1]; d.index_size = f[2];
+        d.vs_addr = f[3]; d.vs_dwords = f[4]; d.ps_addr = f[5]; d.ps_dwords = f[6];
+        d.vs_inline = (f[7] & 1) != 0; d.ps_inline = (f[7] & 2) != 0;
+        d.vs_code = vs_code.empty() ? nullptr : vs_code.data();
+        d.ps_code = ps_code.empty() ? nullptr : ps_code.data();
+        d.vs_code_dwords = uint32_t(vs_code.size() / 4); d.ps_code_dwords = uint32_t(ps_code.size() / 4);
+        FrontEndDrawCore(d, t0);
+        i += 2 + 2 * size_t(n) + 8;
+      } else if (tag == kSpSwap) {
+        LARGE_INTEGER s0;
+        QueryPerformanceCounter(&s0);
+        const uint32_t n = c[i + 1];
+        apply(i + 2, n);
+        const uint32_t* f = &c[i + 2 + 2 * size_t(n)];
+        FrontEndSwapCore(f[0], f[1], f[2], s0);
+        i += 2 + 2 * size_t(n) + 3;
+      } else if (tag == kSpRegNow) {
+        FrontEndRegisterNowImpl(c[i + 1], c[i + 2]);
+        i += 3;
+      } else if (tag == kSpLoad) {   // LOAD_ALU_CONSTANT, read now - the record-time read point
+        const uint32_t addr = c[i + 1], first = c[i + 2], count = c[i + 3];
+        auto* ks = rex::system::kernel_state();
+        const uint8_t* src = ks && ks->memory() ? ks->memory()->TranslatePhysical<const uint8_t*>(addr) : nullptr;
+        if (src) g_sp_load_writes.fetch_add(fable2::ngpu::backend::WriteRegistersBEIfChanged(first, src, count),
+                                            std::memory_order_relaxed);
+        i += 4;
+      } else if (tag == kSpPx) {
+        const uint32_t n4 = c[i + 1];
+        if (g_sp_push && n4) g_sp_push(&c[i + 2], n4);
+        i += 2 + 4 * size_t(n4);
+      } else if (tag == kSpCodeVS || tag == kSpCodePS) {
+        const uint32_t nd = c[i + 1];
+        std::vector<uint8_t>& dst = tag == kSpCodeVS ? vs_code : ps_code;
+        dst.assign(reinterpret_cast<const uint8_t*>(&c[i + 2]), reinterpret_cast<const uint8_t*>(&c[i + 2]) + size_t(nd) * 4);
+        i += 2 + size_t(nd);
+      } else {
+        static std::atomic<int> logged{0};
+        if (logged.fetch_add(1) < 5) REXLOG_ERROR("[split] unknown record {} at {} of {} - chunk dropped", tag, i, c.size());
+        break;
+      }
+    }
+    QueryPerformanceCounter(&b1);
+    busy += uint64_t(b1.QuadPart - b0.QuadPart);
+    if (b1.QuadPart - win0.QuadPart >= 5 * qf.QuadPart) {
+      const uint64_t waited = g_sp_wait_qpc.exchange(0);
+      REXLOG_INFO("[split] draw thread busy {:.1f}% of the last {:.1f} s; decode thread waited on a full queue {:.1f}% "
+                  "({} chunks, {} records, {} deferred constant loads writing {} changed registers so far)",
+                  100.0 * double(busy) / double(b1.QuadPart - win0.QuadPart),
+                  double(b1.QuadPart - win0.QuadPart) / double(qf.QuadPart),
+                  100.0 * double(waited) / double(b1.QuadPart - win0.QuadPart), g_sp_chunks.load(), g_sp_records.load(),
+                  g_sp_loads.load(), g_sp_load_writes.load());
+      busy = 0;
+      win0 = b1;
+    }
+    {
+      std::lock_guard<std::mutex> lock(g_sp_mu);
+      c.clear();
+      if (g_sp_free.size() < 16) g_sp_free.push_back(std::move(c));
+      g_sp_busy = false;
+      if (g_sp_q.empty()) g_sp_idle_cv.notify_all();
+    }
+  }
+}
+// Decode thread, at a batch boundary.
+void SplitUpdate() {
+  const bool want = REXCVAR_GET(ngpu_opt_split) && g_backend_on;   // start-up (and its buffered gamma writes) stays direct
+  if (want == g_split_on) return;
+  if (want) {
+    if (!g_sp_thread_started) { g_sp_thread_started = true; std::thread(SplitDrawThread).detach(); }
+    g_split_on = true;
+    REXLOG_INFO("[split] ON: decoding on the recorder thread, draws recorded on the draw thread");
+  } else {
+    SpPublish();
+    std::unique_lock<std::mutex> lock(g_sp_mu);
+    g_sp_idle_cv.wait(lock, [] { return g_sp_q.empty() && !g_sp_busy; });
+    g_split_on = false;
+    REXLOG_INFO("[split] off: the recorder thread draws again (stream drained)");
+  }
 }
 
 void OnBridgeDraw(const RexNgpuDraw* d) {
@@ -17616,6 +17875,9 @@ bool RevealPendingImpl() { return false; }
 void FrontEndDrawImpl(const uint32_t*, uint64_t*, const ::fable2::ngpu::FeDrawInfo&) {}
 void FrontEndSwapImpl(uint32_t, uint32_t, uint32_t, const uint32_t*, uint64_t*) {}
 void FrontEndRegisterNowImpl(uint32_t, uint32_t) {}
+void SplitUpdate() {}
+bool SplitLoadConstants(uint32_t, uint32_t, uint32_t, const uint32_t*, uint64_t*) { return false; }
+bool SplitBatchEnd(const uint32_t*, uint32_t, void (*)(const uint32_t*, uint32_t), bool) { return false; }
 #endif
 
 }  // namespace ngpu
@@ -17626,4 +17888,11 @@ bool RevealPending() { return ::ngpu::RevealPendingImpl(); }   // [uw reveal] fa
 void FrontEndDraw(const uint32_t* regs, uint64_t* dirty, const FeDrawInfo& d) { ::ngpu::FrontEndDrawImpl(regs, dirty, d); }
 void FrontEndSwap(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* regs, uint64_t* dirty) { ::ngpu::FrontEndSwapImpl(fb, w, h, regs, dirty); }
 void FrontEndRegisterNow(uint32_t reg, uint32_t value) { ::ngpu::FrontEndRegisterNowImpl(reg, value); }
+void FrontEndSplitUpdate() { ::ngpu::SplitUpdate(); }
+bool FrontEndLoadConstants(uint32_t guest_addr, uint32_t first_reg, uint32_t count, const uint32_t* regs, uint64_t* dirty) {
+  return ::ngpu::SplitLoadConstants(guest_addr, first_reg, count, regs, dirty);
+}
+bool FrontEndBatchEnd(const uint32_t* recs, uint32_t count4, void (*push)(const uint32_t*, uint32_t), bool more_pending) {
+  return ::ngpu::SplitBatchEnd(recs, count4, push, more_pending);
+}
 }  // namespace fable2::ngpu
