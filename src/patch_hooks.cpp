@@ -290,6 +290,7 @@ std::atomic<bool> g_guest_live{false};
 int g_world_quick_builds = 0;   // hook thread only
 int g_menu_quick_builds = 0;
 int g_world_builds_in_loading = 0;  // world builds since the loading map appeared
+int g_world_steady_builds = 0;      // world builds with no gap over 1 s, since the loading map was last built
 uint32_t g_world_object = 0;        // the object of the last world-camera build
 int64_t g_prev_world_build_ns = 0, g_prev_menu_build_ns = 0;
 constexpr int64_t kQuickBuildGapNs = 100000000;  // 100 ms
@@ -519,6 +520,7 @@ void fable2PatchFieldOfView(PPCRegister& f8, PPCRegister& f30, PPCRegister& r31)
     g_last_loading_camera_ns.store(now, std::memory_order_relaxed);
     g_world_quick_builds = g_menu_quick_builds = 0;
     g_world_builds_in_loading = 0;
+    g_world_steady_builds = 0;
     SetScene(Scene::kLoading);
     return;
   }
@@ -551,13 +553,25 @@ void fable2PatchFieldOfView(PPCRegister& f8, PPCRegister& f30, PPCRegister& r31)
   {
     const bool quick = g_prev_world_build_ns && now - g_prev_world_build_ns <= kQuickBuildGapNs;
     g_world_quick_builds = quick ? std::min(g_world_quick_builds + 1, 1000000) : 1;
+    const bool steady = g_prev_world_build_ns && now - g_prev_world_build_ns <= 1000000000;
+    g_world_steady_builds = steady ? std::min(g_world_steady_builds + 1, 1000000) : 1;
     g_prev_world_build_ns = now;
     g_world_object = r31.u32;
     g_last_camera_build_ns.store(now, std::memory_order_relaxed);
     const Scene scene = Scene(g_scene.load(std::memory_order_relaxed));
-    if (scene == Scene::kLoading)
+    if (scene == Scene::kLoading) {
       ++g_world_builds_in_loading;  // warm-up: the HUD camera's return ends it
-    else if (g_world_quick_builds >= 2 && scene != Scene::kWorld)
+      // A fast travel INSIDE the current region (Bloodstone -> Wraithmarsh Road, 2026-09-27 sweep) shows the loading
+      // map but keeps the HUD camera object, so its return is never "new" and the scene stayed "loading" for the rest
+      // of the session (pillarbox, no ultrawide projection). Two unbroken seconds of world builds with the map gone
+      // for a second end it too; a real load's warm-up builds come in bursts with ~760 ms gaps and never qualify.
+      // Counted without a frame-time condition (2026-09-28 00:38: at 13 fps with 400 ms hitches the "quick" streak
+      // never reached 120 and The Sandgoose / The Throne Room stayed 'loading'): 60 world builds with no gap over a
+      // second since the map was last built, and the map gone for 2 s. A real load's warm-up is ~13 builds.
+      if (g_world_steady_builds >= 60 &&
+          now - g_last_loading_camera_ns.load(std::memory_order_relaxed) > 2000000000)
+        SetScene(Scene::kWorld);
+    } else if (g_world_quick_builds >= 2 && scene != Scene::kWorld)
       SetScene(Scene::kWorld);
     // Outside the world scene (a lone build while the map is up) the
     // game's own projection stands: the presenter shows bars, and the two

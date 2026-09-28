@@ -11,6 +11,7 @@
 struct ID3D12Device;
 struct ID3D12CommandQueue;
 struct ID3D12Resource;
+namespace rex::ui { class Presenter; }   // [gs] PresentInto
 
 namespace fable2::ngpu::backend {
 
@@ -37,6 +38,10 @@ void Swap(uint32_t frontbuffer_ptr, uint32_t width, uint32_t height, const uint3
           const uint32_t* gamma_table_256, const uint32_t* gamma_pwl_rgb);
 // End of a replayed frame that had no swap (submits the pending work).
 void EndFrameNoSwap();
+// [gs] Copy the last swap's guest output into the runtime presenter (the game's own graphics system).
+bool PresentInto(rex::ui::Presenter* presenter);
+// [gs] The same, handed to the present thread (the recorder only records "frame ready").
+bool PresentAsync(rex::ui::Presenter* presenter);
 
 // The latest gamma-applied guest output (R10G10B10A2, PIXEL_SHADER_RESOURCE) and its size; nullptr before the first.
 ID3D12Resource* GuestOutput(uint32_t& width, uint32_t& height);

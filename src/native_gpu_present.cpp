@@ -20,6 +20,9 @@
 // render thread): the window is created there and its messages are pumped
 // there, once per frame.
 #include "native_gpu_present.h"
+#include "fable2_p2_census.h"
+#include "native_gpu_frontend.h"
+#include "fable2_native_gs.h"
 #include "fable2_viewstate.h"   // fable2::WorldCameraLive() - scopes the rect GS to the front end
 #include "native_gpu_sdk_xlat.h"   // phase A: SDK pair translation
 #include <rex/graphics/pipeline/shader/shader.h>   // Shader::writes_color_targets (EDRAM port shadow)
@@ -1156,6 +1159,8 @@ struct RexNgpuDraw {
   const uint8_t* vs_code;
   const uint8_t* ps_code;
   uint32_t vs_code_dwords, ps_code_dwords;
+  // Census plugins (rexglue-src fable-p2-census, size covers it): the guest address of the draw's PM4 packet.
+  uint32_t packet_addr;
 };
 using RexNgpuDrawFn = void (*)(const RexNgpuDraw*);
 using RexNgpuSetDrawCallbackFn = void (*)(RexNgpuDrawFn);
@@ -2360,8 +2365,14 @@ bool RevealPendingImpl() {
   return entry_ms != 0 && now - entry_ms < int64_t(REXCVAR_GET(ngpu_reveal_hold_max_ms)) + 500;
 }
 void BackendDirtyCoverageAtSwap();              // defined with BackendLockstepSync
+void LockstepAfterSwap();                       // the present tail after a backend swap (plugin or front end)
+void FrontEndCaptureGamma();                    // [p3 draw] the plugin's gamma ramp, captured in its swap callback
+void OnBridgeSwapBookkeeping();                 // per-swap counters and censuses
 void OnBridgeSwap(uint32_t fb, uint32_t fb_w, uint32_t fb_h) {
-  if (REXCVAR_GET(ngpu_backend) && g_bridge_live_regs) {
+  fable2::p2::BridgeSwap();   // P3 FE validation: per-frame execution ordinals (no-op cost when off)
+  if (fable2::p2::FrontEndDraws()) FrontEndCaptureGamma();   // [p3 draw] the export returns the ramp only DURING this callback
+  fable2::p2::RecorderSwapReport();
+  if (REXCVAR_GET(ngpu_backend) && g_bridge_live_regs && !fable2::p2::FrontEndDraws()) {
     BackendSwap& b = g_bswap_pending;
     b.valid = true; b.fb = fb; b.w = fb_w; b.h = fb_h;
     for (uint32_t i = 0; i < 6; ++i) b.fetch0[i] = g_bridge_live_regs[0x4800 + i];
@@ -2381,11 +2392,40 @@ void OnBridgeSwap(uint32_t fb, uint32_t fb_w, uint32_t fb_h) {
       QueryPerformanceCounter(&s1);
       g_ft_backend_qpc += uint64_t(s1.QuadPart - s0.QuadPart);
       b.valid = false;   // consumed here, not by the replay
+      LockstepAfterSwap();
+    }
+  }
+  TilingCensusSwap();  // [tiling census]
+  ngc::MaybeReport();
+  OnBridgeSwapBookkeeping();
+}
+// The hold / letterbox / present tail after a backend swap - shared by the plugin's swap callback and, with
+// FABLE2_P3DRAW, the front end's swap on the guest thread (NG2's AfterSwap).
+void LockstepAfterSwap() {
       // PRESENT AT THE SWAP (WALKL1: the native window ran frames behind while walking and a whole menu screen behind
       // in the pause menu). The guest's present hook fires when the CPU submits the frame - ahead of the GPU thread
       // reaching this swap - so presenting from there showed an older output. The native frame is requested here,
       // right after the backend's own IssueSwap, and ShadowPresent no longer requests one in lockstep.
-      if (!RevealHold()) RequestNativePresent();   // the worker publishes to the game window (or the native window)
+      if (!RevealHold()) {
+        if (fable2::gs::Active()) {   // [gs] own presenter; its cost on the recording thread is logged (GS3: 56 fps, recorder 99%)
+          static LARGE_INTEGER f{}, w0{};
+          static uint64_t acc = 0, waited = 0;
+          if (!f.QuadPart) { QueryPerformanceFrequency(&f); QueryPerformanceCounter(&w0); }
+          LARGE_INTEGER a0, a1;
+          QueryPerformanceCounter(&a0);
+          fable2::ngpu::backend::PresentAsync(fable2::gs::Presenter());   // (GS4: the synchronous copy was 15% of the recorder)
+          QueryPerformanceCounter(&a1);
+          acc += uint64_t(a1.QuadPart - a0.QuadPart);
+          if (a1.QuadPart - w0.QuadPart >= 5 * f.QuadPart) {
+            REXLOG_INFO("[gs] present into the runtime presenter: {:.1f}% of wall time on the recording thread",
+                        100.0 * double(acc) / double(a1.QuadPart - w0.QuadPart));
+            acc = 0;
+            w0 = a1;
+          }
+          (void)waited;
+        }
+        else RequestNativePresent();   // the worker publishes to the game window (or the native window)
+      }
       if (REXCVAR_GET(ngpu_backend_frame_trace)) FrameTraceRecord();   // after RevealHold: carries this swap's verdict
       BackendDirtyCoverageAtSwap();
       static uint32_t n = 0;
@@ -2395,10 +2435,8 @@ void OnBridgeSwap(uint32_t fb, uint32_t fb_w, uint32_t fb_h) {
                     st.draws, st.draw_failed, g_ls_fail_nocode, g_ls_fail_withcode, st.swaps, st.shader_loads, st.shader_load_failed, g_ls_regs_written,
                     g_ls_nocode[0][0], g_ls_nocode[0][1], g_ls_nocode[0][2], g_ls_nocode[0][3], g_ls_nocode[1][0], g_ls_nocode[1][1], g_ls_nocode[1][2], g_ls_nocode[1][3]);
       }
-    }
-  }
-  TilingCensusSwap();  // [tiling census]
-  ngc::MaybeReport();  // per-swap coverage census (fires whether or not anything drew - point c)
+}
+void OnBridgeSwapBookkeeping() {
   // Independent of EndFrame, because a filter that skips every draw leaves no
   // native frame and would silence its own diagnosis.
   if (g_bin_swap_ticks.fetch_add(1, std::memory_order_relaxed) % 120 == 119) {
@@ -2598,14 +2636,23 @@ void FrameTraceRecord() {
   if (((written + failed) / 256) % 16 == 0)
     REXLOG_INFO("[ngpu] FRAME TRACE: {} frames written, {} DROPPED", written, failed);
 }
+std::vector<std::pair<uint32_t, uint32_t>> g_pending_now;   // [gs] gamma-port writes before the backend exists
 bool BackendLockstepReady() {
   if (g_backend_on) return true;
-  if (!g_s.device || !g_s.queue) return false;   // the native window is not up yet
+  const bool gs = fable2::gs::Active();
+  if (!gs && (!g_s.device || !g_s.queue)) return false;   // the native window is not up yet
+  if (gs && (!fable2::gs::Device() || !fable2::gs::Queue())) return false;
   static bool tried = false;
   if (tried) return false;
   tried = true;
-  g_backend_on = fable2::ngpu::backend::Init(static_cast<D3D12Device*>(g_s.device.get())->d3d,
-                                             static_cast<D3D12CommandQueue*>(g_s.queue.get())->d3d);
+  // [gs] The game's own graphics system: its provider's device and direct queue (the presenter paints on them).
+  g_backend_on = gs ? fable2::ngpu::backend::Init(fable2::gs::Device(), fable2::gs::Queue())
+                    : fable2::ngpu::backend::Init(static_cast<D3D12Device*>(g_s.device.get())->d3d,
+                                                  static_cast<D3D12CommandQueue*>(g_s.queue.get())->d3d);
+  if (g_backend_on) {
+    for (const auto& pr : g_pending_now) fable2::ngpu::backend::WriteRegister(pr.first, pr.second);   // the ramp so far
+    g_pending_now.clear();
+  }
   g_backend_lockstep = g_backend_on;
   if (g_backend_on) ngc::NoteBackendTransplant(fable2::ngpu::rtc::NativeOwnsGuestMemory());
   REXLOG_INFO("[ngpu] BACKEND LOCKSTEP: {}", g_backend_on ? "the plugin's draw callback feeds the transplanted backend directly" : "initialisation FAILED");
@@ -2652,7 +2699,7 @@ void BackendLockstepDraw(const RexNgpuDraw* d) {
     if (!(p && PageReadable(p) && PageReadable(p + dwords * 4 - 1))) { ++g_ls_nocode[stage][2]; return nullptr; }
     return reinterpret_cast<const uint32_t*>(p);
   };
-  const bool has_inline = d->size >= sizeof(RexNgpuDraw);
+  const bool has_inline = d->size >= offsetof(RexNgpuDraw, packet_addr);   // not sizeof: packet_addr came later
   fable2::ngpu::backend::DrawRecord br;
   br.draw_initiator = d->draw_initiator;
   br.index_addr = d->index_addr;
@@ -2665,9 +2712,132 @@ void BackendLockstepDraw(const RexNgpuDraw* d) {
   ++g_ls_draws;
 }
 
+// [p3 draw] The front end's register file into the backend: only the registers it wrote since the last draw (its
+// dirty bitmap), against what the backend has (g_ls_prev - the plugin path no longer writes the backend then).
+void FrontEndSync(const uint32_t* regs, uint64_t* dirty) {
+  static const uint32_t kRanges[][2] = {{0x2000, 0x2400}, {0x4000, 0x4928}};
+  if (!g_ls_prev_valid) {   // the first sync: everything in the ranges, so the backend starts from the file
+    for (const auto& r : kRanges)
+      for (uint32_t k = r[0]; k < r[1]; ++k) { g_ls_prev[k] = regs[k]; fable2::ngpu::backend::WriteRegister(k, regs[k]); }
+    g_ls_prev_valid = true;
+    std::memset(dirty, 0, sizeof(uint64_t) * ((0x5000 + 63) / 64));
+    return;
+  }
+  for (const auto& r : kRanges) {
+    for (uint32_t w = r[0] >> 6; w <= (r[1] - 1) >> 6; ++w) {
+      uint64_t bits = dirty[w];
+      if (!bits) continue;
+      dirty[w] = 0;
+      while (bits) {
+        unsigned long b;
+        _BitScanForward64(&b, bits);
+        const uint32_t k = (w << 6) + uint32_t(b);
+        bits &= bits - 1;
+        if (k < r[0] || k >= r[1] || g_ls_prev[k] == regs[k]) continue;
+        g_ls_prev[k] = regs[k];
+        fable2::ngpu::backend::WriteRegister(k, regs[k]);
+        ++g_ls_regs_written;
+      }
+    }
+  }
+}
+// [p3 draw] At a DRAW packet the front end decoded (guest thread): its registers, then the draw as
+// BackendLockstepDraw records the plugin's. Microcode at an address is COPIED now (the plugin path could point into
+// guest memory because it ran at the GPU's pace; the front end runs ahead of it).
+void FrontEndDrawImpl(const uint32_t* regs, uint64_t* dirty, const ::fable2::ngpu::FeDrawInfo& d) {
+  if (!REXCVAR_GET(ngpu_backend) || !BackendLockstepReady()) return;
+  LARGE_INTEGER t0, t1;
+  QueryPerformanceCounter(&t0);
+  FrontEndSync(regs, dirty);
+  auto code = [](int stage, uint32_t addr, uint32_t& dwords, bool inl, const uint8_t* inline_code,
+                 uint32_t inline_dwords) -> const uint32_t* {
+    if (inl) {
+      if (!inline_code) { ++g_ls_nocode[stage][1]; return nullptr; }
+      dwords = inline_dwords;
+      return reinterpret_cast<const uint32_t*>(inline_code);
+    }
+    if (!addr || !dwords || dwords > 0x10000) { ++g_ls_nocode[stage][3]; return nullptr; }
+    const uint8_t* p = Phys(addr);
+    if (!(p && PageReadable(p) && PageReadable(p + dwords * 4 - 1))) { ++g_ls_nocode[stage][2]; return nullptr; }
+    // Recorder mode (design (b)) reads at record time, the plugin's own read point: point into guest memory like
+    // BackendLockstepDraw does. The copy below is for design (a), which runs ahead of the GPU (P5P profile, 19:08:
+    // this copy was ~8% of the saturated recorder thread).
+    if (fable2::p2::FrontEndRecorderMode()) return reinterpret_cast<const uint32_t*>(p);
+    thread_local std::vector<uint8_t> scratch[2];
+    std::vector<uint8_t>& buf = scratch[stage & 1];
+    if (buf.size() < size_t(dwords) * 4) buf.resize(size_t(dwords) * 4);
+    std::memcpy(buf.data(), p, size_t(dwords) * 4);
+    return reinterpret_cast<const uint32_t*>(buf.data());
+  };
+  fable2::ngpu::backend::DrawRecord br;
+  br.draw_initiator = d.draw_initiator;
+  br.index_addr = d.index_addr;
+  br.index_size = d.index_size;
+  br.vs_addr = d.vs_addr; br.vs_dwords = d.vs_dwords;
+  br.ps_addr = d.ps_addr; br.ps_dwords = d.ps_dwords;
+  br.vs_code = code(0, d.vs_addr, br.vs_dwords, d.vs_inline, d.vs_code, d.vs_code_dwords);
+  br.ps_code = code(1, d.ps_addr, br.ps_dwords, d.ps_inline, d.ps_code, d.ps_code_dwords);
+  if (!fable2::ngpu::backend::Draw(br)) ++(br.vs_code ? g_ls_fail_withcode : g_ls_fail_nocode);
+  ++g_ls_draws;
+  QueryPerformanceCounter(&t1);
+  g_ft_backend_qpc += uint64_t(t1.QuadPart - t0.QuadPart);
+}
+// [p3 draw] GAMMA (2026-09-27 evening): RexNgpuGetGammaRamp returns the ramp only DURING the plugin's swap callback, so
+// FrontEndSwap - on the guest / recorder thread - always got "no ramp" and the backend kept a linear one. The ramp is
+// now captured in that callback and applied at the front end's next swap (a ramp change lands one frame later).
+std::mutex g_fe_gamma_mu;
+bool g_fe_gamma_valid = false;
+uint32_t g_fe_gamma_table[256], g_fe_gamma_pwl[128 * 3];
+void FrontEndCaptureGamma() {
+  using GetGammaFn = bool (*)(uint32_t*, uint32_t*);
+  static GetGammaFn get_gamma = [] {
+    HMODULE m = GetModuleHandleA("rexgpu-xenos.dll");
+    return m ? reinterpret_cast<GetGammaFn>(GetProcAddress(m, "RexNgpuGetGammaRamp")) : nullptr;
+  }();
+  uint32_t t[256], p[128 * 3];
+  if (!get_gamma || !get_gamma(t, p)) return;
+  std::lock_guard<std::mutex> lock(g_fe_gamma_mu);
+  std::memcpy(g_fe_gamma_table, t, sizeof(t));
+  std::memcpy(g_fe_gamma_pwl, p, sizeof(p));
+  g_fe_gamma_valid = true;
+}
+// [p3 draw] At XE_SWAP (guest thread): the backend's swap from the front end's file (fetch constant 0 from it; the
+// gamma ramp from the plugin's export, which holds it), then the same present tail as the plugin path.
+void FrontEndRegisterNowImpl(uint32_t reg, uint32_t value) {
+  if (g_backend_on) fable2::ngpu::backend::WriteRegister(reg, value);
+  else if (g_pending_now.size() < 65536) g_pending_now.push_back({reg, value});
+}
+void FrontEndSwapImpl(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* regs, uint64_t* dirty) {
+  if (!REXCVAR_GET(ngpu_backend) || !BackendLockstepReady() || !g_backend_lockstep) return;
+  LARGE_INTEGER s0, s1;
+  QueryPerformanceCounter(&s0);
+  FrontEndSync(regs, dirty);
+  uint32_t fetch0[6];
+  for (uint32_t i = 0; i < 6; ++i) fetch0[i] = regs[0x4800 + i];
+  static uint32_t table[256], pwl[128 * 3];
+  bool gamma = false;
+  {
+    std::lock_guard<std::mutex> lock(g_fe_gamma_mu);
+    if (g_fe_gamma_valid) { std::memcpy(table, g_fe_gamma_table, sizeof(table)); std::memcpy(pwl, g_fe_gamma_pwl, sizeof(pwl)); gamma = true; }
+  }
+  fable2::ngpu::backend::Swap(fb, w, h, fetch0, gamma ? table : nullptr, gamma ? pwl : nullptr);
+  QueryPerformanceCounter(&s1);
+  g_ft_backend_qpc += uint64_t(s1.QuadPart - s0.QuadPart);
+  LockstepAfterSwap();
+}
+
 void OnBridgeDraw(const RexNgpuDraw* d) {
   // Older plugins end at bin_select (no inline-microcode fields); BridgeLogRecord reads those only when size covers them.
-  if (!d || (d->size != sizeof(RexNgpuDraw) && d->size != offsetof(RexNgpuDraw, vs_code))) { ++g_bridge_struct_bad; return; }
+  if (!d || (d->size != sizeof(RexNgpuDraw) && d->size != offsetof(RexNgpuDraw, packet_addr) &&
+             d->size != offsetof(RexNgpuDraw, vs_code))) { ++g_bridge_struct_bad; return; }
+  // [p3 rec] design (b): first wait until the recorder has recorded this far (the plugin must not pass - and fence - a
+  // draw the recorder has not recorded; and the comparison needs the recorder's snapshot to exist)
+  if (fable2::p2::FrontEndDraws() && d->size >= sizeof(RexNgpuDraw)) fable2::p2::WaitRecorder(d->packet_addr, d->draw_initiator);
+  if (d->size >= sizeof(RexNgpuDraw)) fable2::p2::BridgeDraw(d->packet_addr, d->regs, d->reg_count, d->draw_initiator);   // [p3 map]
+  if (fable2::p2::FrontEndDraws()) {   // [p3 draw] compare-only: the front end records this draw
+    g_bridge_live_regs = d->regs; g_bridge_live_reg_count = d->reg_count;
+    return;
+  }
   if (REXCVAR_GET(ngpu_backend) && REXCVAR_GET(ngpu_backend_lockstep) && d->regs && d->reg_count >= 0x4928) {
     g_bridge_live_regs = d->regs; g_bridge_live_reg_count = d->reg_count;   // the swap callback reads fetch 0 here
     LARGE_INTEGER t0, t1;
@@ -17443,10 +17613,17 @@ void ShadowPresent() {
 }
 void ShadowDrawIndexed(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {}
 bool RevealPendingImpl() { return false; }
+void FrontEndDrawImpl(const uint32_t*, uint64_t*, const ::fable2::ngpu::FeDrawInfo&) {}
+void FrontEndSwapImpl(uint32_t, uint32_t, uint32_t, const uint32_t*, uint64_t*) {}
+void FrontEndRegisterNowImpl(uint32_t, uint32_t) {}
 #endif
 
 }  // namespace ngpu
 
 namespace fable2::ngpu {
 bool RevealPending() { return ::ngpu::RevealPendingImpl(); }   // [uw reveal] fable2_texnotify.cpp
+// [p3 draw] fable2_p2_census.cpp's front end (FABLE2_P3DRAW)
+void FrontEndDraw(const uint32_t* regs, uint64_t* dirty, const FeDrawInfo& d) { ::ngpu::FrontEndDrawImpl(regs, dirty, d); }
+void FrontEndSwap(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* regs, uint64_t* dirty) { ::ngpu::FrontEndSwapImpl(fb, w, h, regs, dirty); }
+void FrontEndRegisterNow(uint32_t reg, uint32_t value) { ::ngpu::FrontEndRegisterNowImpl(reg, value); }
 }  // namespace fable2::ngpu

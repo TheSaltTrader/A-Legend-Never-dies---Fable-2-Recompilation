@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "fable2_native_gs.h"   // [gs] the game's own graphics system
 #include "ngpu_backend_dll/ngpu_backend_api.h"
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -241,6 +242,23 @@ class Fable2App : public rex::ReXApp {
     fable2::FPTrap::InstallIfRequested();
     // The settings file is the player's choice; the cvar is the override, so
     // a command line still wins for scripted runs.
+    // [gs] FULL NATIVE (FABLE2_NATIVE_GS=1, NG2 alt 6f02c22 ported): the game's own graphics system instead of
+    // rexgpu-xenos's. The plugin DLL is still loaded as a plain library so the settings it defines (vsync, the texture
+    // pack, the readback flags the native backend mirrors) stay registered; its graphics system is never created.
+    // 1.1.4 (user, 2026-09-28: "fully native by default, we are getting away from emulation"): always, unless the
+    // diagnostic-only environment switch FABLE2_NATIVE_GS=0 is set.
+    settings_.renderer = "native";
+    if (fable2::gs::Requested(true)) {
+      const HMODULE plugin = LoadLibraryA("rexgpu-xenos.dll");
+      config.graphics = fable2::gs::Create();
+      REXLOG_INFO("[gs] FABLE2_NATIVE_GS: own graphics system {} (plugin library {} for its settings)",
+                  config.graphics ? "created" : "UNAVAILABLE - falling back to the plugin", plugin ? "loaded" : "missing");
+      if (config.graphics) {
+        ApplyDisplaySettings();
+        ApplyTuning();
+        return;
+      }
+    }
     std::string backend = REXCVAR_GET(gpu_backend);
     if (backend == "any" && !settings_.gpu_backend.empty())
       backend = settings_.gpu_backend;

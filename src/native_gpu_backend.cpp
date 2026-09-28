@@ -8,6 +8,10 @@
 #include <chrono>
 #include <algorithm>
 #include <memory>
+#include <wrl/client.h>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include <rex/cvar.h>
 #include <rex/graphics/flags.h>
@@ -15,6 +19,8 @@
 #include <climits>
 #include <string>
 #include <rex/system/kernel_state.h>
+#include <rex/kernel/xboxkrnl/video.h>     // [gs] PresentInto: the display size
+#include <rex/ui/d3d12/d3d12_presenter.h>   // [gs] PresentInto: the runtime presenter's guest output
 
 #include "rtc_d3d12/command_processor.h"
 #include "rtc_d3d12/facade.h"
@@ -93,6 +99,7 @@ class Driver {
     return true;
   }
   bool Ready() const { return cp_ != nullptr; }
+  bool PresentInto(rex::ui::Presenter* presenter);   // [gs] defined after the guest-output globals
 
   void WriteRegister(uint32_t index, uint32_t value) { cp_->WriteRegister(index, value); }
 
@@ -219,6 +226,144 @@ ID3D12Resource* g_output = nullptr;
 uint32_t g_output_w = 0, g_output_h = 0;
 bool g_output_is_8bpc = false;
 }  // namespace
+
+// [gs] The game's own graphics system (NG2's PresentInto, alt 6f02c22): the last swap's guest output copied into the
+// RUNTIME presenter's guest output on this backend's queue (one device - the provider's), from the thread that swapped.
+// The async submit thread must have handed the copy to the queue before the presenter signals its fence.
+bool Driver::PresentInto(rex::ui::Presenter* presenter) {
+  if (!cp_ || !presenter || !g_output || !g_output_w || !g_output_h) return false;
+  ID3D12Resource* out = g_output;
+  const uint32_t w = g_output_w, h = g_output_h;
+  const bool is_8bpc = g_output_is_8bpc;
+  rex::system::X_VIDEO_MODE vm;
+  rex::kernel::xboxkrnl::VdQueryVideoMode(&vm);
+  const uint32_t dw = std::max(uint32_t(1), uint32_t(vm.display_width));
+  const uint32_t dh = std::max(uint32_t(1), uint32_t(vm.display_height));
+  return presenter->RefreshGuestOutput(w, h, dw, dh, [&](rex::ui::Presenter::GuestOutputRefreshContext& ctx) -> bool {
+    ID3D12Resource* dest =
+        static_cast<rex::ui::d3d12::D3D12Presenter::D3D12GuestOutputRefreshContext&>(ctx).resource_uav_capable();
+    const D3D12_RESOURCE_DESC dd = dest->GetDesc();
+    if (dd.Width != w || dd.Height != h || dd.Format != rex::ui::d3d12::D3D12Presenter::kGuestOutputFormat) return false;
+    ctx.SetIs8bpc(is_8bpc);
+    if (!cp_->BeginSubmission(true)) return false;
+    constexpr D3D12_RESOURCE_STATES kIn = rex::ui::d3d12::D3D12Presenter::kGuestOutputInternalState;
+    cp_->PushTransitionBarrier(out, kIn, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    cp_->PushTransitionBarrier(dest, kIn, D3D12_RESOURCE_STATE_COPY_DEST);
+    cp_->SubmitBarriers();
+    cp_->deferred_command_list_.D3DCopyResource(dest, out);
+    cp_->PushTransitionBarrier(out, D3D12_RESOURCE_STATE_COPY_SOURCE, kIn);
+    cp_->PushTransitionBarrier(dest, D3D12_RESOURCE_STATE_COPY_DEST, kIn);
+    cp_->SubmitBarriers();
+    cp_->EndSubmission(true);
+    ::fable2::ngpu::rtc::NoteSwapSubmission(cp_->LastQueuedSubmission());
+    ::fable2::ngpu::rtc::WaitSwapSubmitted(50);
+    return true;
+  });
+}
+bool PresentInto(rex::ui::Presenter* presenter) { return g_driver.PresentInto(presenter); }
+
+// [gs present thread] (GS4, 20:26: PresentInto on the recording thread took 15% of wall time - mostly the wait for the
+// async submit thread - and the recorder, already the critical thread, fell to 57 fps). The recorder now only hands
+// over "frame N is ready" (the guest output, AddRef'd, and its swap submission); this thread waits for that submission
+// to reach the queue and copies the output into the runtime presenter with ITS OWN command list on the same queue, so
+// the queue orders the copy after the frame. The newest request wins; the output starts and ends each list in the
+// presenter's internal state, as the backend's own lists leave it.
+namespace {
+struct PresentReq {
+  Microsoft::WRL::ComPtr<ID3D12Resource> res;
+  uint32_t w = 0, h = 0;
+  bool is_8bpc = false;
+  uint64_t submission = 0;
+  rex::ui::Presenter* presenter = nullptr;
+};
+std::mutex g_preq_mu;
+std::condition_variable g_preq_cv;
+PresentReq g_preq;
+bool g_preq_pending = false;
+std::atomic<uint64_t> g_presented{0}, g_present_skipped{0}, g_present_timeouts{0};
+void PresentThreadMain() {
+  SetThreadDescription(GetCurrentThread(), L"fable2 native present");
+  auto& n = ::fable2::ngpu::rtc::Native();
+  Microsoft::WRL::ComPtr<ID3D12CommandAllocator> alloc[3];
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
+  Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+  uint64_t fence_value = 0, slot_value[3] = {};
+  HANDLE ev = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+  for (auto& a : alloc) n.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a));
+  n.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc[0].Get(), nullptr, IID_PPV_ARGS(&list));
+  list->Close();
+  n.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+  for (uint32_t k = 0;; ++k) {
+    PresentReq r;
+    {
+      std::unique_lock<std::mutex> lk(g_preq_mu);
+      g_preq_cv.wait(lk, [] { return g_preq_pending; });
+      r = std::move(g_preq);
+      g_preq_pending = false;
+    }
+    if (!::fable2::ngpu::rtc::WaitSubmitted(r.submission, 100)) g_present_timeouts.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t slot = k % 3;
+    if (fence->GetCompletedValue() < slot_value[slot]) {
+      fence->SetEventOnCompletion(slot_value[slot], ev);
+      WaitForSingleObject(ev, 1000);
+    }
+    rex::system::X_VIDEO_MODE vm;
+    rex::kernel::xboxkrnl::VdQueryVideoMode(&vm);
+    const uint32_t dw = std::max(uint32_t(1), uint32_t(vm.display_width));
+    const uint32_t dh = std::max(uint32_t(1), uint32_t(vm.display_height));
+    const bool ok = r.presenter->RefreshGuestOutput(r.w, r.h, dw, dh, [&](rex::ui::Presenter::GuestOutputRefreshContext& ctx) -> bool {
+      ID3D12Resource* dest =
+          static_cast<rex::ui::d3d12::D3D12Presenter::D3D12GuestOutputRefreshContext&>(ctx).resource_uav_capable();
+      const D3D12_RESOURCE_DESC dd = dest->GetDesc();
+      if (dd.Width != r.w || dd.Height != r.h || dd.Format != rex::ui::d3d12::D3D12Presenter::kGuestOutputFormat) return false;
+      ctx.SetIs8bpc(r.is_8bpc);
+      alloc[slot]->Reset();
+      list->Reset(alloc[slot].Get(), nullptr);
+      constexpr D3D12_RESOURCE_STATES kIn = rex::ui::d3d12::D3D12Presenter::kGuestOutputInternalState;
+      D3D12_RESOURCE_BARRIER b[2] = {};
+      for (int i = 0; i < 2; ++i) {
+        b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+      }
+      b[0].Transition.pResource = r.res.Get(); b[0].Transition.StateBefore = kIn; b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+      b[1].Transition.pResource = dest;        b[1].Transition.StateBefore = kIn; b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+      list->ResourceBarrier(2, b);
+      list->CopyResource(dest, r.res.Get());
+      std::swap(b[0].Transition.StateBefore, b[0].Transition.StateAfter);
+      std::swap(b[1].Transition.StateBefore, b[1].Transition.StateAfter);
+      list->ResourceBarrier(2, b);
+      list->Close();
+      ID3D12CommandList* lists[] = {list.Get()};
+      n.queue->ExecuteCommandLists(1, lists);
+      n.queue->Signal(fence.Get(), ++fence_value);
+      slot_value[slot] = fence_value;
+      return true;
+    });
+    (ok ? g_presented : g_present_skipped).fetch_add(1, std::memory_order_relaxed);
+    if ((k % 600) == 599)
+      REXLOG_INFO("[gs] present thread: {} frames presented, {} skipped, {} submission waits timed out",
+                  g_presented.load(), g_present_skipped.load(), g_present_timeouts.load());
+  }
+}
+}  // namespace
+bool PresentAsync(rex::ui::Presenter* presenter) {
+  if (!presenter || !g_output || !g_output_w || !g_output_h) return false;
+  static std::once_flag once;
+  std::call_once(once, [] { std::thread(PresentThreadMain).detach(); });
+  {
+    std::lock_guard<std::mutex> lk(g_preq_mu);
+    if (g_preq_pending) g_present_skipped.fetch_add(1, std::memory_order_relaxed);   // the newest frame wins
+    g_preq.res = g_output;
+    g_preq.w = g_output_w;
+    g_preq.h = g_output_h;
+    g_preq.is_8bpc = g_output_is_8bpc;
+    g_preq.submission = ::fable2::ngpu::rtc::SwapSubmission();
+    g_preq.presenter = presenter;
+    g_preq_pending = true;
+  }
+  g_preq_cv.notify_one();
+  return true;
+}
 
 bool Init(ID3D12Device* device, ID3D12CommandQueue* queue) { return g_driver.Ready() || g_driver.Init(device, queue); }
 bool Ready() { return g_driver.Ready(); }

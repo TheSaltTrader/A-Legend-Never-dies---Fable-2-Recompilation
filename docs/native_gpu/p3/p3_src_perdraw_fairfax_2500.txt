@@ -1,0 +1,144 @@
+front-end draws in the frame: 9667 (9667 through an IB)
+calls in the frame: 28140 (with a range: 28139)
+device snapshots: 28139
+draws without a containing call: 22
+reg     draws  best source (call@depth, where)              share   second
+0x2180   9645  hook68@1     [r6+0x20]                      2.6%   hook68@1 [r6+0xE4] 3%
+0x2181   4839  hook65@0     dev+0x2008                     2.2%   hook65@0 dev+0x2954 2%
+0x2182   5337  hook65@0     dev+0x2960                     3.7%   hook65@0 dev+0x295C 4%
+0x21FA   9645  none
+0x21FB   9645  none
+0x21FC   9645  hook67@0     r10                            0.0%   
+0x2208   9645  hook65@0     dev+0x2954                    29.2%   hook65@0 dev+0x2008 29%
+0x228D   8100  hook65@0     dev+0x2998                    63.0%   hook64@0 dev+0x2998 18%
+0x4000   9645  hook64@0     dev+0x0780                     5.4%   hook65@1 dev+0x0780 4%
+0x4001   9535  hook64@0     dev+0x0784                     5.4%   hook65@1 dev+0x0784 4%
+0x4002   9619  hook65@0     dev+0x0788                    13.1%   hook64@0 dev+0x0788 8%
+0x4003   9579  hook64@0     dev+0x078C                     5.3%   hook65@1 dev+0x078C 4%
+0x4004   9619  hook64@0     dev+0x0790                     5.4%   hook65@1 dev+0x0790 4%
+0x4005   9619  hook64@0     dev+0x0794                     5.4%   hook65@1 dev+0x0794 4%
+0x4006   9645  hook65@0     dev+0x0798                    27.2%   hook64@0 dev+0x0798 11%
+0x4007   9619  hook64@0     dev+0x079C                     5.4%   hook65@1 dev+0x079C 4%
+0x4008   9332  hook64@0     dev+0x07A0                     5.8%   hook65@1 dev+0x07A0 5%
+0x4009   9645  hook64@0     dev+0x07A4                     5.6%   hook65@1 dev+0x07A4 5%
+0x400A   9619  hook65@0     dev+0x07A8                    15.1%   hook64@0 dev+0x07A8 8%
+0x400B   9645  hook64@0     dev+0x07AC                     5.4%   hook65@1 dev+0x07AC 4%
+0x400C   8826  hook64@0     dev+0x07B0                     6.2%   hook65@1 dev+0x07B0 5%
+0x400D   8852  hook64@0     dev+0x07B4                     6.1%   hook65@1 dev+0x07B4 5%
+0x400E   8826  hook65@0     dev+0x07B8                    16.0%   hook64@0 dev+0x07B8 9%
+0x400F   9645  hook64@0     dev+0x07BC                     6.1%   hook65@1 dev+0x07BC 5%
+0x4010   9645  hook64@0     dev+0x07C0                     5.9%   hook64@0 dev+0x07D4 5%
+0x4011   8882  hook64@0     dev+0x07C4                     5.1%   hook65@1 dev+0x07C4 5%
+0x4012   5992  hook65@0     dev+0x206C                    11.0%   hook65@0 dev+0x2BBC 11%
+0x4013   8918  hook64@0     dev+0x07F0                     5.2%   hook64@0 dev+0x07CC 5%
+0x4014   8874  hook64@0     dev+0x07D0                     5.1%   hook65@1 dev+0x07D0 5%
+0x4015   9645  hook64@0     dev+0x07D4                     5.9%   hook64@0 dev+0x07C0 5%
+0x4016   6067  hook65@0     dev+0x206C                    11.3%   hook65@0 dev+0x2BBC 11%
+0x4017   8918  hook64@0     dev+0x07F4                     5.2%   hook64@0 dev+0x07DC 5%
+0x4018   6067  hook65@0     dev+0x206C                    11.4%   hook65@0 dev+0x2BBC 11%
+0x4019   5987  hook65@0     dev+0x206C                    11.0%   hook65@0 dev+0x2BBC 11%
+0x401B   8918  hook64@0     dev+0x07F8                     5.4%   hook64@0 dev+0x07EC 5%
+0x401C   9358  hook64@0     dev+0x07F0                     5.9%   hook64@0 dev+0x07CC 5%
+0x401D   9358  hook64@0     dev+0x07F4                     5.9%   hook64@0 dev+0x07DC 5%
+0x401E   9358  hook64@0     dev+0x07F8                     6.1%   hook64@0 dev+0x07EC 5%
+0x401F   9645  hook65@0     dev+0x0868                    36.6%   hook65@0 dev+0x1928 37%
+0x4050   5653  hook65@0     dev+0x08C0                    11.5%   hook68@1 dev+0x08C0 4%
+0x40A0   3963  hook65@0     dev+0x0868                    64.0%   hook65@0 dev+0x28E0 64%
+0x40A1   3963  hook65@0     dev+0x0868                    64.0%   hook65@0 dev+0x28E0 64%
+0x40A2   3963  hook65@0     dev+0x0868                    64.0%   hook65@0 dev+0x28E0 64%
+0x40A3   3963  hook65@0     dev+0x0868                    64.0%   hook65@0 dev+0x28E0 64%
+0x412E   8564  hook65@0     dev+0x0868                    59.9%   hook65@0 dev+0x1928 60%
+0x4130   9645  hook65@0     dev+0x08B0                    51.7%   hook65@0 dev+0x18F0 52%
+0x4131   9645  hook65@0     dev+0x18F4                    51.7%   hook65@0 dev+0x08B4 52%
+0x43FC   5034  hook65@0     dev+0x1964                    47.6%   hook65@0 dev+0x1968 48%
+0x43FD   7687  hook65@0     dev+0x1BD0                    31.2%   hook65@0 dev+0x2010 31%
+0x43FE   5147  hook65@0     dev+0x0868                    46.5%   hook65@0 dev+0x1928 47%
+0x4402   8473  hook65@0     dev+0x1A60                    60.2%   hook64@0 dev+0x1A60 18%
+0x4403   8473  hook65@0     dev+0x1A64                    60.2%   hook64@0 dev+0x1A64 18%
+0x4410   3963  hook65@0     dev+0x0868                    64.0%   hook65@0 dev+0x28E0 64%
+0x4411   3963  hook65@0     dev+0x0868                    64.0%   hook65@0 dev+0x28E0 64%
+0x4412   3963  hook65@0     dev+0x0868                    64.0%   hook65@0 dev+0x28E0 64%
+0x4413   3963  hook65@0     dev+0x0868                    64.0%   hook65@0 dev+0x28E0 64%
+0x4420   9592  hook65@0     dev+0x0868                    26.9%   hook65@0 dev+0x28E0 27%
+0x4421   9592  hook65@0     dev+0x0868                    26.9%   hook65@0 dev+0x28E0 27%
+0x4422   5628  hook65@0     dev+0x1954                    10.1%   hook62@0 dev+0x180C 5%
+0x4423   5969  hook62@0     dev+0x180C                     4.7%   hook62@0 dev+0x2080 5%
+0x4424   9645  hook65@0     dev+0x0868                    43.9%   hook65@0 dev+0x28E0 44%
+0x4425   9645  hook65@0     dev+0x0868                    43.9%   hook65@0 dev+0x28E0 44%
+0x4426   2273  hook65@0     dev+0x2080                     1.8%   hook65@0 dev+0x180C 1%
+0x4427   2326  hook65@0     dev+0x2080                     3.1%   hook65@0 dev+0x181C 2%
+0x4428   9645  hook65@0     dev+0x0868                    31.1%   hook65@0 dev+0x28E0 31%
+0x4429   9645  hook65@0     dev+0x0868                    31.1%   hook65@0 dev+0x28E0 31%
+0x442A   4210  hook65@0     dev+0x1828                     9.0%   hook57@0 dev+0x1828 5%
+0x442B   4562  hook65@0     dev+0x1954                     8.7%   hook65@0 dev+0x182C 8%
+0x442C   9645  hook65@0     dev+0x183C                    57.4%   hook65@0 dev+0x1834 57%
+0x442D   9645  hook65@0     dev+0x183C                    57.4%   hook65@0 dev+0x1834 57%
+0x442E   9645  hook65@0     dev+0x183C                    57.4%   hook65@0 dev+0x1834 57%
+0x442F   9645  hook65@0     dev+0x183C                    57.4%   hook65@0 dev+0x1834 57%
+0x443C   8405  hook65@0     dev+0x1870                    58.3%   hook65@0 dev+0x1878 58%
+0x443D   8405  hook65@0     dev+0x1874                    58.3%   hook64@0 dev+0x1874 17%
+0x443E   8405  hook65@0     dev+0x1878                    58.3%   hook65@0 dev+0x1870 58%
+0x443F   1428  hook65@0     dev+0x0868                    40.6%   hook65@0 dev+0x28E0 41%
+0x4470   8852  hook65@0     dev+0x0868                    58.4%   hook65@0 dev+0x1928 58%
+0x4471   8850  hook65@0     dev+0x0868                    58.4%   hook65@0 dev+0x1928 58%
+0x447C   9474  hook65@0     dev+0x1970                    57.8%   hook64@0 dev+0x1970 16%
+0x447D   9426  hook65@0     dev+0x1974                    58.2%   hook64@0 dev+0x1974 17%
+0x447E   1064  hook65@0     dev+0x0868                    36.4%   hook65@0 dev+0x28E0 36%
+0x447F    961  hook65@0     dev+0x0868                    46.7%   hook65@0 dev+0x1928 47%
+0x44BC   8654  hook65@0     dev+0x1A70                    59.4%   hook65@0 dev+0x1A74 59%
+0x44BD   8385  hook65@0     dev+0x1A74                    60.8%   hook65@0 dev+0x1A70 61%
+0x44BE   8385  hook65@0     dev+0x1A7C                    60.8%   hook65@0 dev+0x1A78 61%
+0x44BF   8385  hook65@0     dev+0x1A7C                    60.8%   hook65@0 dev+0x1A78 61%
+0x4534   8655  hook65@0     dev+0x1C50                    59.4%   hook64@0 dev+0x1C50 18%
+0x4540   9645  hook65@0     dev+0x08B0                    51.6%   hook65@0 dev+0x18F0 52%
+0x4541   9645  hook65@0     dev+0x18F4                    51.6%   hook65@0 dev+0x08B4 52%
+0x47E0   8382  hook56@2     [r10+0x48]                     0.0%   
+0x47E1   8382  hook65@0     dev+0x0838                    60.8%   hook64@0 dev+0x0838 17%
+0x47E2   8382  hook65@0     dev+0x2918                    60.8%   hook65@0 dev+0x088C 55%
+0x47E3   8382  hook65@0     dev+0x2054                    60.8%   hook65@0 dev+0x0898 61%
+0x47E5   8382  hook65@0     dev+0x0868                    60.8%   hook65@0 dev+0x28E0 61%
+0x47E6   8382  hook65@0     dev+0x1A74                    60.8%   hook65@0 dev+0x1A70 61%
+0x47E7   8382  hook65@0     dev+0x084C                     0.1%   hook65@1 dev+0x084C 0%
+0x47E8   8815  none
+0x47E9   8815  none
+0x47EA   8815  hook58@1     dev+0x2010                     1.7%   hook57@0 dev+0x2010 2%
+0x47EB   8815  none
+0x47EC   8815  none
+0x47ED   8815  none
+0x47EE   8815  none
+0x47EF   8815  hook58@1     dev+0x2B14                     1.7%   hook57@0 dev+0x2B14 2%
+0x47F8   4366  hook65@0     dev+0x2054                    54.7%   hook65@0 dev+0x0898 55%
+0x47FA   4408  hook65@0     dev+0x2918                    56.1%   hook65@0 dev+0x088C 52%
+0x47FB   4160  hook65@0     dev+0x0868                    58.5%   hook65@0 dev+0x1928 58%
+0x47FC   8306  hook65@0     dev+0x0868                    31.9%   hook65@0 dev+0x1928 32%
+0x4800   9645  hook65@0     dev+0x04B0                    21.3%   hook65@0 dev+0x0480 21%
+0x4801   9645  hook65@0     dev+0x0484                     5.0%   hook65@0 dev+0x049C 2%
+0x4802   9066  hook65@0     dev+0x0530                    26.3%   hook65@0 dev+0x0518 26%
+0x4805   9388  hook65@0     dev+0x0494                     5.1%   hook65@0 dev+0x04AC 2%
+0x4806   9645  hook65@0     dev+0x05D0                    26.3%   hook65@0 dev+0x0498 20%
+0x4807   9645  hook65@0     dev+0x049C                    15.5%   hook64@0 dev+0x049C 6%
+0x4808   8622  hook65@0     dev+0x04A0                    18.8%   hook65@0 dev+0x04B8 14%
+0x4809   9645  hook65@0     dev+0x05C4                    31.1%   hook65@0 dev+0x05AC 31%
+0x480A   9645  hook65@0     dev+0x0628                    31.3%   hook65@0 dev+0x0658 31%
+0x480B   9645  hook65@0     dev+0x065C                    31.3%   hook65@0 dev+0x0644 31%
+0x480C   9645  hook65@0     dev+0x04B0                    23.2%   hook65@0 dev+0x0480 21%
+0x480D   9645  hook65@0     dev+0x04B4                     8.4%   hook65@0 dev+0x055C 3%
+0x480E   8622  hook65@0     dev+0x0530                    24.9%   hook65@0 dev+0x0518 25%
+0x480F   9645  hook65@0     dev+0x04D4                    49.1%   hook65@0 dev+0x048C 47%
+0x4810   9645  hook65@0     dev+0x0490                    45.6%   hook65@0 dev+0x04C0 42%
+0x4811   9645  hook65@0     dev+0x065C                    10.5%   hook65@0 dev+0x0644 11%
+0x4814   8609  hook65@0     dev+0x04D0                    59.7%   hook64@0 dev+0x04D0 18%
+0x4826   8644  hook65@0     dev+0x0530                    59.5%   hook65@0 dev+0x0518 60%
+0x482C   8644  hook65@0     dev+0x0530                    59.5%   hook65@0 dev+0x0518 60%
+0x4854   9645  hook65@0     dev+0x05D0                    46.8%   hook65@0 dev+0x0498 24%
+0x4855   9645  hook65@0     dev+0x05D4                    46.7%   hook64@0 dev+0x05D4 12%
+0x4856   8582  hook65@0     dev+0x05D8                    48.0%   hook64@0 dev+0x05D8 12%
+0x4859   9645  hook65@0     dev+0x05E4                    47.2%   hook64@0 dev+0x05E4 12%
+0x486E   8609  hook65@0     dev+0x0638                    59.7%   hook65@0 dev+0x0650 59%
+0x4874   8609  hook65@0     dev+0x0650                    59.7%   hook65@0 dev+0x0638 59%
+0x48B8   9645  hook64@0     dev+0x0760                     6.0%   hook65@1 dev+0x0760 5%
+0x48B9   9645  hook65@0     dev+0x0764                    18.3%   hook64@0 dev+0x0764 8%
+0x48BE   9645  hook65@0     dev+0x0778                     7.4%   hook69@0 dev+0x0778 4%
+0x48BF   9645  hook65@0     dev+0x077C                     7.4%   hook69@0 dev+0x077C 4%
+0x4904   8716  hook68@1     [r6+0x10]                      3.7%   hook69@0 [r6+0x10] 4%
+0x4908   8716  hook68@0     [r6+0x20]                      6.4%   hook68@0 [r6+0xE4] 6%

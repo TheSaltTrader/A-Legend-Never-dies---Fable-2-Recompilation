@@ -1549,37 +1549,8 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
-    RowStart("Graphics engine",
-             "Which graphics API the game renders through. DirectX 12 is the "
-             "default because it is measurably better here: on Vulkan the "
-             "scene still turns blue AND character meshes stop drawing "
-             "altogether. Vulkan needs a plugin built from source with it "
-             "enabled - the SDK's stock Windows plugin is DirectX 12 only, "
-             "and the app logs the miss and falls back rather than failing.");
-    {
-      const char* backends[] = {"Vulkan", "DirectX 12"};
-      int idx = s.gpu_backend == "d3d12" ? 1 : 0;
-      if (ImGui::Combo("##gpubackend", &idx, backends, 2)) {
-        s.gpu_backend = idx == 1 ? "d3d12" : "vulkan";
-        changed = true;
-      }
-    }
-    if (!live) RestartTag();
-
-    RowStart("Renderer",
-             "Native: this port's own DirectX 12 renderer draws every frame "
-             "(1.1.0 onwards). Xenos plugin: the emulated GPU draws, as in "
-             "1.0.x - use it if the native renderer misbehaves on your PC.");
-    {
-      const char* renderers[] = {"Native (recommended)", "Xenos plugin"};
-      int idx = s.renderer == "plugin" ? 1 : 0;
-      if (ImGui::Combo("##renderer", &idx, renderers, 2)) {
-        s.renderer = idx == 1 ? "plugin" : "native";
-        changed = true;
-      }
-    }
-    if (!live) RestartTag();
-
+    // (1.1.4: the "Graphics engine" and "Renderer" rows are gone - the game draws through its own native graphics
+    // system, always; the Xenos plugin is no longer the renderer, so neither choice would do anything.)
     RowStart("Black texture fix",
              "Fable II's best-known emulation bug: the hero's and the dog's "
              "textures turn black once the hero grows up. The fix is to read "

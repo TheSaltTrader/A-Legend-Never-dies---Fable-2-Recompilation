@@ -445,8 +445,7 @@ struct Fable2Settings {
       readback = "some";
     if (gpu_backend != "vulkan" && gpu_backend != "d3d12")
       gpu_backend = "d3d12";
-    if (renderer != "native" && renderer != "plugin")
-      renderer = "native";
+    renderer = "native";   // 1.1.4: always native; an old "plugin" value is ignored (kept so old files parse)
     // Dumping and loading together put the disk on the GPU thread and starve
     // the command stream. The menu makes the pair impossible to select; this
     // makes it impossible to arrive with, from an older config or a hand edit.

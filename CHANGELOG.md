@@ -3,6 +3,51 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.1.4 — 2026-09-28
+
+### Changed — fully native, no emulated GPU
+
+- **The game now always runs on its own native graphics system.** The
+  emulated Xbox 360 GPU (the `rexgpu-xenos` plugin's command processor) no
+  longer runs at all: the game's command stream is decoded and drawn by the
+  port itself, and its fences, interrupts and swaps are carried out natively.
+  The **Renderer** and **Graphics engine** rows are gone from the settings.
+  Fairfax castle and Bowerstone Market both hold 60 fps (the vsync cap).
+- A fast-travel sweep of every destination in the game (13 regions, 50
+  destinations) decoded 345 million draws with none failing and found no
+  command the native path does not handle.
+- Troubleshooting only: launching with the environment variable
+  `FABLE2_NATIVE_GS=0` starts the old plugin path (`set FABLE2_NATIVE_GS=0`,
+  then `fable2.exe` from the same command prompt).
+
+### Fixed — memory filled up with the texture pack on
+
+- **With the texture pack on, every area you visited stayed in memory.** Each
+  upscaled replacement is built in a staging buffer (system memory) and copied
+  to the graphics card; both were meant to be released once the copy finished,
+  but the release only ran on a path the game rarely takes any more, so every
+  replacement ever built stayed alive. Travelling around filled the graphics
+  card (about 30 GB after 25 fast travels) and then system memory (over 60 GB),
+  and the frame rate fell to 3-30 fps. They are now released every frame. The
+  texture cache also counted each texture at its original Xbox size and never
+  the replacement it held, so its limit could not work; replacements now count.
+  Tested over 22 fast travels with the pack on, including a second lap through
+  the biggest towns: graphics memory stays between 5 and 8 GB, system memory
+  under 10 GB, and the frame rate holds 60 (it had fallen to a median of 29).
+- Until you update: restarting the game clears it; turning the texture pack
+  off avoids it.
+
+### Fixed — ultrawide lost after a fast travel inside the same region
+
+- **After fast-travelling to another spot in the region you were already in**
+  (Bloodstone to Wraithmarsh Road, for example), the picture stayed pillarboxed
+  at 16:9 for the rest of the session. The game was still treated as being on
+  its loading screen. It now returns to the full ultrawide picture once the
+  travel finishes, at any frame rate. (On 1.1.3, travelling to a different
+  region or restarting clears it.)
+
+Only fable2.exe changes.
+
 ## 1.1.3 — 2026-09-27
 
 ### Fixed — ultrawide HUD stretched on the native renderer

@@ -375,7 +375,11 @@ Enhancements
 - **Antialiasing** - none, FXAA or FXAA extreme, the post-process the plugin
   applies to the swap image.
 - **Anisotropic filtering** - leave the game's own samplers alone, or force a level.
-- **Graphics engine** - DirectX 12 or Vulkan; Vulkan needs a plugin built with it.
+- There is no renderer or graphics-engine row any more (1.1.4): the game always
+  runs on its own native graphics system (DirectX 12). If a machine has trouble
+  with it, the old plugin path can still be started for troubleshooting by
+  launching with the environment variable `FABLE2_NATIVE_GS=0`
+  (`set FABLE2_NATIVE_GS=0` then `fable2.exe` from the same command prompt).
 - **AI upscaler** - Real-ESRGAN (ncnn-vulkan, the x4plus model) ships at
   `tools/upscaler/` and is the Textures page's default at detail strength
   0.75; a local model on the GPU, no key, no network. Lanczos remains the

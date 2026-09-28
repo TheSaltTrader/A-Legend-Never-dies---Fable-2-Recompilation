@@ -1707,6 +1707,31 @@ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
     }
   }
 
+  // NATIVE PATCH: [texpack retire] (2026-09-28 region sweep) retire the pack's upload buffers and superseded resources
+  // here, every submission. The list was only drained on the in-frame build path, which the prebuild + async build
+  // now bypass almost always, so every prebuilt upload buffer (system memory) and resource (VRAM) ever copied stayed
+  // alive: 31 GB of VRAM and 62 GB of private memory after 50 fast travels, and the frame rate fell to 3-30 fps.
+  {
+    const uint64_t completed = command_processor_.GetCompletedSubmission();
+    g_texpack_uploads.erase(
+        std::remove_if(g_texpack_uploads.begin(), g_texpack_uploads.end(),
+                       [completed](const auto& e) { return e.first <= completed; }),
+        g_texpack_uploads.end());
+    static auto last_log = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_log > std::chrono::seconds(10)) {
+      last_log = now;
+      uint64_t bytes = 0;
+      ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
+      for (const auto& e : g_texpack_uploads) {
+        if (!e.second) continue;
+        const D3D12_RESOURCE_DESC d = e.second->GetDesc();
+        bytes += device->GetResourceAllocationInfo(0, 1, &d).SizeInBytes;
+      }
+      REXGPU_INFO("[texpack] retire list: {} resources ({} MB) waiting for their submission to complete",
+                  g_texpack_uploads.size(), bytes >> 20);
+    }
+  }
   // [texpack prebuild] record the copy + mip pass for prebuilt replacements, kPbApplyCap per submission.
   g_ft_frame_creations.store(0, std::memory_order_relaxed);
   if (::fable2::ngpu::rtc::TexpackPrebuildEnabled()) {

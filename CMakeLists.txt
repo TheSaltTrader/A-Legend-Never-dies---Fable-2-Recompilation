@@ -33,6 +33,8 @@ set(FABLE2_SOURCES
     src/fable2_titleupdate.cpp
     src/patch_hooks.cpp
     src/native_gpu_trace.cpp
+    src/fable2_p2_census.cpp
+    src/fable2_native_gs.cpp
     src/native_gpu_dump.cpp
     src/native_gpu_present.cpp
     src/native_gpu_census.cpp
