@@ -350,8 +350,9 @@ Enhancements
   whole number; the game's heights must be multiples of 16, which is why 1080p
   is 1920 x 1088. Measured standing at Fairfax on the development PC (RTX 5090),
   median frame rate with the worst 5-second window beside it: 60 (worst 59) up
-  to 2880 x 1632, 55 (worst 48) at 4K, 36 (worst 36) at 5K, 19 (worst 19) at
-  8K. From 2880 x 1632 up, the
+  to 2880 x 1632, 54 (worst 53) at 4K, 36 (worst 36) at 5K, 19 (worst 19) at
+  8K. (One 4K run of five dropped to 48 for its last 15 seconds, with or
+  without a pause; four repeats did not, and the cause is not known.) From 2880 x 1632 up, the
   game's distance blur spreads a little further around far edges against the
   sky. Applies at the next start.
 - **Import Xbox 360 saves** - a folder of Fable II save packages (or one

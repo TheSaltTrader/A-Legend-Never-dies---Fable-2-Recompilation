@@ -21,9 +21,14 @@ numbering, not the game's.
   | Internal resolution | typical | worst |
   |---|---|---|
   | 1280 x 720 to 2880 x 1632 | 60 | 59 |
-  | 3840 x 2160 (4K) | 55 | 48 |
+  | 3840 x 2160 (4K) | 55 | 48 * |
   | 5120 x 2880 (5K) | 36 | 36 |
   | 7680 x 4320 (8K) | 19 | 19 |
+
+  \* Re-measured after release (four more 4K runs, two pausing and two not):
+  54 typical, 53 worst. The 48 came from one run that stepped down for its
+  last 15 seconds; it was not the pause (both pausing runs recovered) and did
+  not repeat.
 
 Only the readme and the notes change; `fable2.exe` differs only in its version
 number.
