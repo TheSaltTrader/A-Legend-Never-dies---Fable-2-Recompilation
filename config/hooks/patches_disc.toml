@@ -58,6 +58,14 @@ name = "fable2PatchRenderWidth"
 registers = ["r11"]
 after_instruction = true
 
+# --- Internal resolution: the render height ------------------------------------
+# (2026-09-28) `li r10, 720` just before the 0x8238DF50 compare; stored at +0x98 beside the width (+0x94).
+[[midasm_hook]]
+address = 0x8238DF4C
+name = "fable2PatchRenderHeight"
+registers = ["r10"]
+after_instruction = true
+
 # --- Disable MSAA (Margen67) -------------------------------------------------
 # Xenia:  [[patch.be8]] address = 0x8238df3f  value = 0x01
 #

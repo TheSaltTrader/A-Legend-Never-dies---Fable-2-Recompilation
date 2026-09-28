@@ -957,6 +957,7 @@ class Fable2App : public rex::ReXApp {
     settings_.fps = EnvInt("FABLE2_FPS", settings_.fps);
     settings_.resolution_scale =
         EnvInt("FABLE2_SCALE", settings_.resolution_scale);
+    settings_.world_height = EnvInt("FABLE2_WORLD_HEIGHT", settings_.world_height);
     if (std::getenv("FABLE2_FULLSCREEN"))
       settings_.fullscreen = EnvInt("FABLE2_FULLSCREEN", 0) != 0;
     if (const char* game = std::getenv("FABLE2_GAME"); game && *game)

@@ -131,6 +131,11 @@ struct Fable2Tuning {
                    "what the plugin actually reads for horizontal scale"});
     out.push_back({"draw_resolution_scale_y", scale,
                    "what the plugin actually reads for vertical scale"});
+    // [internal resolution] the game's render size before the multiple: 0/0 = the game's own (1280x720 with the
+    // 720p patch); 960x540 when the player picked a 540-based size (1920x1080, 2880x1620).
+    const bool sub720 = s.world_height == 540 || s.world_height == 544;
+    out.push_back({"fable2_world_width", sub720 ? "960" : "0", "game render width (0 = its own)"});
+    out.push_back({"fable2_world_height", sub720 ? std::to_string(s.world_height) : "0", "game render height (0 = its own)"});
 
     out.push_back({"vsync", s.vsync ? "true" : "false", "present pacing"});
 

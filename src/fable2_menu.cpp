@@ -322,7 +322,7 @@ const char* const kPresetNames[] = {"Performance", "Balanced", "Quality",
 
 int PresetIndex(const Fable2Settings& s) {
   for (int i = 0; i < kPresetCount; ++i) {
-    if (kPresets[i].scale == s.resolution_scale &&
+    if (kPresets[i].scale == s.resolution_scale && s.world_height == 720 &&
         kPresets[i].aniso == s.anisotropic && s.antialias == kPresets[i].aa)
       return i;
   }
@@ -333,6 +333,7 @@ void ApplyPreset(Fable2Settings& s, int index) {
   if (index < 0 || index >= kPresetCount)
     return;
   s.resolution_scale = kPresets[index].scale;
+  s.world_height = 720;   // presets are multiples of the game's own 1280x720
   s.antialias = kPresets[index].aa;
   s.anisotropic = kPresets[index].aniso;
 }
@@ -987,7 +988,8 @@ std::vector<const char*> PendingRestart(const Fable2Settings& now, const Fable2S
   add(now.fps != start.fps, "Frame rate");
   add(now.draw_distance != start.draw_distance, "Draw distance");
   add(now.audio_queue_frames != start.audio_queue_frames, "Audio buffering");
-  add(now.resolution_scale != start.resolution_scale, "Supersampling");
+  add(now.resolution_scale != start.resolution_scale || now.world_height != start.world_height,
+      "Internal resolution");
   add(now.save_import_path != start.save_import_path, "Import Xbox 360 saves");
   add(now.skip_logos != start.skip_logos, "Skip publisher logos");
   add(now.skip_intro != start.skip_intro, "Skip intro videos");
@@ -1265,31 +1267,39 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     if (!live) RestartTag();   // supersampling, antialiasing and filtering all apply at the next start
 
     ImGui::BeginDisabled(false);  // editable in game; RestartTag says when it applies
-    RowStart("Supersampling",
-             "Renders the game's own framebuffer at a multiple of its size and "
-             "filters it back down. The sharpest setting here, and by far the "
-             "most expensive - the cost is the SQUARE of the number, so 2x is "
-             "four times the pixels and 8x is sixty-four. The runtime's own "
-             "range is 1-8 and all of it is offered; the high end is there for "
-             "a card that can afford it, not as a recommendation.");
-    // The cvar range really is 1..8 (draw_resolution_scale_x, read from the
-    // live dump). This used to offer 1..3 while Clamp() allowed 1..8, so a
-    // config with 4 displayed as "3x" and was silently written back as 3.
-    int scale_index = std::clamp(s.resolution_scale - 1, 0, 7);
-    const char* scales[] = {"Off", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
-    if (ImGui::Combo("##scale", &scale_index, scales, IM_ARRAYSIZE(scales))) {
-      s.resolution_scale = scale_index + 1;
+    // [internal resolution] (2026-09-28, user: "add additional resolutions for users to pick") - the size the game is
+    // actually rendered at: the game's own render size (1280x720, or 960x544) times a whole multiple. Above 720 the
+    // game's render size cannot go (the Xbox's 10 MB of render memory, which the renderer still models), and its
+    // heights must be multiples of 16 (960x540 crashes the game at start), so 1080p is offered as 1920x1088.
+    // Every entry here was probed at Fairfax: picture, HUD, pause menu, ultrawide, frame rate. At 3x and above the
+    // game's depth-of-field blur bleeds sky further into foliage and roof edges than at 1x/2x (probes IRQ/IRP/IRX,
+    // 2026-09-28; not the resolve half-pixel fill, not scaled texture offsets); the tooltip says so.
+    RowStart("Internal resolution",
+             "The resolution the game is rendered at before it is scaled to your window. Higher is sharper "
+             "and costs more graphics power - 3840 x 2160 is nine times the pixels of 1280 x 720. The "
+             "sizes are the game's own 1280 x 720 (or 960 x 544) times a whole number, which is why 1080p "
+             "appears as 1920 x 1088. From 2880 x 1632 up, the game's distance blur spreads a little further "
+             "around far edges against the sky.");
+    struct InternalRes { int w, h, world_h, scale; };
+    static constexpr InternalRes kIR[] = {
+        {1280, 720, 720, 1}, {1920, 1088, 544, 2}, {2560, 1440, 720, 2}, {2880, 1632, 544, 3},
+        {3840, 2160, 720, 3}, {5120, 2880, 720, 4}, {7680, 4320, 720, 6}};
+    static const char* kIRNames[] = {"1280 x 720 (the game's own)", "1920 x 1088 (1080p)", "2560 x 1440",
+                                     "2880 x 1632", "3840 x 2160 (4K)", "5120 x 2880 (5K)", "7680 x 4320 (8K)",
+                                     "Custom"};
+    constexpr int kIRCount = IM_ARRAYSIZE(kIR);
+    int ir_index = kIRCount;   // "Custom": a pair from the settings file this row does not list
+    for (int i = 0; i < kIRCount; ++i)
+      if (kIR[i].world_h == s.world_height && kIR[i].scale == s.resolution_scale) ir_index = i;
+    if (ImGui::Combo("##internalres", &ir_index, kIRNames, IM_ARRAYSIZE(kIRNames)) && ir_index < kIRCount) {
+      s.world_height = kIR[ir_index].world_h;
+      s.resolution_scale = kIR[ir_index].scale;
       changed = true;
     }
-    // Said once, next to the control, rather than left for the player to
-    // discover: at the guest's 1280x720 this is 1280*scale by 720*scale.
-    if (s.resolution_scale >= 4) {
+    if (ir_index == kIRCount) {   // say what the custom pair is, rather than a bare "Custom"
+      const int ww = s.world_height == 720 ? 1280 : 960;
       ImGui::SameLine();
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.7f, 0.35f, 1.0f));
-      ImGui::Text("(%dx%d, %dx the pixels)", 1280 * s.resolution_scale,
-                  720 * s.resolution_scale,
-                  s.resolution_scale * s.resolution_scale);
-      ImGui::PopStyleColor();
+      ImGui::Text("(%d x %d)", ww * s.resolution_scale, s.world_height * s.resolution_scale);
     }
     if (!live) RestartTag();
     ImGui::EndDisabled();

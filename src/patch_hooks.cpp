@@ -35,6 +35,14 @@ REXCVAR_DEFINE_BOOL(fable2_60fps, false, "Fable II",
 REXCVAR_DEFINE_BOOL(fable2_720p, false, "Fable II",
                     "Render 1280 wide instead of the shipped 1120");
 
+// [internal resolution] (2026-09-28) the game's own render size - its "world" - before the renderer's integer
+// multiple (resolution_scale). 0 = the game's choice (1280x720 with the 720p patch). A smaller world times a larger
+// multiple gives sizes the 720p world cannot: 960x540 x2 = exactly 1920x1080. Above 720 the Xbox's 10 MB of render
+// memory, which the renderer still models, is overflowed (NG2 measured a 1080p world rendering black), so the menu
+// never offers one.
+REXCVAR_DEFINE_INT32(fable2_world_width, 0, "Fable II", "Game render width override (0 = the game's)");
+REXCVAR_DEFINE_INT32(fable2_world_height, 0, "Fable II", "Game render height override (0 = the game's)");
+
 // Xenia's "Disable MSAA".
 REXCVAR_DEFINE_BOOL(fable2_disable_msaa, false, "Fable II",
                     "Turn off multisampling in the game's render setup");
@@ -110,10 +118,27 @@ void fable2PatchFrameRateLoad(PPCRegister& r11) {
 
 // 0x8238DF58, after `li r11, 0x460` (1120).
 void fable2PatchRenderWidth(PPCRegister& r11) {
+  const int32_t world = REXCVAR_GET(fable2_world_width);
+  if (world > 0) {   // [internal resolution] an explicit world size wins
+    static bool logged_w = false;
+    LogOnce(logged_w, "render width (internal resolution)", r11.u32, uint32_t(world));
+    r11.u32 = uint32_t(world);
+    return;
+  }
   if (!REXCVAR_GET(fable2_720p)) return;
   static bool logged = false;
   LogOnce(logged, "render width", r11.u32, 1280);
   r11.u32 = 1280;
+}
+
+// [internal resolution] TU1 0x823894B4 / disc 0x8238DF4C, after `li r10, 720` (the render height, stored at +0x98
+// of the same object as the width at +0x94).
+void fable2PatchRenderHeight(PPCRegister& r10) {
+  const int32_t world = REXCVAR_GET(fable2_world_height);
+  if (world <= 0) return;
+  static bool logged = false;
+  LogOnce(logged, "render height (internal resolution)", r10.u32, uint32_t(world));
+  r10.u32 = uint32_t(world);
 }
 
 // 0x8238DF3C, after `li r9, 2` (sample count).

@@ -75,6 +75,10 @@ struct Fable2Settings {
   // True internal supersampling: the guest's framebuffer is rendered at this
   // multiple and downsampled. The cvar's own range is 1..8.
   int resolution_scale = 1;
+  // [internal resolution] (2026-09-28) the game's own render height before resolution_scale: 720 (1280x720, the
+  // game with the 720p patch) or 540 (960x540 - x2 gives exactly 1920x1080). The F10 "Internal resolution" row picks
+  // the pair.
+  int world_height = 720;
 
   // -1 = send nothing, so the plugin's default applies (forced 4x); 0..5 = the
   // cvar's own levels (0 off, 1 1x, 2 2x, 3 4x, 4 8x, 5 16x).
@@ -331,6 +335,7 @@ struct Fable2Settings {
         << "gpu_backend=" << gpu_backend << "\n"
         << "renderer=" << renderer << "\n"
         << "resolution_scale=" << resolution_scale << "\n"
+        << "world_height=" << world_height << "\n"
         << "anisotropic=" << anisotropic << "\n"
         << "antialias=" << antialias << "\n"
         << "present_effect=" << present_effect << "\n"
@@ -417,6 +422,7 @@ struct Fable2Settings {
     // normal speed, so a saved 120/144 - or FABLE2_FPS - comes back as 60.
     fps = std::clamp(fps, 24, 60);
     resolution_scale = std::clamp(resolution_scale, 1, 8);
+    if (world_height != 540 && world_height != 544) world_height = 720;
     nan_constant_repair = std::clamp(nan_constant_repair, 0, 2);
     texture_cache_mb = std::clamp(texture_cache_mb, 0, 8192);
     if (texture_scale != 2 && texture_scale != 4 && texture_scale != 8) {
@@ -470,6 +476,7 @@ struct Fable2Settings {
     else if (k == "gpu_backend") gpu_backend = v;
     else if (k == "renderer") renderer = v;
     else if (k == "resolution_scale") resolution_scale = std::atoi(v.c_str());
+    else if (k == "world_height") world_height = std::atoi(v.c_str());
     else if (k == "anisotropic") anisotropic = std::atoi(v.c_str());
     else if (k == "antialias") antialias = v;
     else if (k == "present_effect") present_effect = v;
