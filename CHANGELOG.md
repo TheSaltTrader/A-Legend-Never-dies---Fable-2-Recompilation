@@ -3,6 +3,30 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.3.0 — 2026-09-28
+
+### Added — pick the internal resolution
+
+- **The F10 "Supersampling" row is now "Internal resolution"**, a list of
+  real sizes instead of multipliers: 1280 x 720 (the game's own), 1920 x 1088
+  (1080p), 2560 x 1440, 2880 x 1632, 3840 x 2160 (4K), 5120 x 2880 (5K) and
+  7680 x 4320 (8K). The new 1080p-class sizes come from rendering the game at
+  960 x 544 and scaling by 2 or 3 - the game's render height is now patched as
+  well as its width. Heights must be multiples of 16 (960 x 540 crashes the
+  game at start), which is why 1080p is 1920 x 1088.
+- Measured at Fairfax castle on the development PC (RTX 5090), every size with
+  no failed draws: 60 fps up to 2880 x 1632, 48 at 4K, 36 at 5K, 19 at 8K.
+- From 2880 x 1632 up, the game's depth-of-field blur spreads a little further
+  around far edges against the sky (roofs and trees) than at 1x and 2x; the
+  row's help text says so.
+- New settings key `world_height` (720 or 544). A value of 540 is read as 544.
+
+### Fixed
+
+- A settings file asking for supersampling 8x ran at 7x (the renderer's
+  limit) while the menu said 8x. The scale is now held to 7, and the menu
+  shows the size actually rendered.
+
 ## 1.2.1 — 2026-09-28
 
 ### Fixed — the readme's known issues

@@ -341,10 +341,17 @@ Audio
   less delay, more risk of crackling.
 
 Enhancements
-- **Quality preset** - sets supersampling, antialiasing and texture filtering
-  together; changing any of them reads Custom.
-- **Supersampling** - renders the game's framebuffer at a multiple of its size
-  (1 to 8) and filters it back down; the cost is the square of the number.
+- **Quality preset** - sets the internal resolution, antialiasing and texture
+  filtering together; changing any of them reads Custom.
+- **Internal resolution** - the size the game is rendered at before it is
+  scaled to your window: 1280 x 720 (the game's own), 1920 x 1088 (1080p),
+  2560 x 1440, 2880 x 1632, 3840 x 2160 (4K), 5120 x 2880 (5K) or 7680 x 4320
+  (8K). Each is the game's own render size (1280 x 720, or 960 x 544) times a
+  whole number; the game's heights must be multiples of 16, which is why 1080p
+  is 1920 x 1088. Measured at Fairfax on the development PC (RTX 5090): 60 fps
+  up to 2880 x 1632, 48 at 4K, 36 at 5K, 19 at 8K. From 2880 x 1632 up, the
+  game's distance blur spreads a little further around far edges against the
+  sky. Applies at the next start.
 - **Import Xbox 360 saves** - a folder of Fable II save packages (or one
   package) imported into the profile at the next launch.
 - **Skip publisher logos** - starts without the Microsoft and Lionhead logo
