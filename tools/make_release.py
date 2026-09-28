@@ -1,7 +1,7 @@
 """Package a versioned, runnable release of fable2recomp into ..\\Releases.
 
 A release is a folder anyone can unzip and run *provided they own the game*:
-the recompiled executable, the SDK runtime and GPU plugin beside it, the VC
+the recompiled executable, the SDK runtime beside it (no GPU plugin since 1.2.0), the VC
 runtime, the controller database, the texture tools with the AI engine, and
 instructions to point the setup screen at their own disc.
 
@@ -112,18 +112,18 @@ FORBIDDEN_SUFFIXES = (".xex", ".xexp", ".iso", ".bin", ".dat", ".bnk", ".big", "
 FORBIDDEN_EXCEPTIONS = ("gamecontrollerdb.txt",)
 
 KNOWN_ISSUES = [
-    "Frame-rate dips while moving through busy areas (Bowerstone Market can dip "
-    "into the 40s-50s), and about 36 fps around Fairfax castle, where one CPU "
-    "thread is the limit. If the native renderer misbehaves on your PC, "
-    "Settings > Renderer > Xenos plugin switches back to the 1.0.x renderer "
-    "(applies at the next start).",
+    "A DirectX 12 capable graphics card and driver are required: the game runs "
+    "only on its own native renderer (there is no emulated renderer to fall back "
+    "to since 1.2.0), and says so at start if DirectX 12 is missing. On the "
+    "development PC Fairfax castle and Bowerstone Market hold 60 fps; the "
+    "heaviest spots (Fairfax) are the first to dip below 60 on slower CPUs.",
     "At ultrawide, the pause and Up menus are shown at full width, so their "
     "circular map reads a little wide (an oval). The world stays correctly "
     "proportioned and the title and main menus are 16:9.",
     "Opening or closing the pause / Up menu at ultrawide, the menu's own "
     "fade-in / fade-out is drawn in a centred 16:9 band for a moment (a brief "
     "squeeze in, a faint layer out) while the world shows through the sides. The "
-    "steady menu and the world are unaffected; a plugin-side fix is planned.",
+    "steady menu and the world are unaffected; a fix is planned.",
 ]
 
 README_TITLE = "fable2recomp v{version} - Fable II, statically recompiled for PC"

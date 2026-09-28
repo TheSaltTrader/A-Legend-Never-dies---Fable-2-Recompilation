@@ -3,6 +3,18 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.2.1 — 2026-09-28
+
+### Fixed — the readme's known issues
+
+- **The shipped `README.txt` still told players to switch to the Xenos plugin
+  renderer** in the settings (a row removed in 1.1.4, and a plugin removed in
+  1.2.0) and quoted frame rates from before 1.1.2. It now says what is true: a
+  DirectX 12 capable card and driver are required, and Fairfax castle and
+  Bowerstone Market hold 60 fps on the development PC.
+
+Only the readme changes; `fable2.exe` differs only in its version number.
+
 ## 1.2.0 — 2026-09-28
 
 ### Changed — the GPU emulation plugin is gone
