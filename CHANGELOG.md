@@ -3,6 +3,31 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.3.1 — 2026-09-28
+
+### Fixed — the readme and the frame-rate figures
+
+- **The shipped `README.txt` did not mention the one known issue 1.3.0
+  added**: from 2880 x 1632 up, the game's depth-of-field blur spreads a
+  little further around far edges against the sky. It is now in the readme's
+  Known issues. The readme and the release notes now take their Known issues
+  from the same list, so one can no longer be updated without the other.
+- **1.3.0's frame rates mixed two statistics.** 4K was quoted at its worst
+  moment (48) and 5K and 8K at their typical rate, which made 4K look far
+  closer to 5K than it is. Every size now gives the typical (median) rate with
+  the worst 5-second window beside it, standing at Fairfax on the development
+  PC:
+
+  | Internal resolution | typical | worst |
+  |---|---|---|
+  | 1280 x 720 to 2880 x 1632 | 60 | 59 |
+  | 3840 x 2160 (4K) | 55 | 48 |
+  | 5120 x 2880 (5K) | 36 | 36 |
+  | 7680 x 4320 (8K) | 19 | 19 |
+
+Only the readme and the notes change; `fable2.exe` differs only in its version
+number.
+
 ## 1.3.0 — 2026-09-28
 
 ### Added — pick the internal resolution
@@ -16,6 +41,8 @@ numbering, not the game's.
   game at start), which is why 1080p is 1920 x 1088.
 - Measured at Fairfax castle on the development PC (RTX 5090), every size with
   no failed draws: 60 fps up to 2880 x 1632, 48 at 4K, 36 at 5K, 19 at 8K.
+  (These mixed a worst figure for 4K with typical ones for 5K and 8K; see
+  1.3.1.)
 - From 2880 x 1632 up, the game's depth-of-field blur spreads a little further
   around far edges against the sky (roofs and trees) than at 1x and 2x; the
   row's help text says so.

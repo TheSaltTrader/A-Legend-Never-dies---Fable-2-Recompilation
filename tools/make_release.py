@@ -124,7 +124,14 @@ KNOWN_ISSUES = [
     "fade-in / fade-out is drawn in a centred 16:9 band for a moment (a brief "
     "squeeze in, a faint layer out) while the world shows through the sides. The "
     "steady menu and the world are unaffected; a fix is planned.",
+    "At an internal resolution of 2880 x 1632 and above (F10, Internal "
+    "resolution), the game's depth-of-field blur spreads a little further around "
+    "far edges against the sky - roofs and trees - than at 1280 x 720 and "
+    "2560 x 1440. The rest of the picture is unaffected.",
 ]
+# One list, two outputs: README.txt's Known issues AND the release notes' Known issues are both rendered from
+# KNOWN_ISSUES, so a new issue cannot reach one and miss the other (1.2.0 and 1.3.0 each disclosed an issue in the
+# notes only; audit 2026-09-28). Put a new issue HERE, not only in the CHANGELOG entry.
 
 README_TITLE = "fable2recomp v{version} - Fable II, statically recompiled for PC"
 
@@ -587,6 +594,8 @@ def main():
             built=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), host=platform.node()))
     with open(os.path.join(dest, "RELEASE_NOTES.md"), "w", encoding="utf-8", newline="\r\n") as f:
         f.write("# fable2recomp v%s\n\n%s\n" % (version, notes))
+        if KNOWN_ISSUES:   # the same list README.txt carries (see KNOWN_ISSUES)
+            f.write("\n### Known issues\n\n" + "\n".join("- " + issue for issue in KNOWN_ISSUES) + "\n")
     write_provenance(os.path.join(dest, "provenance.txt"), version)
 
     engine_dir = os.path.normcase(os.path.join(dest, "tools", "upscaler"))

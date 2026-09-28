@@ -348,8 +348,10 @@ Enhancements
   2560 x 1440, 2880 x 1632, 3840 x 2160 (4K), 5120 x 2880 (5K) or 7680 x 4320
   (8K). Each is the game's own render size (1280 x 720, or 960 x 544) times a
   whole number; the game's heights must be multiples of 16, which is why 1080p
-  is 1920 x 1088. Measured at Fairfax on the development PC (RTX 5090): 60 fps
-  up to 2880 x 1632, 48 at 4K, 36 at 5K, 19 at 8K. From 2880 x 1632 up, the
+  is 1920 x 1088. Measured standing at Fairfax on the development PC (RTX 5090),
+  median frame rate with the worst 5-second window beside it: 60 (worst 59) up
+  to 2880 x 1632, 55 (worst 48) at 4K, 36 (worst 36) at 5K, 19 (worst 19) at
+  8K. From 2880 x 1632 up, the
   game's distance blur spreads a little further around far edges against the
   sky. Applies at the next start.
 - **Import Xbox 360 saves** - a folder of Fable II save packages (or one
