@@ -76,8 +76,8 @@ struct Fable2Settings {
   // multiple and downsampled. The cvar's own range is 1..8.
   int resolution_scale = 1;
   // [internal resolution] (2026-09-28) the game's own render height before resolution_scale: 720 (1280x720, the
-  // game with the 720p patch) or 540 (960x540 - x2 gives exactly 1920x1080). The F10 "Internal resolution" row picks
-  // the pair.
+  // game with the 720p patch) or 544 (960x544 - x2 gives 1920x1088). Heights must be multiples of 16: 960x540 crashes
+  // the game at start, so a 540 read from a file becomes 544. The F10 "Internal resolution" row picks the pair.
   int world_height = 720;
 
   // -1 = send nothing, so the plugin's default applies (forced 4x); 0..5 = the
@@ -421,8 +421,9 @@ struct Fable2Settings {
     // 60 at most (the user, 2026-09-27): above 60 the game does not run at
     // normal speed, so a saved 120/144 - or FABLE2_FPS - comes back as 60.
     fps = std::clamp(fps, 24, 60);
-    resolution_scale = std::clamp(resolution_scale, 1, 8);
-    if (world_height != 540 && world_height != 544) world_height = 720;
+    resolution_scale = std::clamp(resolution_scale, 1, 7);   // the renderer caps at 7 (kMaxDrawResolutionScaleAlongAxis)
+    if (world_height == 540) world_height = 544;   // 540 crashes the game; 544 is the nearest safe height
+    if (world_height != 544) world_height = 720;
     nan_constant_repair = std::clamp(nan_constant_repair, 0, 2);
     texture_cache_mb = std::clamp(texture_cache_mb, 0, 8192);
     if (texture_scale != 2 && texture_scale != 4 && texture_scale != 8) {
