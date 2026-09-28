@@ -557,6 +557,11 @@ candidate against the actual code before porting anything.**
 
 ### Getting a value into the GPU plugin
 
+*Up to 1.1.5. Since 1.2.0 there is no plugin: `fable2.exe` registers every one
+of these settings itself (`src/fable2_gpu_cvars.cpp`, generated from the
+plugin's own registry), so they exist from the start and the gap below is gone;
+the deferred-load path still works, it just has nothing left to defer.*
+
 The plugin's cvars do not exist when the app starts - `rexgpu-xenos.dll`
 registers them as it loads, after `OnPreSetup` and before `OnPostSetup`. So
 setting them directly fails in the first hook and is *too late* in the second,
