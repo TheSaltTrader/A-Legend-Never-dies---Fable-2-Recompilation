@@ -17,7 +17,16 @@ numbering, not the game's.
 - On the development install this freed 16 GB (14,631 retired files and 35
   excluded ones) and left all 55,848 working replacements in place.
 
-`fable2.exe` differs from 1.3.2 only in its version number.
+### Fixed — the F10 texture counts looked like an empty pack
+
+- **F10 said "37 in the pack" of a pack holding 55,848 textures.** The line
+  only compared the textures in the dump folder with the pack, and matched
+  them by exact file name - but the game uses a replacement for any texture
+  with the same picture and shape, wherever it was dumped. It now says how
+  many textures the pack holds, then how many of the dump folder's textures
+  it already covers and how many are new. The Process button's "only the
+  waiting textures" uses the same rule, so it no longer re-upscales pictures
+  the pack already has.
 
 ## 1.3.2 — 2026-09-28
 
