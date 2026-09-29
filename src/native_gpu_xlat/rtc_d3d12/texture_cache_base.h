@@ -503,6 +503,13 @@ class TextureCache {
   // to the implementation that are used in their destructor, and will become
   // invalid if the implementation is destroyed before the texture.
   void DestroyAllTextures(bool from_destructor = false);
+ public:
+  // [texpack] What a texture-pack or dump switch needs: drop the textures loaded from the game's own data so they
+  // load again (and meet the pack or the dump), and KEEP every texture of the game's own rendering - scaled resolves
+  // and anything on GPU-written memory. Neither the pack nor the dump touches those, and re-creating them mid-play
+  // at a resolution scale above 1 could draw them from stale memory: frames washed white, red or cyan (2026-09-28).
+  void DestroyGuestDataTextures();
+ protected:
 
   // Whether the signed version of the texture has a different representation on
   // the host than its unsigned version (for example, if it's a fixed-point

@@ -5120,7 +5120,7 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     if (texture_clear_requested_ &&
         (FenceReasonScope(fence_reason_, "cache clear"), AwaitAllQueueOperationsCompletion())) {
       texture_clear_requested_ = false;
-      texture_cache_->ClearCache();
+      texture_cache_->DestroyGuestDataTextures();
     }
   }
 

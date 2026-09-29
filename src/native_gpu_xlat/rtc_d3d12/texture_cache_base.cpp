@@ -789,6 +789,26 @@ void TextureCache::WatchCallback(const std::unique_lock<std::recursive_mutex>& g
   texture.texture_cache().texture_became_outdated_.store(true, std::memory_order_release);
 }
 
+void TextureCache::DestroyGuestDataTextures() {
+  ResetTextureBindings();
+  size_t kept = 0, dropped = 0;
+  for (auto it = textures_.begin(); it != textures_.end();) {
+    const TextureKey& key = it->first;
+    const uint32_t size = it->second->GetGuestBaseSize();
+    if (key.scaled_resolve ||
+        (size && shared_memory().AnyPageGpuWritten(uint32_t(key.base_page) << 12, size))) {
+      ++kept;
+      ++it;
+      continue;
+    }
+    it = textures_.erase(it);   // the texture unlinks itself from the usage list and releases its descriptors
+    ++dropped;
+  }
+  COUNT_profile_set("gpu/texture_cache/textures", textures_.size());
+  REXLOG_INFO("[texpack] texture reload: {} game-data textures dropped, {} of the game's own rendering kept",
+              dropped, kept);
+}
+
 void TextureCache::DestroyAllTextures(bool from_destructor) {
   ResetTextureBindings(from_destructor);
   textures_.clear();
