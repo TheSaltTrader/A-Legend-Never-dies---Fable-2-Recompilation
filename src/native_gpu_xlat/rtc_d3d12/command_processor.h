@@ -822,6 +822,16 @@ class D3D12CommandProcessor : public CommandProcessor {
  public:
   // [hitch] What the current guest frame did, for the [hitch] line.
   void NoteTextureLoad(uint64_t guest_bytes);
+  // [dd] a resolve, written into the open draw dump (no-op when none is open).
+  void DumpResolveLine(uint32_t address, uint32_t length);
+  // [dd] descriptor bookkeeping into the open draw dump: 'D' a persistent texture SRV created at index for texture,
+  // 'X' an index released; 'C' the per-draw descriptor-indices constant buffer written (its GPU address + values).
+  void DumpDescriptorEvent(char kind, uint32_t index, const void* texture, uint32_t format, uint32_t swizzle,
+                           uint32_t generation);
+  void DumpIndicesCbuffer(bool pixel, uint64_t address, const uint32_t* indices, uint32_t count);
+  // [dd] a texture (re)load, written into the open draw dump (no-op when none is open).
+  void DumpTextureLoad(const void* texture, uint32_t base, uint32_t size, uint32_t width, uint32_t height,
+                       uint32_t format, bool scaled, bool load_base, bool load_mips);
   void NoteSharedMemoryUpload(uint64_t bytes);
   // [diag] Texture loads counted so far in the current guest frame.
   uint32_t FrameTextureLoads() const;

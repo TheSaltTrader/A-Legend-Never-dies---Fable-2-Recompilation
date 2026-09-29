@@ -2894,8 +2894,12 @@ void FrontEndSwapImpl(uint32_t fb, uint32_t w, uint32_t h, const uint32_t* regs,
 // ordered stream of uint32 records. Everything that reaches the backend goes through the stream, in decode order, and a
 // batch's side effects (fences, interrupts, read pointer) are its last record - so every fence still follows the
 // recording of the draws before it. LOAD_ALU_CONSTANT memory is read by the DRAW thread, at record time.
-REXCVAR_DEFINE_BOOL(ngpu_opt_split, true, "GPU", "Native-GPU: decode and draw recording on two threads (default on since 2026-09-28: SPL1-4 at Fairfax, picture identical; live, switched at a batch boundary)");
-enum : uint32_t { kSpSync = 1, kSpDraw, kSpSwap, kSpRegNow, kSpLoad, kSpPx, kSpCodeVS, kSpCodePS };
+REXCVAR_DEFINE_INT32(ngpu_split_queue_depth, 8, "GPU", "Native-GPU split (read once at the split's start): how many chunks the decode thread may run ahead of the draw thread (default 8). EXPERIMENT: a deeper queue makes the draw thread's record-time reads of memory-loaded constants LATER");
+REXCVAR_DEFINE_BOOL(ngpu_split_load_at_decode, false, "GPU", "Native-GPU split: copy a LOAD_ALU_CONSTANT's source words into the stream at DECODE time (the kick thread) instead of reading guest memory on the draw thread at record time. EXPERIMENT for the canopy flash's read-point hypothesis: earlier read, like split off, but keeping the split");
+REXCVAR_DEFINE_BOOL(ngpu_split_after_load, true, "GPU", "Native-GPU split: run the two-thread split only in the WORLD scene after a load's reveal, and drain it (draw on the recorder thread again) for the whole of every loading screen. 2026-09-29: sessions whose loads ran under the split flashed one draw's tree canopies violet for a frame under GPU saturation at scale 3 (5 of 5 legs); sessions loaded without the split did not (4 of 4, including one that switched the split on after arrival). User's choice of the two mitigations (\"Option B\", 13:27). Off = the split runs from start-up as in 1.1.5-1.3.5");
+REXCVAR_DEFINE_INT32(ngpu_split_after_load_delay_ms, 0, "GPU", "Native-GPU split (with ngpu_split_after_load): milliseconds after a load's reveal before the split restarts (0 = at the reveal). Available for a dose test of the post-entry window: OPTB_1 (2026-09-29) restarted the split inside the load's TAIL and 0.4 s after entry and flashed; REV_1 restarted it 70 s after entry and was clean. The latch alone is tested first; the delay is not defaulted on without a leg that needs it");
+REXCVAR_DEFINE_BOOL(ngpu_opt_split, false, "GPU", "Native-GPU: decode and draw recording on two threads. DEFAULT OFF since 2026-09-29 (1.3.6): with the split on, sessions whose loads it ran through flashed one draw's tree canopies violet for a frame under GPU saturation at scale 3 (5 of 5 legs, +46..+91 s after a load); with it never started, 4 of 4 legs in that window and 2 of 2 at arrival were clean, and the user's own drive of such a session was clean. It is a MITIGATION of a renderer ordering defect that predates the split (seen 2026-09-14 on the plugin renderer), not its fix; the price is the 1.1.5 headroom (about 1.3 ms of recorder time a frame at Fairfax, under the 60 fps cap on the reference PC). On = 1.1.5-1.3.5 behaviour; live, switched at a batch boundary");
+enum : uint32_t { kSpSync = 1, kSpDraw, kSpSwap, kSpRegNow, kSpLoad, kSpPx, kSpCodeVS, kSpCodePS, kSpLoadData };
 bool g_split_on = false;                          // decode thread
 bool g_sp_thread_started = false;                 // decode thread
 thread_local bool t_sp_draw_thread = false;
@@ -2908,7 +2912,7 @@ std::vector<uint32_t> g_sp_cur;                   // decode thread: the chunk be
 uint32_t g_sp_cur_draws = 0;
 uint32_t g_sp_vs_gen = ~0u, g_sp_ps_gen = ~0u;    // decode thread: inline microcode last sent
 void (*g_sp_push)(const uint32_t*, uint32_t) = nullptr;
-constexpr size_t kSpMaxQueued = 8;                // backpressure: the decode thread runs at most this many chunks ahead
+size_t kSpMaxQueued = 8;                          // backpressure: the decode thread runs at most this many chunks ahead (ngpu_split_queue_depth)
 constexpr uint32_t kSpDrawsPerChunk = 48;
 std::atomic<uint64_t> g_sp_chunks{0}, g_sp_records{0}, g_sp_loads{0}, g_sp_wait_qpc{0}, g_sp_load_writes{0};
 
@@ -2975,7 +2979,18 @@ bool SplitLoadConstants(uint32_t addr, uint32_t first, uint32_t count, const uin
   // dropped (a flush would only have cost a diff pass per load - SPL1: ~3,300 loads a frame). Registers outside the
   // range do not care about the order. The loaded ones are the draw thread's: their next write is always forwarded.
   (void)regs;
-  g_sp_cur.push_back(kSpLoad); g_sp_cur.push_back(addr); g_sp_cur.push_back(first); g_sp_cur.push_back(count);
+  if (REXCVAR_GET(ngpu_split_load_at_decode)) {   // [exp] the decode-time read point: the words travel in the stream
+    auto* ks = rex::system::kernel_state();
+    const uint32_t* src = ks && ks->memory() ? ks->memory()->TranslatePhysical<const uint32_t*>(addr) : nullptr;
+    if (src && count && count <= 0x1000) {
+      g_sp_cur.push_back(kSpLoadData); g_sp_cur.push_back(first); g_sp_cur.push_back(count);
+      g_sp_cur.insert(g_sp_cur.end(), src, src + count);
+    } else {
+      g_sp_cur.push_back(kSpLoad); g_sp_cur.push_back(addr); g_sp_cur.push_back(first); g_sp_cur.push_back(count);
+    }
+  } else {
+    g_sp_cur.push_back(kSpLoad); g_sp_cur.push_back(addr); g_sp_cur.push_back(first); g_sp_cur.push_back(count);
+  }
   for (uint32_t k = first; k < first + count && k < 0x5000; ++k) {
     const uint64_t bit = uint64_t(1) << (k & 63);
     g_ls_force[k >> 6] |= bit;
@@ -3003,11 +3018,13 @@ void SplitDrawThread() {
   QueryPerformanceFrequency(&qf);
   QueryPerformanceCounter(&win0);
   uint64_t busy = 0;
+  uint64_t occ_sum = 0, occ_n = 0, occ_max = 0;   // queue occupancy at each pop: the decode-to-record LAG in chunks
   for (;;) {
     std::vector<uint32_t> c;
     {
       std::unique_lock<std::mutex> lock(g_sp_mu);
       g_sp_cv.wait(lock, [] { return !g_sp_q.empty(); });
+      occ_sum += g_sp_q.size(); ++occ_n; occ_max = std::max<uint64_t>(occ_max, g_sp_q.size());
       c = std::move(g_sp_q.front());
       g_sp_q.pop_front();
       g_sp_busy = true;
@@ -3057,6 +3074,12 @@ void SplitDrawThread() {
         if (src) g_sp_load_writes.fetch_add(fable2::ngpu::backend::WriteRegistersBEIfChanged(first, src, count),
                                             std::memory_order_relaxed);
         i += 4;
+      } else if (tag == kSpLoadData) {   // [exp] LOAD_ALU_CONSTANT words copied at decode time
+        const uint32_t first = c[i + 1], count = c[i + 2];
+        g_sp_load_writes.fetch_add(fable2::ngpu::backend::WriteRegistersBEIfChanged(
+                                       first, reinterpret_cast<const uint8_t*>(&c[i + 3]), count),
+                                   std::memory_order_relaxed);
+        i += 3 + size_t(count);
       } else if (tag == kSpPx) {
         const uint32_t n4 = c[i + 1];
         if (g_sp_push && n4) g_sp_push(&c[i + 2], n4);
@@ -3076,12 +3099,15 @@ void SplitDrawThread() {
     busy += uint64_t(b1.QuadPart - b0.QuadPart);
     if (b1.QuadPart - win0.QuadPart >= 5 * qf.QuadPart) {
       const uint64_t waited = g_sp_wait_qpc.exchange(0);
-      REXLOG_INFO("[split] draw thread busy {:.1f}% of the last {:.1f} s; decode thread waited on a full queue {:.1f}% "
+      REXLOG_INFO("[split] draw thread busy {:.1f}% of the last {:.1f} s; decode thread waited on a full queue {:.1f}%; "
+                  "queue lag at pop mean {:.1f} max {} of {} chunks "
                   "({} chunks, {} records, {} deferred constant loads writing {} changed registers so far)",
                   100.0 * double(busy) / double(b1.QuadPart - win0.QuadPart),
                   double(b1.QuadPart - win0.QuadPart) / double(qf.QuadPart),
-                  100.0 * double(waited) / double(b1.QuadPart - win0.QuadPart), g_sp_chunks.load(), g_sp_records.load(),
-                  g_sp_loads.load(), g_sp_load_writes.load());
+                  100.0 * double(waited) / double(b1.QuadPart - win0.QuadPart),
+                  occ_n ? double(occ_sum) / double(occ_n) : 0.0, occ_max, kSpMaxQueued, g_sp_chunks.load(),
+                  g_sp_records.load(), g_sp_loads.load(), g_sp_load_writes.load());
+      occ_sum = occ_n = occ_max = 0;
       busy = 0;
       win0 = b1;
     }
@@ -3096,18 +3122,47 @@ void SplitDrawThread() {
 }
 // Decode thread, at a batch boundary.
 void SplitUpdate() {
-  const bool want = REXCVAR_GET(ngpu_opt_split) && g_backend_on;   // start-up (and its buffered gamma writes) stays direct
+  // [split after load] (ngpu_split_after_load, user decision 2026-09-29 "Option B"): the split may run only in the world
+  // scene, after the reveal hold released the current world entry; a loading-map camera (any load, including region
+  // travel) drains it and it stays direct until the next reveal. The loads' work is what arms the flash (see the cvar).
+  static const char* s_gate_reason = "";
+  bool world_ok = true;
+  if (REXCVAR_GET(ngpu_split_after_load)) {
+    // OPTB_1 (13:40): LoadingCameraAfterWorld() dropped ~2 s BEFORE the scene turned world (the load's tail builds a
+    // world camera) and 'revealed' still held for the OLD entry, so the split re-opened inside the load and the session
+    // flashed. Hence the LATCH: a loading camera raises the entry count the gate needs (the NEXT entry's reveal), and
+    // the DELAY: the split waits ngpu_split_after_load_delay_ms after that reveal (REV_1: +70 s clean; OPTB_1: +0.4 s dirty).
+    static uint32_t s_entries_needed = 1;   // the first world entry
+    static uint32_t s_revealed_entry = 0;
+    static int64_t s_revealed_ms = 0;
+    const uint32_t entries = fable2::WorldEntriesFromLoading();
+    const bool loading = fable2::LoadingCameraAfterWorld();
+    if (loading && entries + 1 > s_entries_needed) s_entries_needed = entries + 1;
+    const bool revealed = entries >= s_entries_needed && g_reveal_released.load(std::memory_order_relaxed) == entries;
+    const int64_t now_ms = int64_t(GetTickCount64());
+    if (revealed && s_revealed_entry != entries) { s_revealed_entry = entries; s_revealed_ms = now_ms; }
+    const bool settled = revealed && now_ms - s_revealed_ms >= int64_t(std::max(0, REXCVAR_GET(ngpu_split_after_load_delay_ms)));
+    world_ok = !loading && settled;
+    s_gate_reason = loading ? "loading screen"
+                  : !revealed ? (entries < s_entries_needed ? (entries ? "load tail, next entry awaited" : "start-up, no world yet") : "reveal hold")
+                  : !settled ? "settling after the reveal" : "world revealed and settled";
+  }
+  const bool want = REXCVAR_GET(ngpu_opt_split) && g_backend_on && world_ok;   // start-up (and its buffered gamma writes) stays direct
   if (want == g_split_on) return;
   if (want) {
     if (!g_sp_thread_started) { g_sp_thread_started = true; std::thread(SplitDrawThread).detach(); }
+    kSpMaxQueued = size_t(std::max(1, std::min(256, REXCVAR_GET(ngpu_split_queue_depth))));
     g_split_on = true;
-    REXLOG_INFO("[split] ON: decoding on the recorder thread, draws recorded on the draw thread");
+    REXLOG_INFO("[split] ON: decoding on the recorder thread, draws recorded on the draw thread (queue depth {}, constants read at {}; gate: {}, world entry {})",
+                kSpMaxQueued, REXCVAR_GET(ngpu_split_load_at_decode) ? "DECODE" : "record",
+                REXCVAR_GET(ngpu_split_after_load) ? s_gate_reason : "none (ngpu_split_after_load off)", fable2::WorldEntriesFromLoading());
   } else {
     SpPublish();
     std::unique_lock<std::mutex> lock(g_sp_mu);
     g_sp_idle_cv.wait(lock, [] { return g_sp_q.empty() && !g_sp_busy; });
     g_split_on = false;
-    REXLOG_INFO("[split] off: the recorder thread draws again (stream drained)");
+    REXLOG_INFO("[split] off: the recorder thread draws again (stream drained; gate: {})",
+                REXCVAR_GET(ngpu_opt_split) ? s_gate_reason : "ngpu_opt_split off");
   }
 }
 

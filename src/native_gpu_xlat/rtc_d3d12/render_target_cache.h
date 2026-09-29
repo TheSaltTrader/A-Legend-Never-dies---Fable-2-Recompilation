@@ -198,6 +198,16 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
 
   // For host render targets.
 
+ public:
+  // [dd] diagnostic for the draw dump's resolve line: what the last DumpRenderTargets read (up to two
+  // rectangles: host render target object, its key, its tracked state before the transition to SRV).
+  struct DdDump { uint32_t rects = 0; const void* rt[2] = {}; uint32_t key[2] = {}; uint32_t state_before[2] = {}; };
+  DdDump dd_last_dump_;
+  const DdDump& dd_last_dump() const { return dd_last_dump_; }
+  void dd_reset_dump() { dd_last_dump_ = DdDump{}; }
+  const RenderTarget* DdBoundColor0() const { return last_update_accumulated_render_targets()[1]; }
+
+ private:
   class D3D12RenderTarget final : public RenderTarget {
    public:
     // descriptor_load_separate is present when the DXGI formats are different

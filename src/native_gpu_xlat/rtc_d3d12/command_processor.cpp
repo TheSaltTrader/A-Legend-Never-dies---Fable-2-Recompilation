@@ -3,7 +3,7 @@
 #include <string>
 #include <cstdint>
 #include <rex/logging.h>
-namespace fable2::ngpu::xlat { bool PluginBool(const char*, bool); std::string PluginString(const char*, const char*); int32_t PluginInt(const char*, int32_t); double PluginDouble(const char*, double); void RefreshString(const char*, std::string&); }
+namespace fable2::ngpu::xlat { bool PluginBool(const char*, bool); std::string PluginString(const char*, const char*); int32_t PluginInt(const char*, int32_t); double PluginDouble(const char*, double); void RefreshString(const char*, std::string&); void RefreshInt(const char*, int32_t&); }
 /**
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
@@ -131,7 +131,11 @@ double& FLAGS_fable2_uw_2d_k_storage_() {
   return s;
 }
 namespace fable2::ngpu { void SetUw2dK(double k) { g_uw_2d_k.store(k < 0.0 ? 0.0 : k, std::memory_order_relaxed); } }
-int32_t& FLAGS_gpu_draw_dump_frames_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("gpu_draw_dump_frames", 0); return s; }
+int32_t& FLAGS_gpu_draw_dump_frames_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("gpu_draw_dump_frames", 0); ::fable2::ngpu::xlat::RefreshInt("gpu_draw_dump_frames", s); return s; }   // [dd] live: a pad set:gpu_draw_dump_frames=N arms it mid-play
+int32_t& FLAGS_gpu_draw_dump_hashes_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("gpu_draw_dump_hashes", 0); return s; }   // [dd] the per-draw input hashes cost ~30 fps: off unless asked
+int32_t& FLAGS_ngpu_exp_cbuf_early_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_cbuf_early", 0); return s; }   // [exp] hazard injection
+bool& FLAGS_ngpu_exp_scratch_nobarrier_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("ngpu_exp_scratch_nobarrier", false); return s; }   // [exp] hazard injection
+int32_t& FLAGS_gpu_draw_dump_filter_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("gpu_draw_dump_filter", 0); return s; }
 std::string& FLAGS_gpu_draw_dump_file_storage_() { static std::string s = ::fable2::ngpu::xlat::PluginString("gpu_draw_dump_file", ""); return s; }
 bool& FLAGS_readback_await_before_texture_upload_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("readback_await_before_texture_upload", true); return s; }
 int32_t& FLAGS_shared_memory_upload_spin_ns_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("shared_memory_upload_spin_ns", 0); return s; }
@@ -141,6 +145,8 @@ bool& FLAGS_shared_memory_upload_reach_storage_() { static bool s = ::fable2::ng
 // NATIVE PATCH (2026-09-26): on in the native backend unless ngpu_backend_upload_skip=false (D4: 57.95 -> 59.78 fps,
 // spread 4.5 -> 0.6, with the XXH3 page hash); the plugin setting can still force it on.
 namespace fable2::ngpu::rtc { bool NgpuBackendUploadSkipCvar(); }
+extern uint64_t g_scaled_uav_barriers;   // texture_cache.cpp: NATIVE FIX [scaled uav], reported on the fence line
+extern uint64_t g_scaled_window_switches, g_scaled_window_buffers;   // texture_cache.cpp: [scaled windows], fence line
 bool& FLAGS_shared_memory_upload_skip_unchanged_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("shared_memory_upload_skip_unchanged", false) || ::fable2::ngpu::rtc::NgpuBackendUploadSkipCvar(); return s; }
 bool& FLAGS_shared_memory_upload_churn_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("shared_memory_upload_churn", false); return s; }
 int32_t& FLAGS_fable2_2d_census_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("fable2_2d_census", 0); return s; }
@@ -866,7 +872,9 @@ ID3D12Resource* D3D12CommandProcessor::RequestScratchGPUBuffer(uint32_t size,
   }
 
   if (size <= scratch_buffer_size_) {
-    PushTransitionBarrier(scratch_buffer_, scratch_buffer_state_, state);
+    // [exp] ngpu_exp_scratch_nobarrier: leave out the transition that orders the previous load's copy before this
+    // load's writes - a deliberate hazard for the same one-leg test.
+    if (!REXCVAR_GET(ngpu_exp_scratch_nobarrier)) PushTransitionBarrier(scratch_buffer_, scratch_buffer_state_, state);
     scratch_buffer_state_ = state;
     scratch_buffer_used_ = true;
     return scratch_buffer_;
@@ -2792,7 +2800,15 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
   // [dd] Per-draw dump: close out a frame, start a dump the app asked for.
   {
     if (dd_file_) {
-      std::fprintf(dd_file_, "# swap after frame %u (%u draws)\n", dd_frame_, dd_draw_);
+      {   // [dd] wall clock (the logger's local time), to match frames against a screen recording
+        const auto now = std::chrono::system_clock::now();
+        const std::time_t tt = std::chrono::system_clock::to_time_t(now);
+        std::tm tm{};
+        localtime_s(&tm, &tt);
+        const int ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+        std::fprintf(dd_file_, "# swap after frame %u (%u draws) at %02d:%02d:%02d.%03d\n", dd_frame_, dd_draw_,
+                     tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
+      }
       ++dd_frame_;
       if (dd_frames_left_) --dd_frames_left_;
       if (!dd_frames_left_) {
@@ -2808,7 +2824,9 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
       dd_frames_left_ = dd_file_ ? uint32_t(want) : 0u;
       dd_frame_ = 0;
       REXCVAR_SET(gpu_draw_dump_frames, 0);
+      rex::cvar::SetFlagByName("gpu_draw_dump_frames", "0");   // [dd] the live refresh reads the registry
       REXLOG_INFO("[dd] draw dump: {} frames to '{}'{}", want, path, dd_file_ ? "" : " (open failed)");
+      if (dd_file_ && bindless_resources_used_) texture_cache_->DdDumpAllDescriptors();   // [dd] the starting table
     }
     dd_draw_ = 0;
   }
@@ -3989,6 +4007,20 @@ void MaybeReportFenceWaits() {
                     (unsigned long long)upload_mb, g_upload_copies_window.exchange(0));
       line += b;
     }
+    if (::g_scaled_window_buffers) {   // [scaled windows]: printed whenever scaling is on, so a zero switch count is a reading, not an absence
+      char b[96];
+      std::snprintf(b, sizeof(b), "%sscaled windows %llu buffers %llu switches", line.empty() ? "" : ", ",
+                    (unsigned long long)::g_scaled_window_buffers, (unsigned long long)::g_scaled_window_switches);
+      line += b;
+      ::g_scaled_window_switches = 0;
+    }
+    if (::g_scaled_uav_barriers) {   // NATIVE FIX [scaled uav]: the feature's own line, for verifying an arm
+      char b[64];
+      std::snprintf(b, sizeof(b), "%sscaled UAV barriers %llu", line.empty() ? "" : ", ",
+                    (unsigned long long)::g_scaled_uav_barriers);
+      line += b;
+      ::g_scaled_uav_barriers = 0;
+    }
     const uint32_t calls = g_provider_calls.exchange(0);
     const uint32_t waits = g_provider_waits.exchange(0);
     const uint64_t us = g_provider_wait_us.exchange(0);
@@ -4157,10 +4189,12 @@ bool D3D12CommandProcessor::IssueCopy() {
   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
   if (readback_mode == ReadbackResolveMode::kDisabled) {
     uint32_t written_address, written_length;
+    render_target_cache_->dd_reset_dump();   // [dd]
     if (!render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
                                        written_address, written_length)) {
       return false;
     }
+    DumpResolveLine(written_address, written_length);   // [dd]
     NoteFreshResolve(written_address, written_length);
     return true;
   }
@@ -4171,10 +4205,12 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
   GpuCatScope gpu_cat(*this, kGpuCatReadback);   // NATIVE PATCH: [gpu prof] (the resolve itself scopes RESOLVE)
   FenceReasonScope fence_reason(fence_reason_, "resolve readback");
   uint32_t written_address, written_length;
+  render_target_cache_->dd_reset_dump();   // [dd]
   if (!render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_, written_address,
                                      written_length)) {
     return false;
   }
+  DumpResolveLine(written_address, written_length);   // [dd]
   NoteFreshResolve(written_address, written_length);
   if (REXCVAR_GET(readback_resolve_uav_barrier)) {
     // [experiment] Make the resolve's writes visible to everything recorded
@@ -4898,7 +4934,18 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
 
     // Reclaim pool pages - no need to do this every small submission since some
     // may be reused.
-    constant_buffer_pool_->Reclaim(frame_completed_);
+    // [exp] ngpu_exp_cbuf_early = N: reclaim constant-buffer pages N frames before their frame is known complete - a
+    // deliberate hazard. If the per-draw constants are what the GPU reads wrong in the canopy flash, this makes the
+    // flash more frequent; if the rate does not move, that pool is not the medium. Never on by default.
+    {
+      const int64_t off = REXCVAR_GET(ngpu_exp_cbuf_early);   // > 0 early (hazard), < 0 later (keeps pages longer)
+      const int64_t f = int64_t(frame_completed_) + off;
+      constant_buffer_pool_->Reclaim(f > 0 ? uint64_t(f) : 0);
+      if (!bindless_resources_used_) {   // the bindful descriptor heaps live on the same frame timeline
+        view_bindful_heap_pool_->Reclaim(f > 0 ? uint64_t(f) : 0);
+        sampler_bindful_heap_pool_->Reclaim(f > 0 ? uint64_t(f) : 0);
+      }
+    }
     if (!bindless_resources_used_) {
       view_bindful_heap_pool_->Reclaim(frame_completed_);
       sampler_bindful_heap_pool_->Reclaim(frame_completed_);
@@ -5704,6 +5751,46 @@ float D3D12CommandProcessor::C8QuadSpan(const D3D12Shader* vertex_shader, float&
 // vertex x range, and the pixel shader's textures (size, format, address,
 // GPU-written, readback pending). Written with buffered stdio; the game runs
 // on while the file grows.
+void D3D12CommandProcessor::DumpDescriptorEvent(char kind, uint32_t index, const void* texture, uint32_t format,
+                                                uint32_t swizzle, uint32_t generation) {
+  if (!dd_file_) return;
+  std::fprintf(dd_file_, "%c f%u idx %u tex %p f%u sw%03X g%u\n", kind, dd_frame_, index, texture, format, swizzle,
+               generation);
+}
+
+void D3D12CommandProcessor::DumpIndicesCbuffer(bool pixel, uint64_t address, const uint32_t* indices,
+                                               uint32_t count) {
+  if (!dd_file_ || !REXCVAR_GET(gpu_draw_dump_hashes)) return;   // verbose only: ~1,400 lines a frame
+  char line[512];
+  int n = std::snprintf(line, sizeof(line), "C f%u %s @%016llX :", dd_frame_, pixel ? "ps" : "vs",
+                       (unsigned long long)address);
+  for (uint32_t i = 0; i < count && n > 0 && size_t(n) < sizeof(line) - 16; ++i)
+    n += std::snprintf(line + n, sizeof(line) - size_t(n), " %u", indices[i]);
+  if (n > 0 && size_t(n) < sizeof(line) - 2) { line[n++] = '\n'; line[n] = 0; std::fputs(line, dd_file_); }
+}
+
+void D3D12CommandProcessor::DumpResolveLine(uint32_t address, uint32_t length) {
+  if (!dd_file_) return;
+  const RegisterFile& regs = *register_file_;
+  const auto cc = regs.Get<reg::RB_COPY_CONTROL>();
+  const auto& dd = render_target_cache_->dd_last_dump();
+  std::fprintf(dd_file_, "R f%u @%08X+%u%s cmd %u clr %u/%u col %08X dest %08X dump %u rt0 %p k%08X s%X rt1 %p k%08X s%X\n",
+               dd_frame_, address, length, texture_cache_->IsDrawResolutionScaled() ? " SC" : "",
+               uint32_t(cc.copy_command), uint32_t(cc.color_clear_enable), uint32_t(cc.depth_clear_enable),
+               regs[XE_GPU_REG_RB_COLOR_CLEAR], regs[XE_GPU_REG_RB_COPY_DEST_BASE], dd.rects, dd.rt[0], dd.key[0],
+               dd.state_before[0], dd.rt[1], dd.key[1], dd.state_before[1]);
+}
+
+void D3D12CommandProcessor::DumpTextureLoad(const void* texture, uint32_t base, uint32_t size, uint32_t width,
+                                            uint32_t height, uint32_t format, bool scaled, bool load_base,
+                                            bool load_mips) {
+  if (!dd_file_) return;
+  std::fprintf(dd_file_, "L f%u tex %p @%08X+%u %ux%u f%u%s%s%s%s%s\n", dd_frame_, texture, base, size, width,
+               height, format, scaled ? " SC" : "", load_base ? " base" : "", load_mips ? " mips" : "",
+               (shared_memory_ && size && shared_memory_->AnyPageGpuWritten(base, size)) ? " gpuw" : "",
+               (size && HasPendingResolveReadback(base, size)) ? " rbpend" : "");
+}
+
 void D3D12CommandProcessor::DrawDumpLine(const D3D12Shader* vertex_shader,
                                          const D3D12Shader* pixel_shader,
                                          const PrimitiveProcessor::ProcessingResult& ppr,
@@ -5712,6 +5799,22 @@ void D3D12CommandProcessor::DrawDumpLine(const D3D12Shader* vertex_shader,
                                          reg::RB_DEPTHCONTROL depth_control) {
   if (!dd_file_ || !vertex_shader) return;
   const RegisterFile& regs = *register_file_;
+  // [dd] filter 1: only draws that sample a GPU-written texture or an 8888 texture at least 128 wide (the
+  // impostor atlases and other render-to-texture consumers); 0 = every draw.
+  if (REXCVAR_GET(gpu_draw_dump_filter) == 1) {
+    bool keep = false;
+    if (pixel_shader) {
+      for (const auto& b : pixel_shader->GetTextureBindingsAfterTranslation()) {
+        xenos::xe_gpu_texture_fetch_t fetch;
+        std::memcpy(&fetch, &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + b.fetch_constant * 6], sizeof(fetch));
+        const uint32_t base = uint32_t(fetch.base_address) << 12;
+        const uint32_t ff = uint32_t(fetch.format);
+        if ((ff == 6 && uint32_t(fetch.size_2d.width) + 1 >= 128) || ff == 42 || ff == 49 ||
+            (shared_memory_ && shared_memory_->AnyPageGpuWritten(base, 4096))) { keep = true; break; }
+      }
+    }
+    if (!keep) { ++dd_draw_; return; }
+  }
   char line[1400];
   int n = std::snprintf(
       line, sizeof(line),
@@ -5739,6 +5842,34 @@ void D3D12CommandProcessor::DrawDumpLine(const D3D12Shader* vertex_shader,
   }
   if ((bmu[0] >> 8) & 1ull) put(" c8 %.5g,%.5g,%.4g,%.4g", c[32], c[33], c[34], c[35]);
   put(" vconst %016llX", (unsigned long long)bmu[0]);
+  if (REXCVAR_GET(gpu_draw_dump_hashes)) {   // [dd] the draw's inputs, hashed (DD_4-6: this alone halved the frame rate)
+    auto fnv = [](uint64_t h, const uint8_t* q, size_t n) { for (size_t i = 0; i < n; ++i) { h ^= q[i]; h *= 1099511628211ull; } return h; };
+    uint32_t nvb = 0;
+    for (const auto& vb : vertex_shader->vertex_bindings()) {
+      if (nvb++ >= 3) break;
+      const xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(vb.fetch_constant);
+      const uint32_t vaddr = uint32_t(vf.address) << 2, vsize = uint32_t(vf.size) << 2;
+      const uint8_t* vp = memory_ ? memory_->TranslatePhysical(vaddr) : nullptr;
+      const uint64_t h = vp ? fnv(1469598103934665603ull, vp, std::min<uint32_t>(vsize, 16384u)) : 0ull;
+      put(" vb%u @%08X+%u h%016llX", vb.fetch_constant, vaddr, vsize, (unsigned long long)h);
+    }
+    uint64_t hc = 1469598103934665603ull;
+    for (uint32_t k = 0; k < 256; ++k)
+      if (bmu[k >> 6] & (1ull << (k & 63)))
+        hc = fnv(hc, reinterpret_cast<const uint8_t*>(&c[k * 4]), 16);
+    if (pixel_shader) {
+      const auto& bmp = pixel_shader->constant_register_map().float_bitmap;
+      const float* cp = reinterpret_cast<const float*>(&regs[XE_GPU_REG_SHADER_CONSTANT_256_X]);
+      for (uint32_t k = 0; k < 256; ++k)
+        if (bmp[k >> 6] & (1ull << (k & 63)))
+          hc = fnv(hc, reinterpret_cast<const uint8_t*>(&cp[k * 4]), 16);
+    }
+    put(" hc%016llX", (unsigned long long)hc);
+  }
+  {   // [dd] the host render target bound as colour 0 for this draw
+    const auto* hrt = render_target_cache_->DdBoundColor0();
+    put(" hrt %p k%08X", hrt, hrt ? hrt->key().key : 0u);
+  }
   float x0 = 0.0f, x1 = 0.0f;
   const float span = C8QuadSpan(vertex_shader, x0, x1);
   if (span >= 0.0f) put(" x %.1f..%.1f", x0, x1);
@@ -5750,12 +5881,22 @@ void D3D12CommandProcessor::DrawDumpLine(const D3D12Shader* vertex_shader,
                   &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + tb[i].fetch_constant * 6],
                   sizeof(fetch));
       const uint32_t base = uint32_t(fetch.base_address) << 12;
-      put(" t%u:%ux%u f%u @%08X%s%s", tb[i].fetch_constant, uint32_t(fetch.size_2d.width) + 1,
+      bool sc = false;
+      const void* tex = texture_cache_->DiagBindingTexture(tb[i].fetch_constant, &sc);
+      if (fetch.size_2d.width == 0 && fetch.size_2d.height == 0 && memory_) {   // [dd] a 1x1 texture: its texel
+        const uint32_t* px = reinterpret_cast<const uint32_t*>(memory_->TranslatePhysical(base));
+        if (px) put(" px%08X", *px);
+      }
+      put(" t%u:%ux%u f%u @%08X%s%s%s tex %p", tb[i].fetch_constant, uint32_t(fetch.size_2d.width) + 1,
           uint32_t(fetch.size_2d.height) + 1, uint32_t(fetch.format), base,
           (shared_memory_ && shared_memory_->AnyPageGpuWritten(base, 4096)) ? " gpuw" : "",
-          HasPendingResolveReadback(base, 4096) ? " rbpend" : "");
+          HasPendingResolveReadback(base, 4096) ? " rbpend" : "", sc ? " SC" : "", tex);
+      put(" sw%03X", uint32_t(fetch.swizzle));
+      if (bindless_resources_used_) put(" idx%u", texture_cache_->GetActiveTextureBindlessSRVIndex(tb[i]));   // [dd]
     }
   }
+  if (bindless_resources_used_)   // [dd] the indices cbuffer bound BEFORE this draw (a 'C' line follows if rewritten)
+    put(" cbi %016llX", (unsigned long long)cbuffer_binding_descriptor_indices_pixel_.address);
   if (n < 0) n = 0;
   if (size_t(n) > sizeof(line) - 2) n = int(sizeof(line) - 2);
   line[n++] = '\n';
@@ -6675,6 +6816,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
         descriptor_indices[samplers_vertex[i].bindless_descriptor_index] =
             current_sampler_bindless_indices_vertex_[i];
       }
+      DumpIndicesCbuffer(false, cbuffer_binding_descriptor_indices_vertex_.address, descriptor_indices,   // [dd]
+                         uint32_t(texture_count_vertex + sampler_count_vertex));
       cbuffer_binding_descriptor_indices_vertex_.up_to_date = true;
       current_graphics_root_up_to_date_ &= ~(1u << kRootParameter_Bindless_DescriptorIndicesVertex);
     }
@@ -6707,6 +6850,8 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
         descriptor_indices[(*samplers_pixel)[i].bindless_descriptor_index] =
             current_sampler_bindless_indices_pixel_[i];
       }
+      DumpIndicesCbuffer(true, cbuffer_binding_descriptor_indices_pixel_.address, descriptor_indices,   // [dd]
+                         uint32_t(texture_count_pixel + sampler_count_pixel));
       cbuffer_binding_descriptor_indices_pixel_.up_to_date = true;
       current_graphics_root_up_to_date_ &= ~(1u << kRootParameter_Bindless_DescriptorIndicesPixel);
     }
@@ -7166,6 +7311,26 @@ bool D3D12CommandProcessor::CopyToGuestMemory(uint32_t address, const void* sour
   const bool quiet = shared_memory_ && shared_memory_->BeginSelfCopy(address, length);
   if (!NgpuParallelCopy(destination, source, length))   // NATIVE PATCH: 1 MB+ split over the upload copy pool
     std::memcpy(destination, source, length);
+  if (dd_file_ && length >= 0x8000 && length <= 0x40000) {   // [dd] the atlas class: histogram the landed 16-bit texels
+    const uint16_t* p16 = reinterpret_cast<const uint16_t*>(destination);
+    const uint32_t n16 = length / 2;
+    uint32_t mag = 0, magsw = 0, zero = 0, opaque = 0, sampled = 0;
+    auto is_mag = [](uint16_t t) {
+      const uint32_t r = (t >> 10) & 31, g = (t >> 5) & 31, b = t & 31;
+      return r >= 24 && b >= 24 && g <= 6;
+    };
+    for (uint32_t i = 0; i < n16; i += 4) {
+      const uint16_t v = p16[i];
+      const uint16_t sw = uint16_t((v << 8) | (v >> 8));
+      ++sampled;
+      if (v == 0) ++zero;
+      if (is_mag(v)) ++mag;
+      if (is_mag(sw)) ++magsw;
+      if (v & 0x8000) ++opaque;
+    }
+    std::fprintf(dd_file_, "M f%u @%08X+%u sampled %u zero %u mag %u magsw %u a1 %u\n", dd_frame_, address, length,
+                 sampled, zero, mag, magsw, opaque);
+  }
   if (quiet) {
     shared_memory_->EndSelfCopy(address, length);
     g_guest_copy_quiet.fetch_add(1, std::memory_order_relaxed);

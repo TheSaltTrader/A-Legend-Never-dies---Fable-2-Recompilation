@@ -3,6 +3,49 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.3.6 — 2026-09-29
+
+### Changed — the two-thread renderer split is off by default (tree-canopy flashes)
+
+- **The decode/draw split introduced in 1.1.5 is now off by default.** With it
+  on, every measured session under a saturated GPU (internal resolution 3x,
+  in woods) showed violet flashes on tree canopies: 37 to 92 flash events in a
+  45-second recording, many covering 1-3% of the picture. With the split never
+  started, six measured sessions showed far fewer and far fainter events: four
+  had none at any magnitude, two had three to five faint ones (0.1-0.16% of
+  the picture, the size of the flashes originally reported) in 45 seconds. A
+  session driven by hand through three area loads for six minutes showed none.
+  Fewer and fainter, not none.
+- This is a mitigation, not the fix. The flash itself is a timing fault in
+  the renderer that is still being worked on; it was first seen on 14
+  September on the previous renderer, before the split existed, and it
+  happens with the camera still or moving, on near and distant trees alike.
+  What the split does is disturb the timing of loading screens enough to put
+  a session into the state that shows it. One other disturbance
+  did the same in testing - a screen recorder running through the loading
+  screen - so a machine that is busy with something else while an area loads
+  may still see flashes. A load hit deliberately with four busy CPU processes
+  did not.
+- The price is the headroom the split bought, measured on this build. At the
+  3x internal scale, where the graphics card is the limit, there is no
+  frame-rate cost: seven runs with the split off held 49.7-54.6 fps against
+  six with it on at 49.5-51.0 (runs made for other purposes, a consistent
+  observation rather than a controlled pair). At 1x at Fairfax castle, where
+  the processor is the limit, the recording thread used 13.25 ms of the
+  16.65 ms frame with the split off against 11.23 ms with it on (medians over
+  ~9,000 frames each); the frame rate was 60 fps either way, so this is
+  headroom rather than frames. The split can be turned back on with the
+  setting `ngpu_opt_split = true` (1.1.5-1.3.5 behaviour).
+- Two corrections to how the flashes were measured, for anyone reading the
+  earlier notes: the detector counted only single-frame events and missed
+  flashes lasting two to four frames (now counted as runs), and every earlier
+  measurement began 46 s after arriving in an area, so nothing said about the
+  first 46 s until today.
+
+`fable2.exe` differs from 1.3.5 in the split's default, a setting that keeps
+the split off during loading screens if it is turned on (`ngpu_split_after_load`),
+diagnostics counters on the renderer's fence line, and the version number.
+
 ## 1.3.5 — 2026-09-29
 
 ### Corrected — the tree-flash advice in 1.3.4 was wrong

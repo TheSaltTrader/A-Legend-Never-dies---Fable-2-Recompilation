@@ -5591,6 +5591,7 @@ bool D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dump
 
   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows, dump_pitch,
                                  dump_rectangles_);
+  dd_last_dump_.rects = uint32_t(dump_rectangles_.size());   // [dd]
   if (dump_rectangles_.empty()) {
     return true;
   }
@@ -5610,12 +5611,19 @@ bool D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dump
   current_temporary_descriptors_cpu_.clear();
   bool any_sources_32bpp_64bpp[2] = {};
   uint32_t rt_sort_index = 0;
+  uint32_t dd_i = 0;   // [dd]
   for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
     auto& d3d12_rt = *static_cast<D3D12RenderTarget*>(rectangle.render_target);
-    command_processor_.PushTransitionBarrier(
-        d3d12_rt.resource(),
-        d3d12_rt.SetResourceState(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    const D3D12_RESOURCE_STATES dd_before =
+        d3d12_rt.SetResourceState(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    if (dd_i < 2) {   // [dd]
+      dd_last_dump_.rt[dd_i] = &d3d12_rt;
+      dd_last_dump_.key[dd_i] = d3d12_rt.key().key;
+      dd_last_dump_.state_before[dd_i] = uint32_t(dd_before);
+      ++dd_i;
+    }
+    command_processor_.PushTransitionBarrier(d3d12_rt.resource(), dd_before,
+                                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     if (d3d12_rt.temporary_sort_index() == UINT32_MAX) {
       d3d12_rt.SetTemporarySortIndex(rt_sort_index++);
     }

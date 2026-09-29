@@ -325,8 +325,14 @@ void D3D12SharedMemory::ClearCache() {
   upload_buffer_pool_->ClearCache();
 }
 
+int32_t& FLAGS_ngpu_exp_upload_early_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_upload_early", 0); return s; }   // [exp] hazard injection
 void D3D12SharedMemory::CompletedSubmissionUpdated() {
-  upload_buffer_pool_->Reclaim(command_processor_.GetCompletedSubmission());
+  // [exp] ngpu_exp_upload_early = N: reclaim upload pages N submissions before completion (a deliberate hazard).
+  {
+    const int64_t off = REXCVAR_GET(ngpu_exp_upload_early);   // > 0 early (hazard), < 0 later (keeps pages longer)
+    const int64_t s = int64_t(command_processor_.GetCompletedSubmission()) + off;
+    upload_buffer_pool_->Reclaim(s > 0 ? uint64_t(s) : 0);
+  }
 }
 
 void D3D12SharedMemory::BeginSubmission() {

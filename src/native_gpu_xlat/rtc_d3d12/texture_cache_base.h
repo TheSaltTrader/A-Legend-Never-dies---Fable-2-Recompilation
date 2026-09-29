@@ -509,6 +509,21 @@ class TextureCache {
   // and anything on GPU-written memory. Neither the pack nor the dump touches those, and re-creating them mid-play
   // at a resolution scale above 1 could draw them from stale memory: frames washed white, red or cyan (2026-09-28).
   void DestroyGuestDataTextures();
+  // [dd] diagnostic: every texture object, for a descriptor-table snapshot when a draw dump is armed.
+  const std::unordered_map<TextureKey, std::unique_ptr<Texture>, TextureKey::Hasher>& DdTextures() const {
+    return textures_;
+  }
+  // [dd] diagnostic: the texture object bound to a fetch constant after RequestTextures and its key's
+  // scaled_resolve flag (nullptr / false when the binding is not valid).
+  const void* DiagBindingTexture(uint32_t fetch_constant, bool* scaled) const {
+    if (scaled) *scaled = false;
+    if (fetch_constant >= 32) return nullptr;
+    const TextureBinding& b = texture_bindings_[fetch_constant];
+    if (!b.key.is_valid) return nullptr;
+    // the binding's key never carries scaled_resolve (FindOrCreateTexture decides it on its own copy); the texture's does
+    if (scaled) *scaled = b.texture != nullptr && b.texture->key().scaled_resolve != 0;
+    return b.texture;
+  }
  protected:
 
   // Whether the signed version of the texture has a different representation on

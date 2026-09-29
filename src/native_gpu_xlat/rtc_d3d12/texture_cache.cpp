@@ -100,6 +100,12 @@ std::string& FLAGS_texture_pack_path_storage_() { static std::string s = ::fable
 // Generated with `xb buildshaders`.
 
 namespace fable2::ngpu::rtc { bool TextureHeapsEnabled(); bool TexContentCensusEnabled(); bool TexpackPrebuildEnabled(); bool GameTexPrecreateEnabled(); bool TexpackAsyncEnabled(); bool OptSamplerMemo(); }   // facade.cpp / native_gpu_present.cpp
+// NATIVE FIX (2026-09-29, the tree-canopy flash): see D3D12TextureCache::TransitionCurrentScaledResolveRange.
+// Default on; FABLE2_TUNE=scaled_resolve_uav_barrier=false is the same binary with the old behaviour (the A/B).
+bool& FLAGS_scaled_resolve_uav_barrier_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("scaled_resolve_uav_barrier", true); return s; }
+uint64_t g_scaled_uav_barriers = 0;   // barriers emitted, reported on the [gpu] fence line (GPU thread only)
+uint64_t g_scaled_window_switches = 0;   // [scaled windows] MakeScaledResolveRangeCurrent changed a gigabyte's current 2 GB buffer (fence line)
+uint64_t g_scaled_window_buffers = 0;    // [scaled windows] 2 GB reserved buffers created so far (fence line)
 namespace rex::graphics::ngpu_d3d12 {
 // [texpack] Same-binary control (mirrors NG2's NG2_TEXPACK_FULLCLEAR): FABLE2_TEXPACK_FULLCLEAR=1 takes the pre-1.3.2
 // full ClearCaches on a pack/dump switch - known to flash - so a flash counter can be validated in the very build it
@@ -2045,6 +2051,10 @@ void D3D12TextureCache::WriteActiveTextureBindfulSRV(
     bool force_special_view = binding->key.dimension == xenos::DataDimension::k3D &&
                               (host_shader_binding.dimension == xenos::FetchOpDimension::k1D ||
                                host_shader_binding.dimension == xenos::FetchOpDimension::k2D);
+    if (binding->texture && d3d12_texture_bindings_[fetch_constant_index].srv_generation !=
+                                static_cast<const D3D12Texture*>(binding->texture)->srv_generation()) {
+      UpdateTextureBindingsImpl(UINT32_C(1) << fetch_constant_index);   // NATIVE FIX: the cached indices were retired
+    }
     const D3D12TextureBinding& d3d12_binding = d3d12_texture_bindings_[fetch_constant_index];
     if (host_shader_binding.is_signed) {
       // Not supporting signed compressed textures - hopefully DXN and DXT5A are
@@ -2117,6 +2127,10 @@ uint32_t D3D12TextureCache::GetActiveTextureBindlessSRVIndex(
     bool force_special_view = binding->key.dimension == xenos::DataDimension::k3D &&
                               (host_shader_binding.dimension == xenos::FetchOpDimension::k1D ||
                                host_shader_binding.dimension == xenos::FetchOpDimension::k2D);
+    if (binding->texture && d3d12_texture_bindings_[fetch_constant_index].srv_generation !=
+                                static_cast<const D3D12Texture*>(binding->texture)->srv_generation()) {
+      UpdateTextureBindingsImpl(UINT32_C(1) << fetch_constant_index);   // NATIVE FIX: the cached indices were retired
+    }
     const D3D12TextureBinding& d3d12_binding = d3d12_texture_bindings_[fetch_constant_index];
     if (force_special_view) {
       Texture* texture = nullptr;
@@ -2454,6 +2468,9 @@ bool D3D12TextureCache::EnsureScaledResolveMemoryCommitted(uint32_t start_unscal
     scaled_resolve_2gb_buffers_[i] =
         std::unique_ptr<ScaledResolveVirtualBuffer>(new ScaledResolveVirtualBuffer(
             scaled_resolve_buffer_resource, kScaledResolveVirtualBufferInitialState));
+    ++::g_scaled_window_buffers;
+    REXGPU_INFO("[scaled windows] reserved buffer {} created at gigabyte {} ({} buffers so far, scaled space {} MB)", i, i,
+                ::g_scaled_window_buffers, (uint64_t(SharedMemory::kBufferSize) * draw_resolution_scale_area) >> 20);
     scaled_resolve_buffer_resource->Release();
   }
 
@@ -2602,6 +2619,7 @@ bool D3D12TextureCache::MakeScaledResolveRangeCurrent(uint32_t start_unscaled,
       assert_not_null(gigabyte_current_buffer);
       command_processor_.PushAliasingBarrier(gigabyte_current_buffer->resource(),
                                              new_buffer_resource);
+      ++::g_scaled_window_switches;   // [scaled windows] the feature's own count, for verifying an arm
       // An aliasing barrier synchronizes and flushes everything.
       gigabyte_current_buffer->ClearUAVBarrierPending();
     }
@@ -2616,6 +2634,20 @@ bool D3D12TextureCache::MakeScaledResolveRangeCurrent(uint32_t start_unscaled,
 void D3D12TextureCache::TransitionCurrentScaledResolveRange(D3D12_RESOURCE_STATES new_state) {
   assert_true(IsDrawResolutionScaled());
   ScaledResolveVirtualBuffer& buffer = GetCurrentScaledResolveBuffer();
+  // NATIVE FIX (2026-09-29, the tree-canopy flash at draw resolution scale 3). A resolve into the scaled buffer
+  // marks its UAV writes as pending (MarkCurrentScaledResolveRangeUAVWritesCommitNeeded), the way the shared
+  // memory and EDRAM buffers do - but nothing ever consumed the flag: a UAV -> UAV request emitted no barrier
+  // (PushTransitionBarrier drops equal states) and SetResourceState silently cleared it. So two consecutive
+  // resolves into the same scaled buffer (the impostor atlas page is resolved several times a frame) were never
+  // ordered against each other - a write-after-write race the GPU only loses when it is saturated (3x at 60 fps
+  // flashed; 1x, 2x and 3x capped at 30 were clean). The EDRAM buffer's twin, CommitEdramBufferUAVWrites, does
+  // exactly this. Same as in the SDK source (rexglue-src texture_cache.h): the flag is write-only there too.
+  if (new_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && buffer.IsUAVBarrierPending() &&
+      REXCVAR_GET(scaled_resolve_uav_barrier)) {
+    command_processor_.PushUAVBarrier(buffer.resource());
+    buffer.ClearUAVBarrierPending();
+    ++::g_scaled_uav_barriers;
+  }
   command_processor_.PushTransitionBarrier(buffer.resource(), buffer.SetResourceState(new_state),
                                            new_state);
 }
@@ -3687,6 +3719,10 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, 
   command_processor_.NoteTextureLoad(  // [hitch]
       uint64_t(load_base ? texture.GetGuestBaseSize() : 0u) +
       uint64_t(load_mips ? texture.GetGuestMipsSize() : 0u));
+  command_processor_.DumpTextureLoad(   // [dd]
+      &texture, uint32_t(texture.key().base_page) << 12, texture.GetGuestBaseSize(),
+      uint32_t(texture.key().width_minus_1) + 1, uint32_t(texture.key().height_minus_1) + 1,
+      uint32_t(texture.key().format), texture.key().scaled_resolve != 0, load_base, load_mips);
   if (::fable2::ngpu::rtc::TexContentCensusEnabled() && load_base && !texture.key().scaled_resolve) {
     // NATIVE PATCH: [content census] (user 2026-09-26 night: "can't we display them from cache rather than
     // re-generating them when being streamed?"). The cache keys a texture by guest ADDRESS + shape, so content the
@@ -4602,6 +4638,8 @@ void D3D12TextureCache::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) 
     if (!binding) {
       continue;
     }
+    if (binding->texture)   // NATIVE FIX: see D3D12TextureBinding::srv_generation
+      d3d12_binding.srv_generation = static_cast<const D3D12Texture*>(binding->texture)->srv_generation();
     if (IsSignedVersionSeparateForFormat(binding->key)) {
       if (binding->texture && texture_util::IsAnySignNotSigned(binding->swizzled_signs)) {
         d3d12_binding.descriptor_index =
@@ -4837,10 +4875,23 @@ uint32_t D3D12TextureCache::FindOrCreateTextureDescriptor(D3D12Texture& texture,
   device->CreateShaderResourceView(resource_for_view, &desc,
                                    GetTextureDescriptorCPUHandle(descriptor_index));
   texture.AddSRVDescriptorIndex(descriptor_key, descriptor_index);
+  command_processor_.DumpDescriptorEvent('D', descriptor_index, &texture, uint32_t(format), host_swizzle,   // [dd]
+                                         texture.srv_generation());
   return descriptor_index;
 }
 
+void D3D12TextureCache::DdDumpAllDescriptors() {
+  for (const auto& kv : DdTextures()) {
+    const auto& t = *static_cast<const D3D12Texture*>(kv.second.get());
+    t.DdForEachSRVDescriptor([&](D3D12Texture::SRVDescriptorKey key, uint32_t index) {
+      command_processor_.DumpDescriptorEvent('D', index, &t, uint32_t(t.key().format), uint32_t(key.host_swizzle),
+                                             t.srv_generation());
+    });
+  }
+}
+
 void D3D12TextureCache::ReleaseTextureDescriptor(uint32_t descriptor_index) {
+  command_processor_.DumpDescriptorEvent('X', descriptor_index, nullptr, 0, 0, 0);   // [dd]
   if (bindless_resources_used_) {
     command_processor_.ReleaseViewBindlessDescriptorImmediately(descriptor_index);
   } else {

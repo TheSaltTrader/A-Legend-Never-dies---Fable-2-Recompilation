@@ -128,11 +128,18 @@ KNOWN_ISSUES = [
     "resolution), the game's depth-of-field blur spreads a little further around "
     "far edges against the sky - roofs and trees - than at 1280 x 720 and "
     "2560 x 1440. The rest of the picture is unaffected.",
-    "Occasional one-frame violet or white flashes on tree canopies, most often "
-    "while turning the camera in woods. Changing 'Black texture fix' does not "
-    "avoid them (None flashed too in a repeat test; Full removed them but halves "
-    "the frame rate). The cause - how rendered images are handed back while the "
-    "GPU is still busy - is being worked on.",
+    "Brief violet flashes on tree canopies, near and far, camera still or moving, "
+    "when the GPU is saturated (internal resolution 3x and above in woods). "
+    "1.3.6 turns the two-thread renderer split off by default: in six measured "
+    "sessions that left four with no flash at any size and two with a few "
+    "two-frame flashes about the size of the ones originally reported, against "
+    "the previous default, which flashed in essentially every session at about "
+    "ten times that size. Not removed: anything that disturbs a loading "
+    "screen's timing (a screen recorder running through the load did) can bring "
+    "them back at full strength, and a session that shows them keeps showing "
+    "them until the game is restarted. 2x, or a 30 fps cap, avoids them. The "
+    "underlying fault is a timing fault in the renderer and is still being "
+    "worked on; the split's default is a mitigation, not the fix.",
 ]
 # One list, two outputs: README.txt's Known issues AND the release notes' Known issues are both rendered from
 # KNOWN_ISSUES, so a new issue cannot reach one and miss the other (1.2.0 and 1.3.0 each disclosed an issue in the

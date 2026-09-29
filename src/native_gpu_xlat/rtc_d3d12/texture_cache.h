@@ -171,6 +171,8 @@ class D3D12TextureCache final : public TextureCache {
   size_t GetCurrentScaledResolveBufferIndexPublic() const {
     return GetCurrentScaledResolveBufferIndex();
   }
+  // [dd] diagnostic: write a 'D' line for every live texture SRV descriptor (the table a dump replay starts from).
+  void DdDumpAllDescriptors();
   void MarkCurrentScaledResolveRangeUAVWritesCommitNeeded() {
     assert_true(IsDrawResolutionScaled());
     GetCurrentScaledResolveBuffer().SetUAVBarrierPending();
@@ -282,6 +284,11 @@ class D3D12TextureCache final : public TextureCache {
       return old_state;
     }
 
+    // [dd] diagnostic: visit every live SRV descriptor of this texture.
+    template <class F>
+    void DdForEachSRVDescriptor(F&& f) const {
+      for (const auto& kv : srv_descriptors_) f(kv.first, kv.second);
+    }
     uint32_t GetSRVDescriptorIndex(SRVDescriptorKey descriptor_key) const {
       auto it = srv_descriptors_.find(descriptor_key);
       return it != srv_descriptors_.cend() ? it->second : UINT32_MAX;
@@ -432,12 +439,19 @@ class D3D12TextureCache final : public TextureCache {
     // TextureBinding returned from FindOrCreateTextureDescriptor.
     uint32_t descriptor_index;
     uint32_t descriptor_index_signed;
+    // NATIVE FIX (2026-09-29): the texture's srv_generation when these indices were taken. ClearSRVDescriptors
+    // (a texture-pack replacement) retires a texture's descriptors and bumps the generation, which makes the
+    // per-draw descriptor-indices buffer rewrite - but the rewrite read THESE cached indices, refreshed only on a
+    // key/swizzle change, so a draw could carry a retired index into a later submission, where the released slot
+    // may already hold another texture's view (the wrong texture in a slot for a frame).
+    uint32_t srv_generation;
 
     D3D12TextureBinding() { Reset(); }
 
     void Reset() {
       descriptor_index = UINT32_MAX;
       descriptor_index_signed = UINT32_MAX;
+      srv_generation = 0;
     }
   };
 
@@ -463,6 +477,9 @@ class D3D12TextureCache final : public TextureCache {
     }
     // After an aliasing barrier (which is even stronger than an UAV barrier).
     void ClearUAVBarrierPending() { uav_barrier_pending_ = false; }
+    // NATIVE FIX (2026-09-29): the flag was set and cleared but never read - see
+    // TransitionCurrentScaledResolveRange.
+    bool IsUAVBarrierPending() const { return uav_barrier_pending_; }
 
    private:
     Microsoft::WRL::ComPtr<ID3D12Resource> resource_;
