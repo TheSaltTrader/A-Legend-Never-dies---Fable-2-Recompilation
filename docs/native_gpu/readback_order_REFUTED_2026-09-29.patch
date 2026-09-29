@@ -1,0 +1,165 @@
+REFUTED 2026-09-29 (RO_1/2/3: 982/830/991 strong flash frames, 3 of 3 dirty, vs ~480-600 default) - NOT a surgical
+test of "an older copy overwrites a newer overlapping resolve". The same targets are re-resolved every frame, so each new
+resolve fully covered the previous pending copy of the SAME target and this change made it skip everything: landings fell
+from ~20,000 per 5 s window (410 ms of copy work) to ~123 (1.5 ms). It effectively DROPPED nearly all superseded copies,
+which 0.2.11 already found causes the violet flash. Reading (auditor + session 4c): the late copies REPAIR guest memory;
+the fault is the ORDER of copy-back relative to its resolve (waiting on resolves >= 1..4096 KB lands fewer copies,
+8.5k-14k, and is clean), not the count and not CPU reads. Kept for the record; do not apply.
+
+diff --git a/src/native_gpu_xlat/rtc_d3d12/command_processor.cpp b/src/native_gpu_xlat/rtc_d3d12/command_processor.cpp
+index 6cb5121..3715f71 100644
+--- a/src/native_gpu_xlat/rtc_d3d12/command_processor.cpp
++++ b/src/native_gpu_xlat/rtc_d3d12/command_processor.cpp
+@@ -88,6 +88,13 @@ static std::atomic<uint32_t> g_landing_count{0};
+ static std::atomic<uint32_t> g_splits_before_load{0};
+ static std::atomic<uint32_t> g_mirror_copies{0};
+ static std::atomic<uint32_t> g_superseded_kept{0};
++// [readback order] marks (an older pending copy overlapped by a newer resolve), landings that copied around a mark,
++// widened marks. FABLE2_RB_ORDER=0 turns the ordering off (same-binary control).
++static std::atomic<uint32_t> g_rb_order_skips{0}, g_rb_order_widened{0}, g_rb_order_avoided{0};
++static bool RbOrderEnabled() {
++  static const bool on = [] { const char* v = std::getenv("FABLE2_RB_ORDER"); return !(v && v[0] == '0'); }();
++  return on;
++}
+ static std::atomic<uint32_t> g_superseded_waited{0};
+ static std::atomic<uint32_t> g_ring_grown{0};
+ static std::atomic<uint32_t> g_upload_landed{0};
+@@ -2459,7 +2466,7 @@ uint32_t D3D12CommandProcessor::LandCompletedResolveReadback(uint32_t address, u
+     if (it != readback_buffers_.end()) {
+       ReadbackBuffer& rb = it->second;
+       if (rb.buffers[p.index] && rb.mapped_data[p.index] && p.length <= rb.sizes[p.index]) {
+-        CopyToGuestMemory(p.address, rb.mapped_data[p.index], p.length);
++        LandPendingReadback(p, static_cast<const uint8_t*>(rb.mapped_data[p.index]));
+         ++landed;
+         dropped = false;
+       }
+@@ -3917,6 +3924,15 @@ void MaybeReportFenceWaits() {
+         const uint64_t sus = g_submission_us.exchange(0);
+         const uint32_t splits = g_splits_before_load.exchange(0);
+         const uint32_t mirrors = g_mirror_copies.exchange(0);
++        {
++          static bool said = false;
++          if (!said) { said = true; REXLOG_INFO("[readback order] {}", RbOrderEnabled() ? "ON" : "OFF (FABLE2_RB_ORDER=0)"); }
++          const uint32_t om = g_rb_order_skips.exchange(0), oa = g_rb_order_avoided.exchange(0),
++                         ow = g_rb_order_widened.exchange(0);
++          if (om || oa || ow)
++            REXLOG_INFO("[readback order] this window: {} older copies marked, {} landed around a newer resolve, {} widened",
++                        om, oa, ow);
++        }
+         const uint32_t sk = g_superseded_kept.exchange(0);
+         const uint32_t sd = g_superseded_dropped.exchange(0);
+         const uint32_t sw = g_superseded_waited.exchange(0);
+@@ -4249,7 +4265,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+         // that cannot be landed here is lost and guest memory keeps the stale
+         // fill. Counted rather than silent.
+         if (rb.buffers[p.index] && rb.mapped_data[p.index] && p.length <= rb.sizes[p.index]) {
+-          CopyToGuestMemory(p.address, rb.mapped_data[p.index], p.length);
++          LandPendingReadback(p, static_cast<const uint8_t*>(rb.mapped_data[p.index]));
+         } else {
+           g_superseded_dropped.fetch_add(1, std::memory_order_relaxed);
+         }
+@@ -4259,6 +4275,13 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+       break;
+     }
+   }
++  // [readback order] (2026-09-29) The user's violet/white tree flash: in "some" a first resolve at an address lands at
++  // once while later ones land a frame late, so an older, larger copy (the 4-8 MB class - waiting on those alone
++  // cured it: readback_resolve_wait_only_kb 4096 -> 0 flashes, 8192 -> 156) could land AFTER a newer, smaller resolve
++  // into part of the same memory and put stale bytes back over it. Every older pending copy now skips what this
++  // resolve writes. The same-key ring above handles only exact repeats of one target.
++  if (GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve)) == ReadbackResolveMode::kSome)
++    MarkNewerResolve(written_address, written_length);
+   uint32_t size = AlignReadbackBufferSize(written_length);
+ 
+   if (size > rb.sizes[write_index]) {
+@@ -4805,7 +4828,7 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
+       if (it != readback_buffers_.end()) {
+         ReadbackBuffer& rb = it->second;
+         if (rb.buffers[p.index] && rb.mapped_data[p.index] && p.length <= rb.sizes[p.index]) {
+-          CopyToGuestMemory(p.address, rb.mapped_data[p.index], p.length);
++          LandPendingReadback(p, static_cast<const uint8_t*>(rb.mapped_data[p.index]));
+           landed_here = true;
+         }
+       }
+@@ -7087,7 +7110,7 @@ void D3D12CommandProcessor::LandPendingResolveReadbacks(uint32_t address, uint32
+       if (it != readback_buffers_.end()) {
+         ReadbackBuffer& rb = it->second;
+         if (rb.buffers[p.index] && rb.mapped_data[p.index] && p.length <= rb.sizes[p.index]) {
+-          CopyToGuestMemory(p.address, rb.mapped_data[p.index], p.length);
++          LandPendingReadback(p, static_cast<const uint8_t*>(rb.mapped_data[p.index]));
+           landed_here = true;
+         }
+       }
+@@ -7103,6 +7126,51 @@ void D3D12CommandProcessor::LandPendingResolveReadbacks(uint32_t address, uint32
+   ::fable2::ngpu::rtc::GuestDataProvidersDisable(memory_, /* NATIVE PATCH */ address, length);
+ }
+ 
++
++void D3D12CommandProcessor::MarkNewerResolve(uint32_t address, uint32_t length) {
++  if (!RbOrderEnabled()) return;
++  const uint64_t end = uint64_t(address) + length;
++  for (PendingResolveReadback& p : pending_resolve_readbacks_) {
++    const uint64_t ps = p.address, pe = uint64_t(p.address) + p.length;
++    const uint64_t os = std::max<uint64_t>(ps, address), oe = std::min<uint64_t>(pe, end);
++    if (os >= oe) continue;
++    g_rb_order_skips.fetch_add(1, std::memory_order_relaxed);
++    if (p.skip_count < 4) {
++      p.skip_start[p.skip_count] = uint32_t(os);
++      p.skip_end[p.skip_count] = uint32_t(oe);
++      ++p.skip_count;
++    } else {
++      p.skip_start[3] = std::min<uint32_t>(p.skip_start[3], uint32_t(os));
++      p.skip_end[3] = std::max<uint32_t>(p.skip_end[3], uint32_t(oe));
++      g_rb_order_widened.fetch_add(1, std::memory_order_relaxed);
++    }
++  }
++}
++
++void D3D12CommandProcessor::LandPendingReadback(const PendingResolveReadback& p, const uint8_t* source) {
++  if (!source) return;
++  if (!p.skip_count) {
++    CopyToGuestMemory(p.address, source, p.length);
++    return;
++  }
++  g_rb_order_avoided.fetch_add(1, std::memory_order_relaxed);
++  // Copy the pieces of [address, address+length) outside every skip range, in address order.
++  uint32_t cursor = p.address;
++  const uint32_t end = p.address + p.length;
++  while (cursor < end) {
++    uint32_t next_skip = end, skip_to = end;
++    for (uint32_t i = 0; i < p.skip_count; ++i) {
++      if (p.skip_end[i] <= cursor) continue;
++      const uint32_t st = std::max(p.skip_start[i], cursor);
++      if (st < next_skip) { next_skip = st; skip_to = p.skip_end[i]; }
++      else if (st == next_skip) skip_to = std::max(skip_to, p.skip_end[i]);
++    }
++    if (next_skip > cursor) CopyToGuestMemory(cursor, source + (cursor - p.address), next_skip - cursor);
++    cursor = std::max(skip_to, next_skip);
++    if (next_skip == end) break;
++  }
++}
++
+ bool NgpuParallelCopy(void* dst, const void* src, size_t size);   // shared_memory.cpp (NATIVE PATCH)
+ 
+ bool D3D12CommandProcessor::CopyToGuestMemory(uint32_t address, const void* source,
+diff --git a/src/native_gpu_xlat/rtc_d3d12/command_processor.h b/src/native_gpu_xlat/rtc_d3d12/command_processor.h
+index 5d3ffb6..4d3cacf 100644
+--- a/src/native_gpu_xlat/rtc_d3d12/command_processor.h
++++ b/src/native_gpu_xlat/rtc_d3d12/command_processor.h
+@@ -792,7 +792,16 @@ class D3D12CommandProcessor : public CommandProcessor {
+     uint32_t index;
+     uint32_t address;
+     uint32_t length;
++    // [readback order] (2026-09-29) Byte ranges a NEWER resolve has written since this copy was queued: landing must
++    // not put this older data back over them. Up to 4; a fifth widens the last to cover it (counted).
++    uint32_t skip_count = 0;
++    uint32_t skip_start[4] = {};
++    uint32_t skip_end[4] = {};
+   };
++  // [readback order] Lands a pending copy into guest memory around its skip ranges.
++  void LandPendingReadback(const PendingResolveReadback& p, const uint8_t* source);
++  // [readback order] A new resolve wrote [address, address+length): older pending copies must skip it.
++  void MarkNewerResolve(uint32_t address, uint32_t length);
+   std::vector<PendingResolveReadback> pending_resolve_readbacks_;
+   uint32_t resolve_sync_misses_this_frame_ = 0;
+   // [scene] Draws since the last swap, all and depth-tested, published as
