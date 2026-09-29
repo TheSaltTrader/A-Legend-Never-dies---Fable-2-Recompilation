@@ -22,12 +22,14 @@ numbering, not the game's.
   Bower Lake woods at 3840 x 2160, turning the camera in one place for three
   minutes: Some flashed in about 500 frames each time (three runs, 49 fps);
   **None** flashed in none and ran at **59 fps**; Full flashed in none but ran
-  at 24 fps. It is not the texture pack (it flashes with the pack off), and
+  at 24 fps. At Fairfax, None also ran faster (59 fps against 46). It is not the texture pack (it flashes with the pack off), and
   it predates this week's changes (seen on 1.3.1 too).
 - **The default is not changed in this release.** "Black texture fix" exists
   because the hero's and dog's textures once turned black when the hero grew
-  up; None kept the hero's textures correct in every test here, but has not
-  been tested at the moment the hero's appearance changes. The F10 help for
+  up; None kept the hero's textures correct in every test here, but could not
+  be tested at the moment the hero's appearance changes - that comes from
+  story ageing or builds up through food and deeds, which the test tools
+  cannot drive in a run. The F10 help for
   the setting now gives these numbers, so it can be switched to None by choice
   (it applies after a restart).
 
