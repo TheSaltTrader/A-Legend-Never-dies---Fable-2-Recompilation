@@ -1582,13 +1582,10 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
              "those textures back from the GPU. 'Some' copies every rendered "
              "texture back once its GPU work is done, and waits only when the "
              "game reaches for one early; 'Full' waits for the whole GPU on every resolve. "
-             "Measured in the Bower Lake woods at 3840 x 2160 (2026-09-29): 'Some' shows "
-             "occasional one-frame violet or white flashes on tree canopies (about 500 flashed "
-             "frames in 3 minutes of turning the camera) at 49 fps; 'None' showed none and ran "
-             "at 59 fps; 'Full' showed none but ran at 24 fps. 'None' kept the hero's own "
-             "textures correct in every test, but it has not been tested at the moment the "
-             "hero's appearance changes (ageing, weight, scars), which is when the black "
-             "textures used to appear.");
+             "Some shows occasional one-frame violet or white flashes on tree canopies; "
+             "so did None in a repeat test, so switching does not avoid them - the cause "
+             "is being worked on. Full removed them in testing but halves the frame rate. "
+             "Start at Some.");
     {
       bool declared = false;
       const auto values = AllowedValues("readback_resolve", s.readback, &declared);

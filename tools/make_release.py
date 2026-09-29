@@ -129,13 +129,10 @@ KNOWN_ISSUES = [
     "far edges against the sky - roofs and trees - than at 1280 x 720 and "
     "2560 x 1440. The rest of the picture is unaffected.",
     "Occasional one-frame violet or white flashes on tree canopies, most often "
-    "while turning the camera in woods. They come from the 'Black texture fix' "
-    "setting at its default, Some; setting it to None (F10, then restart) removed "
-    "them in testing and was faster in both scenes tested (59 fps instead of 49 "
-    "and 46). None could not be tested at the moment the hero's appearance "
-    "changes - that comes from story ageing or builds up through food and "
-    "deeds, which the test tools cannot drive - and that moment is when the "
-    "black textures this setting guards against used to appear.",
+    "while turning the camera in woods. Changing 'Black texture fix' does not "
+    "avoid them (None flashed too in a repeat test; Full removed them but halves "
+    "the frame rate). The cause - how rendered images are handed back while the "
+    "GPU is still busy - is being worked on.",
 ]
 # One list, two outputs: README.txt's Known issues AND the release notes' Known issues are both rendered from
 # KNOWN_ISSUES, so a new issue cannot reach one and miss the other (1.2.0 and 1.3.0 each disclosed an issue in the

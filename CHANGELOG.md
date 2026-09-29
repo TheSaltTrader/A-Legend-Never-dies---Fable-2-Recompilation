@@ -3,6 +3,23 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.3.5 — 2026-09-29
+
+### Corrected — the tree-flash advice in 1.3.4 was wrong
+
+- **1.3.4 said setting "Black texture fix" to None removed the tree-canopy
+  flashes. It does not.** A repeat of the same test on 1.3.4's own exe, with
+  None, still showed violet canopies - the earlier clean result was a single
+  lucky run. The F10 help and the readme no longer suggest None; Some stays
+  the default and the recommendation.
+- What the tests do show: Full (which waits for the GPU on every rendered
+  image) removed the flashes but halves the frame rate, and a test build that
+  only waited, without copying anything back, also removed them in one run -
+  so the flashes look like a timing race between the GPU finishing an image
+  and the game using it. That is where the fix is being looked for.
+
+`fable2.exe` differs from 1.3.4 only in that help text and its version number.
+
 ## 1.3.4 — 2026-09-29
 
 ### Changed — settings that need a restart say so in red
