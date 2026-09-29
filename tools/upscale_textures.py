@@ -34,6 +34,7 @@ left as they are; the game ignores them and says so in its log.
 import argparse
 import glob
 import os
+import shutil
 import re
 import struct
 import sys
@@ -94,7 +95,7 @@ def raw_is_poisoned(dump, pack, tid):
     hash (recorded for whatever occupied the address at that load) was paired
     with the bytes of a DIFFERENT occupant of the same streaming slot, and
     the picture went into the pack under a hash it did not belong to. Such a
-    PNG and pack file are moved to poisoned/ beside their folders; the plugin
+    PNG and pack file are deleted (they were once parked in poisoned/); the plugin
     dumps the real content, consistently, the next time it is loaded. An
     id-only raw is renamed to its true hash name once, so its own content
     stays usable."""
@@ -118,10 +119,8 @@ def raw_is_poisoned(dump, pack, tid):
             return False
     for folder, pattern in ((dump, "%s_*.png" % tid), (pack, "%s.tex" % tid)):
         for path in glob.glob(os.path.join(folder, pattern)):
-            dest = os.path.join(folder, "poisoned")
-            os.makedirs(dest, exist_ok=True)
             try:
-                os.replace(path, os.path.join(dest, os.path.basename(path)))
+                os.remove(path)   # a wrong picture has no use; the next dump brings the right one
             except OSError:
                 pass
     return True
@@ -683,8 +682,7 @@ def read_exclusions(pack):
     larger copy breaks - the main menu's loading spinner is a 5x5 sheet of
     animation frames, and the game showed the whole sheet tiled over the
     menu when it was replaced at 2x - is kept out by name here, and any file
-    a previous run wrote for it is moved to pack/excluded/ so the plugin
-    never serves it again."""
+    a previous run wrote for it is deleted so the game never serves it."""
     ids = set()
     try:
         with open(os.path.join(pack, EXCLUDE_LIST)) as fh:
@@ -725,24 +723,32 @@ def is_excluded(tid, excluded, hashes):
 
 
 def retire_excluded(pack, excluded):
-    """Move pack files of excluded ids - and of every id carrying the same
-    content hash - into pack/excluded/. Returns how many."""
+    """Delete pack files of excluded ids - and of every id carrying the same
+    content hash. exclude.txt is what keeps them out (by content hash), so a
+    parked copy only wasted disk; any pack/excluded/ folder an older run left
+    is removed too (user, 2026-09-28: "no need to keep them in the pack").
+    Returns how many files were removed."""
     hashes = excluded_hashes(excluded, pack)
-    moved = 0
-    dest_dir = os.path.join(pack, "excluded")
+    removed = 0
     for fn in os.listdir(pack):
-        if not fn.endswith(".tex"):
-            continue
-        tid = fn[:-4]
-        if not is_excluded(tid, excluded, hashes):
-            continue
-        os.makedirs(dest_dir, exist_ok=True)
-        dest = os.path.join(dest_dir, fn)
-        if os.path.exists(dest):
-            os.remove(dest)
-        os.replace(os.path.join(pack, fn), dest)
-        moved += 1
-    return moved
+        if fn.endswith(".tex") and is_excluded(fn[:-4], excluded, hashes):
+            try:
+                os.remove(os.path.join(pack, fn))
+                removed += 1
+            except OSError:
+                pass
+    removed += remove_parked(os.path.join(pack, "excluded"))
+    return removed
+
+
+def remove_parked(folder):
+    """Delete a folder of retired files (pack/excluded/, */poisoned/) that
+    older runs kept; the game never reads subfolders. Returns the file count."""
+    if not os.path.isdir(folder):
+        return 0
+    count = sum(len(files) for _, _, files in os.walk(folder))
+    shutil.rmtree(folder, ignore_errors=True)
+    return count
 
 
 def write_manifest(pack, scale, upscaler, strength, complete):
@@ -860,8 +866,12 @@ def main():
         retired = retire_excluded(pack, excluded)
         print("%d texture id(s) on pack/%s are never packed%s"
               % (len(excluded), EXCLUDE_LIST,
-                 (" - %d existing file(s) moved to pack/excluded/" % retired) if retired else ""),
+                 (" - %d existing file(s) deleted" % retired) if retired else ""),
               flush=True)
+    # Wrong pictures an older run parked instead of deleting (the 2026-09-13 pack bug): never read by the game.
+    parked = remove_parked(os.path.join(pack, "poisoned")) + remove_parked(os.path.join(dump, "poisoned"))
+    if parked:
+        print("%d retired file(s) from older runs deleted (poisoned/)" % parked, flush=True)
     have_tex = set()
     if args.only_missing and os.path.isdir(pack):
         have_tex = {fn[:-4] for fn in os.listdir(pack) if fn.endswith(".tex")}

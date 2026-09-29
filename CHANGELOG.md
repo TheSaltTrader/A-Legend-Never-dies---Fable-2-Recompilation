@@ -3,6 +3,22 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.3.3 — 2026-09-28
+
+### Changed — excluded and retired textures no longer take disk space
+
+- **The texture tool (the F10 Process button) now deletes excluded textures
+  instead of parking them in `textures\pack\excluded\`.** `exclude.txt`
+  already keeps them out by content, so the parked copies did nothing but use
+  space. The same goes for `poisoned\` - pictures a pack-tool bug on
+  2026-09-13 put under the wrong textures, retired the next day: the next
+  Process run deletes those folders. The game never read either folder; the
+  active pack is unchanged.
+- On the development install this freed 16 GB (14,631 retired files and 35
+  excluded ones) and left all 55,848 working replacements in place.
+
+`fable2.exe` differs from 1.3.2 only in its version number.
+
 ## 1.3.2 — 2026-09-28
 
 ### Fixed — flashing after switching the texture pack or dumping
