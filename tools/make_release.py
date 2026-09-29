@@ -128,6 +128,12 @@ KNOWN_ISSUES = [
     "resolution), the game's depth-of-field blur spreads a little further around "
     "far edges against the sky - roofs and trees - than at 1280 x 720 and "
     "2560 x 1440. The rest of the picture is unaffected.",
+    "Occasional one-frame violet or white flashes on tree canopies, most often "
+    "while turning the camera in woods. They come from the 'Black texture fix' "
+    "setting at its default, Some; setting it to None (F10, then restart) removed "
+    "them in testing and is faster, but None has not been tested at the moment "
+    "the hero's appearance changes, when the black textures it guards against "
+    "used to appear.",
 ]
 # One list, two outputs: README.txt's Known issues AND the release notes' Known issues are both rendered from
 # KNOWN_ISSUES, so a new issue cannot reach one and miss the other (1.2.0 and 1.3.0 each disclosed an issue in the
