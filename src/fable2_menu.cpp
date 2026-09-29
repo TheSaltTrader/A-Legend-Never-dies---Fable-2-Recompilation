@@ -216,13 +216,22 @@ bool NativeRendererActive() {
   return rex::cvar::Query<std::string>("gpu_offload_to_native") == "true";
 }
 
+// Red, and it says what it means (user, 2026-09-28: "any setting that requires a restart to take effect should be
+// very clear in the menu, in red"). The amber "(restart)" was missed: an internal resolution lowered in play looked
+// like it had done nothing.
+constexpr ImVec4 kRestartRed(1.0f, 0.32f, 0.28f, 1.0f);
 void RestartTag() {
   ImGui::SameLine();
-  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.7f, 0.35f, 1.0f));
-  ImGui::TextUnformatted("(restart)");
+  // Beside the control when it fits, else on the line below: after a full-width combo the tag would be drawn past
+  // the table cell and clipped away - NG2 hit exactly that with the same table (their 9cae98f, 2026-09-28).
+  if (ImGui::GetContentRegionAvail().x <
+      ImGui::CalcTextSize("(needs restart)").x + ImGui::GetStyle().ItemSpacing.x)
+    ImGui::NewLine();
+  ImGui::PushStyleColor(ImGuiCol_Text, kRestartRed);
+  ImGui::TextUnformatted("(needs restart)");
   ImGui::PopStyleColor();
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Takes effect the next time the game starts.");
+    ImGui::SetTooltip("A change here does NOT take effect until you quit and start the game again.");
 }
 
 // Settings are drawn as a two-column grid, label beside control. Stacking the
@@ -1032,8 +1041,9 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
         if (!names.empty()) names += ", ";
         names += n;
       }
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.75f, 0.3f, 1.0f));
-      ImGui::TextWrapped("Restart the game to apply: %s.", names.c_str());
+      ImGui::PushStyleColor(ImGuiCol_Text, kRestartRed);
+      ImGui::TextWrapped("NOT APPLIED YET - these changes take effect only after you restart the game: %s. "
+                         "Quit (Escape saves them) and start the game again.", names.c_str());
       ImGui::PopStyleColor();
       ImGui::Spacing();
     }
@@ -1277,7 +1287,8 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
     // heights must be multiples of 16 (960x540 crashes the game at start), so 1080p is offered as 1920x1088.
     // Every entry here was probed at Fairfax: picture, HUD, pause menu, ultrawide, frame rate. At 3x and above the
     // game's depth-of-field blur bleeds sky further into foliage and roof edges than at 1x/2x (probes IRQ/IRP/IRX,
-    // 2026-09-28; not the resolve half-pixel fill, not scaled texture offsets); the tooltip says so.
+    // 2026-09-28); the tooltip says so. Cause NOT known: the two overrides once reported as ruled out (resolve
+    // half-pixel fill, scaled texture offsets) never reached the game - the test launcher unset FABLE2_TUNE.
     RowStart("Internal resolution",
              "The resolution the game is rendered at before it is scaled to your window. Higher is sharper "
              "and costs more graphics power - 3840 x 2160 is nine times the pixels of 1280 x 720. The "
@@ -1570,9 +1581,14 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
              "textures turn black once the hero grows up. The fix is to read "
              "those textures back from the GPU. 'Some' copies every rendered "
              "texture back once its GPU work is done, and waits only when the "
-             "game reaches for one early; 'Full' waits for the whole GPU on every resolve - "
-             "the lake ran at 33 fps instead of 60 with it - and is a "
-             "diagnostic, not a setting to play with. Start at Some.");
+             "game reaches for one early; 'Full' waits for the whole GPU on every resolve. "
+             "Measured in the Bower Lake woods at 3840 x 2160 (2026-09-29): 'Some' shows "
+             "occasional one-frame violet or white flashes on tree canopies (about 500 flashed "
+             "frames in 3 minutes of turning the camera) at 49 fps; 'None' showed none and ran "
+             "at 59 fps; 'Full' showed none but ran at 24 fps. 'None' kept the hero's own "
+             "textures correct in every test, but it has not been tested at the moment the "
+             "hero's appearance changes (ageing, weight, scars), which is when the black "
+             "textures used to appear.");
     {
       bool declared = false;
       const auto values = AllowedValues("readback_resolve", s.readback, &declared);
@@ -2406,7 +2422,10 @@ void SettingsOverlay::OnDraw(ImGuiIO& io) {
     }
 
     ImGui::Separator();
-    Muted("Settings marked (restart) take effect the next time the game starts.");
+    ImGui::PushStyleColor(ImGuiCol_Text, kRestartRed);
+    ImGui::TextWrapped("Settings marked (needs restart) do not change anything until you quit and start the game "
+                       "again.");
+    ImGui::PopStyleColor();
 
     if (on_advanced_ && ImGui::Button("Advanced settings...")) {
       on_advanced_();

@@ -1,3 +1,4 @@
+#include <cstdlib>
 // VENDORED from rexglue-src 23ace0b:src/graphics/d3d12/texture_cache.cpp - systematic renames only (see vendor_rtc_d3d12.py / ORIGIN.txt):
 // namespaces d3d12 -> ngpu_d3d12, plugin headers -> rtc_d3d12/facade.h, cvars -> plugin registry reads (2 bool, 2 string, 6 int).
 #include <string>
@@ -100,6 +101,16 @@ std::string& FLAGS_texture_pack_path_storage_() { static std::string s = ::fable
 
 namespace fable2::ngpu::rtc { bool TextureHeapsEnabled(); bool TexContentCensusEnabled(); bool TexpackPrebuildEnabled(); bool GameTexPrecreateEnabled(); bool TexpackAsyncEnabled(); bool OptSamplerMemo(); }   // facade.cpp / native_gpu_present.cpp
 namespace rex::graphics::ngpu_d3d12 {
+// [texpack] Same-binary control (mirrors NG2's NG2_TEXPACK_FULLCLEAR): FABLE2_TEXPACK_FULLCLEAR=1 takes the pre-1.3.2
+// full ClearCaches on a pack/dump switch - known to flash - so a flash counter can be validated in the very build it
+// measures (it caught a counter that read 0 on a flashing run, 2026-09-28).
+static bool TexpackFullClearControl() {
+  static const bool on = [] {
+    const char* v = std::getenv("FABLE2_TEXPACK_FULLCLEAR");
+    return v && v[0] == '1';
+  }();
+  return on;
+}
 extern std::atomic<uint64_t> g_ngpu_res_created_total, g_ngpu_res_create_us_total;   // [frame trace v3], defined below
 // [frame trace v4] the LONGEST single creation since the last frame record (peer: a per-frame total cannot tell one 13 ms
 // creation from work that started in the previous frame). Read-and-reset by the recorder.
@@ -1841,7 +1852,7 @@ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
       // once suspected of corrupting the guest command stream, but the ring
       // buffer errors it was blamed for occur with it disabled too; they belong
       // to the attract demo, not to this.
-      command_processor_.ClearTextureCache();
+      (TexpackFullClearControl() ? command_processor_.ClearCaches() : command_processor_.ClearTextureCache());
     }
   }
 
@@ -1865,7 +1876,7 @@ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
         REXLOG_INFO("[texpack] dumping to '{}' - reloading every texture so the scene in "
                     "memory is written too",
                     want_dump);
-        command_processor_.ClearTextureCache();
+        (TexpackFullClearControl() ? command_processor_.ClearCaches() : command_processor_.ClearTextureCache());
       }
     }
   }

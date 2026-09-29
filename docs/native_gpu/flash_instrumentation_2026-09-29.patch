@@ -1,0 +1,181 @@
+diff --git a/src/native_gpu_xlat/rtc_d3d12/command_processor.cpp b/src/native_gpu_xlat/rtc_d3d12/command_processor.cpp
+index 6cb5121..51b838b 100644
+--- a/src/native_gpu_xlat/rtc_d3d12/command_processor.cpp
++++ b/src/native_gpu_xlat/rtc_d3d12/command_processor.cpp
+@@ -1888,6 +1888,10 @@ void D3D12CommandProcessor::GpuTimeCollect(bool all) {
+                   double(g_prof_tex_loads) / frames, double(g_prof_tex_load_bytes) / 1024.0 / frames,
+                   double(g_prof_tex_loads_scaled) / frames, double(::rex::graphics::g_prof_tex_outdated_by_gpu) / frames,
+                   double(::rex::graphics::g_prof_tex_outdated_by_cpu) / frames);
++      extern uint64_t g_prof_tex_stale_uploads, g_prof_tex_gpu_written_unscaled;
++      REXGPU_INFO("[flash] this window: {} stale texture uploads (resolve copy not landed) of {} unscaled loads from "
++                  "GPU-written memory", g_prof_tex_stale_uploads, g_prof_tex_gpu_written_unscaled);
++      g_prof_tex_stale_uploads = g_prof_tex_gpu_written_unscaled = 0;
+       ::rex::graphics::g_prof_tex_outdated_by_gpu = ::rex::graphics::g_prof_tex_outdated_by_cpu = g_prof_tex_loads = g_prof_tex_load_bytes = g_prof_tex_loads_scaled = 0;
+       REXGPU_INFO("[ngpu] TEXTURE CHURN this window: {} created, {} evicted by the budget, {} RE-CREATED after an eviction; "
+                   "cache {} MB (limits soft {} / hard {} MB)",
+@@ -3364,6 +3368,39 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+       (pixel_shader != nullptr ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
+   rt_rebind_after_split_ = false;
+   texture_cache_->RequestTextures(used_texture_mask);
++  // [flash] In-engine detector for the user's violet-foliage flash (2026-09-29): a pixel shader's texture slot that
++  // normally carries one format suddenly carrying another (a normal map in a colour slot looks exactly violet). Per
++  // (pixel shader, fetch constant) the first 64 draws vote a usual format; after that each draw with a different format
++  // is counted and the first 300 logged with the texture's page, for matching against flash frames by wall clock.
++  if (pixel_shader != nullptr) {
++    struct SlotStat { uint32_t votes[8] = {}; uint32_t fmts[8] = {}; uint32_t seen = 0; uint32_t usual = 0; };
++    static std::unordered_map<uint64_t, SlotStat> slot_stats;
++    static uint64_t anomalies = 0;
++    const uint64_t ps = pixel_shader->ucode_data_hash();
++    for (const auto& tb : pixel_shader->GetTextureBindingsAfterTranslation()) {
++      uint32_t page = 0;
++      const uint32_t fmt = texture_cache_->DiagBindingFormat(tb.fetch_constant, &page);
++      if (fmt == ~0u) continue;
++      SlotStat& st = slot_stats[ps * 33 + tb.fetch_constant];
++      if (st.seen < 64) {
++        ++st.seen;
++        int i = 0;
++        for (; i < 8 && st.votes[i] && st.fmts[i] != fmt; ++i) {}
++        if (i < 8) { st.fmts[i] = fmt; ++st.votes[i]; }
++        if (st.seen == 64) {
++          uint32_t best = 0;
++          for (int j = 1; j < 8; ++j) if (st.votes[j] > st.votes[best]) best = j;
++          st.usual = st.fmts[best] + 1;   // 0 = not decided yet
++        }
++        continue;
++      }
++      if (st.usual && fmt + 1 != st.usual) {
++        if (++anomalies <= 300 || anomalies % 1000 == 0)
++          REXLOG_INFO("[flash] slot format anomaly #{}: ps {:016X} fetch {} got fmt {} (usual {}) page {:05X}", anomalies,
++                      ps, tb.fetch_constant, fmt, st.usual - 1, page);
++      }
++    }
++  }
+   if (rt_rebind_after_split_) {
+     // [split] A texture load ended the submission: the render targets bound
+     // above belong to the closed one - bind them again in the new one.
+diff --git a/src/native_gpu_xlat/rtc_d3d12/texture_cache.cpp b/src/native_gpu_xlat/rtc_d3d12/texture_cache.cpp
+index e01f848..bd5b36b 100644
+--- a/src/native_gpu_xlat/rtc_d3d12/texture_cache.cpp
++++ b/src/native_gpu_xlat/rtc_d3d12/texture_cache.cpp
+@@ -1,3 +1,4 @@
++#include <cstdlib>
+ // VENDORED from rexglue-src 23ace0b:src/graphics/d3d12/texture_cache.cpp - systematic renames only (see vendor_rtc_d3d12.py / ORIGIN.txt):
+ // namespaces d3d12 -> ngpu_d3d12, plugin headers -> rtc_d3d12/facade.h, cvars -> plugin registry reads (2 bool, 2 string, 6 int).
+ #include <string>
+@@ -100,6 +101,16 @@ std::string& FLAGS_texture_pack_path_storage_() { static std::string s = ::fable
+ 
+ namespace fable2::ngpu::rtc { bool TextureHeapsEnabled(); bool TexContentCensusEnabled(); bool TexpackPrebuildEnabled(); bool GameTexPrecreateEnabled(); bool TexpackAsyncEnabled(); bool OptSamplerMemo(); }   // facade.cpp / native_gpu_present.cpp
+ namespace rex::graphics::ngpu_d3d12 {
++// [texpack] Same-binary control (mirrors NG2's NG2_TEXPACK_FULLCLEAR): FABLE2_TEXPACK_FULLCLEAR=1 takes the pre-1.3.2
++// full ClearCaches on a pack/dump switch - known to flash - so an in-engine flash counter can be validated in the
++// very build it measures.
++static bool TexpackFullClearControl() {
++  static const bool on = [] {
++    const char* v = std::getenv("FABLE2_TEXPACK_FULLCLEAR");
++    return v && v[0] == '1';
++  }();
++  return on;
++}
+ extern std::atomic<uint64_t> g_ngpu_res_created_total, g_ngpu_res_create_us_total;   // [frame trace v3], defined below
+ // [frame trace v4] the LONGEST single creation since the last frame record (peer: a per-frame total cannot tell one 13 ms
+ // creation from work that started in the previous frame). Read-and-reset by the recorder.
+@@ -1841,7 +1852,7 @@ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
+       // once suspected of corrupting the guest command stream, but the ring
+       // buffer errors it was blamed for occur with it disabled too; they belong
+       // to the attract demo, not to this.
+-      command_processor_.ClearTextureCache();
++      (TexpackFullClearControl() ? command_processor_.ClearCaches() : command_processor_.ClearTextureCache());
+     }
+   }
+ 
+@@ -1865,7 +1876,7 @@ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
+         REXLOG_INFO("[texpack] dumping to '{}' - reloading every texture so the scene in "
+                     "memory is written too",
+                     want_dump);
+-        command_processor_.ClearTextureCache();
++        (TexpackFullClearControl() ? command_processor_.ClearCaches() : command_processor_.ClearTextureCache());
+       }
+     }
+   }
+@@ -3652,6 +3663,10 @@ void D3D12TextureCache::ApplyTexpackResolve(D3D12Texture& texture, const Texture
+ }
+ 
+ uint64_t g_prof_tex_loads = 0, g_prof_tex_load_bytes = 0, g_prof_tex_loads_scaled = 0;   // NATIVE PATCH: [gpu prof]
++// [flash] In-engine flash signal (2026-09-28): an UNSCALED texture load whose guest range still has a resolve copy that
++// has not landed uploads stale bytes - the white/magenta impostor flash. Counted per window, and the GPU-written
++// unscaled loads beside it for scale. Frame counters cannot see a flash under ~1.5% of the screen; this can.
++uint64_t g_prof_tex_stale_uploads = 0, g_prof_tex_gpu_written_unscaled = 0;
+ uint64_t g_ngpu_tex_loads_total = 0, g_ngpu_tex_load_bytes_total = 0;   // NATIVE PATCH: [frame trace v2] cumulative, never reset
+ // NATIVE PATCH: [frame trace v3] every CreateCommittedResource of the texture cache (textures, texpack replacements,
+ // their upload buffers), counted and timed. The walking xperf leg XW1 showed the GPU thread blocking up to 9.1 ms in
+@@ -3733,6 +3748,27 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+     command_processor_.LandImpostorReadbackBeforeUpload(
+         uint32_t(texture.key().mip_page) << 12, texture.GetGuestMipsSize());
+   }
++  if (!texture.key().scaled_resolve) {
++    const uint32_t fb = uint32_t(texture.key().base_page) << 12, fs = texture.GetGuestBaseSize();
++    const uint32_t mb = uint32_t(texture.key().mip_page) << 12, ms = texture.GetGuestMipsSize();
++    const bool gpu_written = (load_base && fs && shared_memory().AnyPageGpuWritten(fb, fs)) ||
++                             (load_mips && ms && shared_memory().AnyPageGpuWritten(mb, ms));
++    if (gpu_written) {
++      ++g_prof_tex_gpu_written_unscaled;
++      const bool stale = (load_base && fs && command_processor_.HasPendingResolveReadback(fb, fs)) ||
++                         (load_mips && ms && command_processor_.HasPendingResolveReadback(mb, ms));
++      if (stale) {
++        const uint64_t n = ++g_prof_tex_stale_uploads;
++        static uint64_t total = 0;
++        if (++total <= 20 || total % 1000 == 0)
++          REXLOG_INFO("[flash] stale upload #{}: texture {:08X}+{} {}x{} fmt {} ({}{}) - its resolve copy has not landed",
++                      total, load_base ? fb : mb, load_base ? fs : ms, uint32_t(texture.key().width_minus_1) + 1,
++                      uint32_t(texture.key().height_minus_1) + 1, uint32_t(texture.key().format),
++                      load_base ? "base" : "", load_mips ? " mips" : "");
++        (void)n;
++      }
++    }
++  }
+   // [diag] A reload frame (>= 40 texture loads): name up to 12 of its
+   // textures, for the first 10 such frames. The black distant-ridge flash of
+   // 2026-09-14 lands on exactly these frames.
+diff --git a/src/native_gpu_xlat/rtc_d3d12/texture_cache_base.cpp b/src/native_gpu_xlat/rtc_d3d12/texture_cache_base.cpp
+index a5aa4a0..b802f7d 100644
+--- a/src/native_gpu_xlat/rtc_d3d12/texture_cache_base.cpp
++++ b/src/native_gpu_xlat/rtc_d3d12/texture_cache_base.cpp
+@@ -447,6 +447,19 @@ bool TextureCache::CommitPreparedTextureLoad(const PendingTextureLoad& pending_l
+       ++g_tc_hashed_loads;
+       const bool same_base = !pending_load.load_base || (texture.ft_hash_base_valid && texture.ft_hash_base == hb);
+       const bool same_mips = !pending_load.load_mips || (texture.ft_hash_mips_valid && texture.ft_hash_mips == hm);
++      // [flash] The user's violet foliage flash tracks re-loads (tex_skip_unchanged off: 308/337 flash frames vs
++      // default 2/51). Log every texture whose bytes CHANGED IN PLACE under the same key - the candidate event (a
++      // streaming slot rewritten with another texture while this key still points at it) - so flash frames can be
++      // matched against it by wall clock. First 400, then every 500th.
++      if ((pending_load.load_base && texture.ft_hash_base_valid && texture.ft_hash_base != hb) ||
++          (pending_load.load_mips && texture.ft_hash_mips_valid && texture.ft_hash_mips != hm)) {
++        static uint64_t changed = 0;
++        if (++changed <= 400 || changed % 500 == 0)
++          REXLOG_INFO("[flash] changed in place #{}: texture {:08X} {}x{} fmt {} {}{}", changed, bstart,
++                      uint32_t(texture_key.width_minus_1) + 1, uint32_t(texture_key.height_minus_1) + 1,
++                      uint32_t(texture_key.format), pending_load.load_base ? "base" : "",
++                      pending_load.load_mips ? " mips" : "");
++      }
+       if (same_base && same_mips) {
+         ++g_tc_skip_loads;
+         g_tc_skip_bytes += (pending_load.load_base ? bsize : 0u) + (pending_load.load_mips ? msize : 0u);
+diff --git a/src/native_gpu_xlat/rtc_d3d12/texture_cache_base.h b/src/native_gpu_xlat/rtc_d3d12/texture_cache_base.h
+index 31b89f0..1b9c5da 100644
+--- a/src/native_gpu_xlat/rtc_d3d12/texture_cache_base.h
++++ b/src/native_gpu_xlat/rtc_d3d12/texture_cache_base.h
+@@ -509,6 +509,14 @@ class TextureCache {
+   // and anything on GPU-written memory. Neither the pack nor the dump touches those, and re-creating them mid-play
+   // at a resolution scale above 1 could draw them from stale memory: frames washed white, red or cyan (2026-09-28).
+   void DestroyGuestDataTextures();
++  // [flash] diagnostic: the format and guest base page bound to a fetch constant after RequestTextures (~0u = none).
++  uint32_t DiagBindingFormat(uint32_t fetch_constant, uint32_t* base_page = nullptr) const {
++    if (fetch_constant >= 32) return ~0u;
++    const TextureBinding& b = texture_bindings_[fetch_constant];
++    if (!b.key.is_valid) return ~0u;
++    if (base_page) *base_page = b.key.base_page;
++    return uint32_t(b.key.format);
++  }
+  protected:
+ 
+   // Whether the signed version of the texture has a different representation on

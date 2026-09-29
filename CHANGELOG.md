@@ -3,6 +3,34 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.3.4 — 2026-09-29
+
+### Changed — settings that need a restart say so in red
+
+- **Every setting that only takes effect after a restart is now marked in
+  red, "(needs restart)"**, on its own line when the control is too wide for
+  it to fit beside. Change one in play and a red banner at the top of F10
+  says it is **not applied yet** and names what is waiting for a restart; the
+  note at the bottom says the same. Before, a small amber "(restart)" was easy
+  to miss - lowering the internal resolution in play looked like it had done
+  nothing.
+
+### Found — the small violet/white flashes on trees
+
+- **The occasional one-frame violet or white flashes on tree canopies come
+  from the "Black texture fix" setting at its default, Some.** Measured in the
+  Bower Lake woods at 3840 x 2160, turning the camera in one place for three
+  minutes: Some flashed in about 500 frames each time (three runs, 49 fps);
+  **None** flashed in none and ran at **59 fps**; Full flashed in none but ran
+  at 24 fps. It is not the texture pack (it flashes with the pack off), and
+  it predates this week's changes (seen on 1.3.1 too).
+- **The default is not changed in this release.** "Black texture fix" exists
+  because the hero's and dog's textures once turned black when the hero grew
+  up; None kept the hero's textures correct in every test here, but has not
+  been tested at the moment the hero's appearance changes. The F10 help for
+  the setting now gives these numbers, so it can be switched to None by choice
+  (it applies after a restart).
+
 ## 1.3.3 — 2026-09-28
 
 ### Changed — excluded and retired textures no longer take disk space
