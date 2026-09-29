@@ -582,15 +582,19 @@ void DrawTexturesSection(Fable2Settings& s, const PageOptions& opts, bool& chang
   // Say the shortcut in the panel itself, not only in a tooltip: a key nobody
   // is told about is a key nobody presses.
   if (have_path && counts.have.load()) {
+    // The pack's own size first: the dump counts describe only what is in the dump folder now, and read alone
+    // ("37 in the pack") they looked like a nearly empty pack of 55,848 files (user, 2026-09-28).
+    if (packed > 0)
+      Muted("The pack holds %d enhanced textures.", packed);
     if (dumped == 0)
-      Muted("No textures dumped yet.");
+      Muted("No textures in the dump folder.");
     else if (waiting == 0)
-      Muted("%d textures can be enhanced - all %d are in the pack.  Press F9 in "
+      Muted("Dump folder: %d textures can be enhanced - all already covered by the pack.  Press F9 in "
             "game to switch the pack on and off and see the difference.",
-            dumped, in_pack);
+            dumped);
     else
-      Muted("%d textures can be enhanced: %d in the pack, %d waiting to be "
-            "processed.", dumped, in_pack, waiting);
+      Muted("Dump folder: %d textures can be enhanced - %d already covered by the pack, %d new, "
+            "waiting to be processed.", dumped, in_pack, waiting);
     if (excluded > 0)
       Muted("(%d more were dumped but are never enhanced - HUD, fonts, normal "
             "maps, video frames and other non-art - so they are not counted.)",

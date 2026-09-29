@@ -899,6 +899,28 @@ def main():
                           "- made with the settings before it, so they are redone"
                           % len(older), flush=True)
                     have_tex -= older
+    # The game serves a pack file to ANY texture with the same pixels and shape, whatever address it was dumped at
+    # (content hash + the id's low 40 bits, texture_cache.cpp). So a texture whose content the pack already holds
+    # is covered, even under another id - re-upscaling it would only write a duplicate (2026-09-28).
+    shape_mask = (1 << 40) - 1
+    have_content = set()
+    for t in have_tex:
+        if len(t) == 25 and t[16] == "-":
+            try:
+                have_content.add((t[17:].upper(), int(t[:16], 16) & shape_mask))
+            except ValueError:
+                pass
+
+    def covered(tid):
+        if tid in have_tex:
+            return True
+        if len(tid) != 25 or tid[16] != "-":
+            return False
+        try:
+            return (tid[17:].upper(), int(tid[:16], 16) & shape_mask) in have_content
+        except ValueError:
+            return False
+
     reused = 0
     # Two steps, each reported as its own PROGRESS bar. Naming them lets the
     # app restart its bar and its clock at the second rather than showing 100%
@@ -920,7 +942,7 @@ def main():
             skips["listed in exclude.txt"] = skips.get("listed in exclude.txt", 0) + 1
             ui += 1
             continue
-        if args.only_missing and tid in have_tex:
+        if args.only_missing and covered(tid):
             reused += 1                 # in the pack already: leave it alone
             continue
         # Whether a texture is art is decided by shape and format alone, so
@@ -979,7 +1001,7 @@ def main():
         fmt2 = by_name.get(m.group(4))
         if tid in handled or fmt2 is None or is_excluded(tid, excluded, excluded_hash):
             continue
-        if args.only_missing and tid in have_tex:
+        if args.only_missing and covered(tid):
             reused += 1
             continue
         if pack_reason(w2, h2, fmt2) and not args.include_ui:

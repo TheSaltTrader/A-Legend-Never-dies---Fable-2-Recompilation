@@ -314,6 +314,13 @@ PackCensus CountPack(const fs::path& texture_dir) {
 
   // Every id in the pack, from one walk - not one stat per candidate.
   std::set<std::string> in_pack;
+  std::set<std::string> by_content;   // "<hash>:<shape>" of every pack file
+  auto ShapeOf = [](const std::string& tid) {
+    const uint64_t id = std::strtoull(tid.substr(0, 16).c_str(), nullptr, 16);
+    char b[17];
+    std::snprintf(b, sizeof(b), "%010llX", (unsigned long long)(id & ((uint64_t(1) << 40) - 1)));
+    return std::string(b);
+  };
   if (fs::is_directory(pack, ec)) {
     for (fs::directory_iterator it(pack, ec), end; it != end; it.increment(ec)) {
       if (ec)
@@ -325,8 +332,13 @@ PackCensus CountPack(const fs::path& texture_dir) {
       // census is of what the game will actually load.
       if (it->path().extension() == ".tex") {
         const std::string stem = it->path().stem().string();
-        if (stem.size() == 25 && stem[16] == '-')
+        if (stem.size() == 25 && stem[16] == '-') {
           in_pack.insert(stem);
+          // The game serves a file to any texture with the same pixels and shape, whatever address it was dumped
+          // at (texture_cache.cpp TexturePackLookup: content hash + the id's low 40 bits). Counting only exact
+          // names showed textures the pack already covers as "waiting" (2026-09-28).
+          by_content.insert(stem.substr(17) + ":" + ShapeOf(stem));
+        }
       }
     }
   }
@@ -414,7 +426,8 @@ PackCensus CountPack(const fs::path& texture_dir) {
       continue;
     }
     ++c.candidates;
-    if (in_pack.count(tid))
+    if (in_pack.count(tid) ||
+        (tid.size() == 25 && by_content.count(tid.substr(17) + ":" + ShapeOf(tid))))
       ++c.packed;
     else
       ++c.waiting;
