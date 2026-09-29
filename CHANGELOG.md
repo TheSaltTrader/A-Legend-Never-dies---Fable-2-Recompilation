@@ -7,18 +7,24 @@ numbering, not the game's.
 
 ### Fixed — flashing after switching the texture pack or dumping
 
-- **Switching the texture pack or dumping on or off during play could leave
-  the picture flashing** - single frames washed red, white or cyan, again and
-  again for the rest of the session - at internal resolutions above
-  1280 x 720. Switching made the renderer throw away far more than the
-  textures, including its model of the Xbox's render memory, so textures the
-  game renders itself were sometimes drawn from stale memory. It now drops
-  only the textures.
+- **Switching the texture pack (F9 or the checkbox) or dumping on or off
+  during play could leave the picture flashing** - frames washed white, red,
+  cyan or magenta, over and over for up to a minute or for the rest of the
+  session - at internal resolutions above 1280 x 720. A switch made the
+  renderer throw away every texture, including the ones the game renders
+  itself (the high-resolution copies), and re-creating those mid-play could
+  draw them from stale memory. A switch now reloads only the textures loaded
+  from the game's data - the only ones the pack replaces or the dump writes -
+  and keeps the game's own rendered ones. The log says what each switch did
+  ("texture reload: N game-data textures dropped, M kept").
 - Measured in Bowerstone Cemetery at 3840 x 2160, walking and turning the
-  camera after switching dumping (and in a second run the texture pack) on,
-  off and on: 16 and 13 flashed frames in two runs before, none in two runs
-  after. The detector counts single-frame flashes; a second test that can see
-  longer ones agreed.
+  camera after switching dumping and the texture pack on and off, including
+  one run of 12 pack switches: this build flashed in **0 of 7** runs; the
+  first attempt at a fix (dropping only textures, but all of them) flashed in
+  4 of 6, and 1.3.1 in 3 of 3. Three counters - single-frame, sustained, and
+  per-region (for a flash confined to e.g. the trees) - agreed. With the pack
+  on from the start and no switching, 1.3.1 did not flash either: the pack
+  itself was never the problem.
 
 ### Fixed — dumping wrote nothing
 
