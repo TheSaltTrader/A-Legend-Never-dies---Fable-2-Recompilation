@@ -58,9 +58,11 @@ numbering, not the game's.
 
 One limitation, stated: the shipped `fable2.exe` is not byte-identical to the
 build the measured sessions ran - it adds the shipping form of the setting
-and a lock in a measurement path that is off by default - so a final 3x
-session on the shipped build verifies that the pacing engages the same way
-(its counters), not the flash rate again.
+and a lock in a measurement path that is off by default. On the shipped build
+itself only a partial check was made before release: a 3x session stopped after
+two and a half minutes showed the setting engaging by its own default ("kick
+pacing 1 (experiment override 0, setting 1, min scale 1)", about 10,000 waits,
+no crash); no full-length session and no 1x session was run on it.
 
 `fable2.exe` differs from 1.3.6 in the pacing setting and its scope setting
 (`ngpu_kick_pacing_min_scale`), the renderer's per-frame publication of that

@@ -138,7 +138,7 @@ KNOWN_ISSUES = [
     "eye (two four-pixel events by the detector). "
     "This makes them stop; it does not explain them. The cause is still not "
     "identified, so the pacing may be masking the fault rather than repairing "
-    "it and may not hold in conditions not measured. The 1.3.6 mitigation (the "
+    "it and may not hold in conditions not measured; the shipped build itself had only a partial check before release. The 1.3.6 mitigation (the "
     "two-thread split off by default) stays. Cost at 1x: nothing the player can see (59 against 60 fps presented; the game thread has about 200 fps of headroom); on that one pair of sessions the paced one also had fewer long frames.",
 ]
 # One list, two outputs: README.txt's Known issues AND the release notes' Known issues are both rendered from
