@@ -149,7 +149,7 @@ void RlWatch(uint32_t addr, uint32_t bytes) {
 uint64_t RlKickHash(uint32_t addr) { std::lock_guard<std::mutex> lk(g_rl_watch_mu); for (const auto& k : g_rl_cur_kick_hashes) if (k.first == addr) return k.second; return 0; }   // [rl] locked: the recorder replaces this vector while the split draw thread reads it (five crashes, 2026-09-29)
 }  // namespace fable2::p2
 int32_t& FLAGS_ngpu_kick_pacing_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_kick_pacing", 1); return s; }   // [pacing] the shipped kick throttle
-int32_t& FLAGS_ngpu_kick_pacing_min_scale_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_kick_pacing_min_scale", 1); return s; }   // [pacing] applies from this internal scale
+int32_t& FLAGS_ngpu_kick_pacing_min_scale_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_kick_pacing_min_scale", 3); return s; }   // [pacing] applies from this internal scale (1.3.8: 3 - at 2x the pacing cost 12 fps with no measured benefit)
 int32_t& FLAGS_ngpu_exp_kick_throttle_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_kick_throttle", 0); return s; }   // [rl] 0 off; N = hold the kick until < N batches are queued
 int32_t& FLAGS_ngpu_exp_ps_texel_zero_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_ps_texel_zero", 0); return s; }   // [ps31] 1 = c31.x := 0 for ps 4B1D
 int32_t& FLAGS_ngpu_exp_ps_texel_zero_mask_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_ps_texel_zero_mask", -1); return s; }   // [ps31] species slots

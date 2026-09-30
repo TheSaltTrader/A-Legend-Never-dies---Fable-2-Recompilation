@@ -128,18 +128,24 @@ KNOWN_ISSUES = [
     "resolution), the game's depth-of-field blur spreads a little further around "
     "far edges against the sky - roofs and trees - than at 1280 x 720 and "
     "2560 x 1440. The rest of the picture is unaffected.",
-    "Brief violet flashes on tree canopies, near and far, camera still or moving, "
-    "when the GPU is saturated (internal resolution 3x and above in woods). "
-    "1.3.7 paces the game's hand-over of drawing commands to the renderer "
-    "(setting ngpu_kick_pacing, on by default): in today's "
-    "measurements, three consecutive sessions in the conditions that flashed "
-    "114-153 times per 1,000 frames without it flashed 0, 0 and 0 times (big flashes 0, 0 and 0), and a "
-    "hand-driven pass through the Fairfax woods looking for them found none by "
-    "eye (two four-pixel events by the detector). "
-    "This makes them stop; it does not explain them. The cause is still not "
-    "identified, so the pacing may be masking the fault rather than repairing "
-    "it and may not hold in conditions not measured; the shipped build itself had only a partial check before release. The 1.3.6 mitigation (the "
-    "two-thread split off by default) stays. Cost at 1x: nothing the player can see (59 against 60 fps presented; the game thread has about 200 fps of headroom); on that one pair of sessions the paced one also had fewer long frames.",
+    "Brief violet flashes on tree canopies, near and far, camera still or moving: often "
+    "when the GPU is saturated (internal resolution 3x and above in woods), rarely at 2x. "
+    "Since 1.3.7 the game's hand-over of drawing commands to the renderer is paced "
+    "(setting ngpu_kick_pacing), and since 1.3.8 only at internal resolution 3x and above "
+    "(setting ngpu_kick_pacing_min_scale, default 3). At 3x, three consecutive sessions in the "
+    "conditions that flashed 114-153 times per 1,000 frames without it flashed 0, 0 and 0 times, a "
+    "hand-driven pass through the Fairfax woods found none by eye (two four-pixel events by the "
+    "detector), and the same sessions' night tails read 0 where unpaced sessions kept flashing at "
+    "60-110 % of their daylight rate. At 2x the pacing measured a 12 fps cost (47.8 against 60.0 "
+    "presented on one route) and in Bowerstone Market a steady 34 fps, where the game submits about "
+    "15 kicks a frame and each wait lands at 1.5 ms, 23 ms of waiting against a 16.7 ms frame, with no "
+    "benefit shown at 2x; so 1.3.8 runs 2x and 1x unpaced, as 1.3.6 did. This is a deliberate trade: "
+    "the flashes that 1.3.7 suppressed at 2x return there, at the low rate the test route measured "
+    "unpaced (0 and 4 events in two sessions of about 5,400 frames, 5 and 11 in two provoked ones). The pacing makes "
+    "them stop at 3x; it does not explain them. The cause is still not identified, so it may be "
+    "masking the fault rather than repairing it. The 1.3.6 mitigation (the two-thread split off by "
+    "default) stays. Set ngpu_kick_pacing_min_scale to 1 to pace at every scale as 1.3.7 did. The "
+    "F10 menu says beside the internal resolution whether pacing applies to the chosen one.",
 ]
 # One list, two outputs: README.txt's Known issues AND the release notes' Known issues are both rendered from
 # KNOWN_ISSUES, so a new issue cannot reach one and miss the other (1.2.0 and 1.3.0 each disclosed an issue in the

@@ -3,6 +3,41 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.3.8 — 2026-09-30
+
+### Changed — kick pacing now applies at internal resolution 3x and above (`ngpu_kick_pacing_min_scale` default 3)
+
+- 1.3.7 paced the game's kick at every internal scale. Measured on 2026-09-30 at 2x on one scripted route with a single
+  setting apart: paced 47.8 and 48.4 fps against unpaced 60.0 and 60.0 (presented, `[swap]` medians), with 0 flash-coloured
+  events in both arms over about 5,500 captured frames each; on a four-load transition route, seven 100 ms stalls per
+  seven minutes paced against none unpaced, with identical texture bursts. In Bowerstone Market at 2x the paced build ran
+  a steady 34 fps: about 15 waits per frame at 1.5 ms each, because the pacing's 200 µs poll sleeps to Windows' timer
+  floor. The pacing's benefit was measured at 3x only (three scripted sessions plus the user's drive: 0 flash-coloured
+  against 114-153 per 1,000 frames untreated), and it holds there at night, where untreated sessions kept flashing at
+  60-110 % of their daylight rate and the paced ones read 0.
+- So the default now paces at 3x and above only. At 2x and 1x the game runs as 1.3.6 did. Set `ngpu_kick_pacing_min_scale`
+  to 1 to pace at every scale as 1.3.7 did.
+- This is a deliberate trade: the flashes that 1.3.7 suppressed at 2x return there by design, at the low rate the test
+  route measured unpaced - 0 and 4 flash-coloured events in two sessions of about 5,400 frames (the 4 in one night tail),
+  and 5 and 11 in two provoked sessions. The user chose frames over that rate after seeing 34 fps in Bowerstone Market.
+  The cause of the flash is still not identified. The F10 menu says beside the internal resolution whether pacing
+  applies to the chosen one.
+
+### Not changed
+
+- The wait itself is unchanged. A wake-on-drain form of it was built and measured on a test arm: 60 fps at 2x with the
+  pacing kept, but flash events at 3x in one of three sessions where the shipped wait admitted none in the steady state.
+  It is not shipped (branch `wake-on-drain-candidate`).
+
+### Checked before release, stated
+
+- The shipped `fable2.exe` was observed at 2x for six minutes on a scripted route: its own log line read "kick pacing 0
+  (experiment override 0, setting 1, min scale 3, internal scale 2)" - the new default read from the binary with no
+  override, the pacing computed off at 2x. The 3x behaviour (pacing on at scale 3) follows from the same line and the
+  comparison 3 >= 3; no 3x session was run on this build before release, and the menu note's text was checked by reading
+  the code, not by displaying it. The full test sessions were forgone by decision on the day; the release was validated
+  in play by the user before it was published.
+
 ## 1.3.7 — 2026-09-29
 
 ### Changed — the game's kick to the graphics thread is paced (tree-canopy flashes)

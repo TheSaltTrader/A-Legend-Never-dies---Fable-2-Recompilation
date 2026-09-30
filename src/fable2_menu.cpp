@@ -27,6 +27,11 @@
 
 namespace fs = std::filesystem;
 
+// [pacing note] the kick-pacing settings' storage, defined at global scope in the native backend
+// (command_processor.cpp, next to ngpu_kick_pacing); read by the internal-resolution row's note.
+int32_t& FLAGS_ngpu_kick_pacing_storage_();
+int32_t& FLAGS_ngpu_kick_pacing_min_scale_storage_();
+
 namespace fable2 {
 namespace {
 
@@ -1031,9 +1036,15 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
   const bool live = opts.restart_bound_editable;
 
   // In game only: the values this session started with, taken at the first
-  // in-game draw (nothing changes them between start and then).
+  // in-game draw (nothing changes them between start and then). Declared at
+  // function scope and captured ONLY here, so the pacing note under the
+  // internal-resolution row reads the same capture as this banner and can
+  // never disagree with it (a second, unconditional capture would take the
+  // title-screen value and describe a session that had not started).
+  static Fable2Settings started_with;
+  static bool started_with_captured = false;
   if (!live) {
-    static const Fable2Settings started_with = s;
+    if (!started_with_captured) { started_with = s; started_with_captured = true; }
     const auto pending = PendingRestart(s, started_with);
     if (!pending.empty()) {
       std::string names;
@@ -1315,6 +1326,37 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
       const int ww = s.world_height == 720 ? 1280 : 960;
       ImGui::SameLine();
       ImGui::Text("(%d x %d)", ww * s.resolution_scale, s.world_height * s.resolution_scale);
+    }
+    {   // [pacing note] (2026-09-30, user: "add a note in menu showing 3x has frame pacing enabled with a small
+        // explanation"): the kick pacing applies from ngpu_kick_pacing_min_scale (3 since 1.3.8); say so beside the
+        // resolution the player is choosing, read from the backend's own settings so the note follows them.
+      const int pacing = ::FLAGS_ngpu_kick_pacing_storage_();
+      const int from_scale = ::FLAGS_ngpu_kick_pacing_min_scale_storage_();
+      // The row edits the PENDING value (internal resolution applies at the next start; the plugin reads the scale
+      // at init). In game the note describes the RUNNING resolution from started_with, the banner's own capture,
+      // and predicts for the selection; before the game starts there is no running session, so it only predicts.
+      const int selected = s.resolution_scale;
+      const bool on_selected = pacing > 0 && selected >= from_scale;
+      const char* const hint = on_selected ? "" : " Set ngpu_kick_pacing_min_scale to 1 to pace at every resolution "
+                                                  "if you would rather have the flashes gone than the frames.";
+      if (pacing > 0) {
+        Muted("Frame pacing applies from %dx: each frame the game waits for the renderer to catch up, which "
+              "suppresses the brief violet flashes on distant trees. It costs frame rate at lower resolutions "
+              "(roughly a fifth at 2x, more in towns), which is why it is off below %dx - the flashes can still "
+              "occur there, less often.", from_scale, from_scale);
+        if (live || !started_with_captured) {
+          Muted("It will be %s at the selected %dx.%s", on_selected ? "ON" : "off", selected, hint);
+        } else {
+          const int running = started_with.resolution_scale;
+          const bool on_now = running >= from_scale;
+          Muted("Right now, at %dx, pacing is %s.", running, on_now ? "ON" : "off");
+          if (selected != running)
+            Muted("At the selected %dx it will be %s after the restart.%s", selected, on_selected ? "ON" : "off", hint);
+        }
+      } else {
+        Muted("Frame pacing is turned off (ngpu_kick_pacing 0): the brief violet flashes on distant trees can "
+              "occur at any resolution.");
+      }
     }
     if (!live) RestartTag();
     ImGui::EndDisabled();
