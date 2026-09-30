@@ -159,6 +159,31 @@ class D3D12TextureCache final : public TextureCache {
   void CreateCurrentScaledResolveRangeUintPow2UAV(D3D12_CPU_DESCRIPTOR_HANDLE handle,
                                                   uint32_t element_size_bytes_pow2);
   void TransitionCurrentScaledResolveRange(D3D12_RESOURCE_STATES new_state);
+  // [sentinel] EXPERIMENT (2026-09-29 evening): fill the current scaled-resolve range with the bytes of `source`
+  // (an upload buffer holding a chosen texel pattern) BEFORE the resolve writes it, so a texture that reads the
+  // range before the resolve's writes are visible shows the chosen colour instead of whatever was there.
+  void SentinelFillCurrentScaledResolveRange(ID3D12Resource* source, uint64_t source_capacity);
+  // [ar] EXPERIMENT ngpu_exp_atlas_readback: copy `bytes` of the current scaled-resolve range, from `range_offset`
+  // past its start, into a readback buffer (COPY_SOURCE round trip; the transition out of UAV orders the resolve's
+  // writes before the copy). What the RESOLVE left in the atlas.
+  void ReadbackCurrentScaledResolveRange(ID3D12Resource* dest, uint64_t dest_offset, uint64_t range_offset,
+                                         uint64_t bytes);
+  struct ArTexInfo {
+    const void* texture = nullptr;
+    uint32_t format = 0, width = 0, height = 0, x0 = 0, y0 = 0, cols = 0, rows = 0, bpp = 0, mip = 0;
+    bool scaled = false;
+  };
+  // [ar] copy a cols x rows box of the texture bound to `fetch_constant` (mip `mip`) into a readback buffer at
+  // `dest_offset` (placed footprint, row pitch 256): what the DRAW is about to sample. False = nothing copied.
+  bool ArCopyBindingTexture(uint32_t fetch_constant, uint32_t mip, ID3D12Resource* dest, uint64_t dest_offset,
+                            ArTexInfo& info);
+  // [ar] the same for an arbitrary box (cols = 0: the whole width, rows = 0: the whole height); row pitch =
+  // align(cols * bpp, 256), the caller's slot must hold rows * pitch bytes (checked against `slot_bytes`).
+  // [ar] the bound texture's host width/height (mip 0) and whether it is a 2D array view; false = not bound.
+  bool ArBindingTextureSize(uint32_t fetch_constant, uint32_t& width, uint32_t& height);
+  bool ArCopyBindingTextureBox(uint32_t fetch_constant, uint32_t mip, uint32_t x0, uint32_t y0, uint32_t cols,
+                               uint32_t rows, ID3D12Resource* dest, uint64_t dest_offset, uint32_t slot_bytes,
+                               ArTexInfo& info);
   uint64_t GetCurrentScaledResolveRangeStartScaled() const {
     return scaled_resolve_current_range_start_scaled_;
   }

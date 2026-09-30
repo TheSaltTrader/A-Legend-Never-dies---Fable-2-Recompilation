@@ -524,6 +524,12 @@ class TextureCache {
     if (scaled) *scaled = b.texture != nullptr && b.texture->key().scaled_resolve != 0;
     return b.texture;
   }
+  // [ar] the bound texture object itself (the atlas readback copies out of it); nullptr when the binding is not valid.
+  Texture* ArBindingTexture(uint32_t fetch_constant) {
+    if (fetch_constant >= 32) return nullptr;
+    const TextureBinding& b = texture_bindings_[fetch_constant];
+    return b.key.is_valid ? b.texture : nullptr;
+  }
  protected:
 
   // Whether the signed version of the texture has a different representation on

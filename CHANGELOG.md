@@ -3,6 +3,70 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.3.7 — 2026-09-29
+
+### Changed — the game's kick to the graphics thread is paced (tree-canopy flashes)
+
+- **New setting `ngpu_kick_pacing`, on by default.** Each time the game hands a
+  batch of drawing commands to the renderer, the game thread now waits until
+  the recording thread has finished the batches already queued (bounded to
+  100 ms per hand-over). In the conditions that show the violet tree-canopy
+  flash (internal resolution 3x, in woods, the two-thread split forced on to
+  provoke it), untreated sessions today flashed 114 to 153 times per 1,000
+  captured frames with flashes covering up to 2.7% of the picture; three
+  consecutive sessions identical but for this setting flashed 0 times, 0 times and 0 times (one 5-pixel event in the first of them, in the
+  first second after arrival, of a colour at the edge of the flash's)
+  (measured by two independently written detectors that agree on every
+  session). A fourth run, driven by hand through the Fairfax woods for four
+  minutes looking for it, showed nothing to the eye; the detector found one
+  cluster of three faint four-pixel events at the edge of the arrival window,
+  two of them past it by the rule used here - real events, since the quiet
+  sessions carry none at all, but at the limit of what the detector accepts.
+  Note that the clean sessions follow a fixed test route while the one session
+  a person drove carried two faint events the fixed route did not: the fixed
+  route may be an easier case than ordinary play.
+- **This makes the flash stop; it does not explain it.** The mechanism of the
+  flash is still not identified. Today's readings established that the tree
+  image, the shader's constants and lookup tables, and the texture fetch
+  itself are all correct at the moment of a flash, and that the flashing card
+  is a single fixed violet colour drawn with the correct outline - which
+  points at what the vertex stage of the impostor shader produces for that
+  draw, the one place no instrument has yet read. A pacing rule that removes
+  a fault whose cause is unknown may be masking it rather than repairing it,
+  and may not hold in conditions not measured today. It is offered on that
+  understanding.
+- **Cost.** At the 3x internal scale, where the graphics card is the limit,
+  none measured: the three treated sessions held 49.8, 49.2 and 48.5 fps against 48.9 for the
+  untreated session run between them (the same woods pan, GPU-bound); the game
+  thread waited about 13 ms of every 20 ms frame and the picture did not notice. At the 1x internal scale, where the processor is
+  the limit: nothing the player can see. Two 200-second sessions at 1x, the second
+  with the pacing on and engaged throughout (134,805 waits): presented frame
+  rate 60.0 against 59.0 fps (medians) while the game thread itself runs at
+  about 200 fps against the 60 cap, so its waiting comes out of idle time, not
+  out of frames. The two sessions ran the same route but their pictures did
+  not cover identical ground, so only that headroom comparison is relied on;
+  as an observation on this one pair, the session with the pacing on also had
+  fewer long frames. The setting is on at every internal resolution
+  (`ngpu_kick_pacing_min_scale` = 1); set it to 3 to pace only at the scale
+  where the flash was seen, or `ngpu_kick_pacing` to 0 to turn it off.
+- The 1.3.6 mitigation (the two-thread split off by default) stays as it was.
+- A correction to the earlier notes' small-flash measurements: the detector
+  used until today counted distant pop-in during the first seconds after an
+  area loads alongside the flash; separated by colour, no untreated quiet
+  session and no treated session carried the flash outside that arrival
+  window, except one session at 3 events per 1,000.
+
+One limitation, stated: the shipped `fable2.exe` is not byte-identical to the
+build the measured sessions ran - it adds the shipping form of the setting
+and a lock in a measurement path that is off by default - so a final 3x
+session on the shipped build verifies that the pacing engages the same way
+(its counters), not the flash rate again.
+
+`fable2.exe` differs from 1.3.6 in the pacing setting and its scope setting
+(`ngpu_kick_pacing_min_scale`), the renderer's per-frame publication of that
+setting to the front end, experiment-only diagnostics that default off, and
+the version number.
+
 ## 1.3.6 — 2026-09-29
 
 ### Changed — the two-thread renderer split is off by default (tree-canopy flashes)

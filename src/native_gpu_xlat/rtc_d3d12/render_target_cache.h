@@ -668,6 +668,9 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
 
   // Writes contents of host render targets within rectangles from
   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
+  // [sentinel] modes 4/5: fill the EDRAM-buffer tile span a resolve reads with the sentinel pattern (before the
+  // dump = the source-side test; after the dump = its positive control).
+  void SentinelFillEdramTileSpan(uint32_t base, uint32_t row_length, uint32_t rows, uint32_t pitch);
   bool DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
                          uint32_t dump_pitch);
 

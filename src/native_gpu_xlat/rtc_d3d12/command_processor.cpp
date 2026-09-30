@@ -133,6 +133,44 @@ double& FLAGS_fable2_uw_2d_k_storage_() {
 namespace fable2::ngpu { void SetUw2dK(double k) { g_uw_2d_k.store(k < 0.0 ? 0.0 : k, std::memory_order_relaxed); } }
 int32_t& FLAGS_gpu_draw_dump_frames_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("gpu_draw_dump_frames", 0); ::fable2::ngpu::xlat::RefreshInt("gpu_draw_dump_frames", s); return s; }   // [dd] live: a pad set:gpu_draw_dump_frames=N arms it mid-play
 int32_t& FLAGS_gpu_draw_dump_hashes_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("gpu_draw_dump_hashes", 0); return s; }   // [dd] the per-draw input hashes cost ~30 fps: off unless asked
+int32_t& FLAGS_ngpu_exp_atlas_readback_amask_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_atlas_readback_amask", -1); return s; }   // [ar] species-slot mask for the A side
+#include <mutex>
+namespace fable2::p2 {   // [rl] shared with the exe-only front end (fable2_p2_census.cpp declares these extern and writes them)
+std::atomic<uint64_t> g_rl_kick_seq{0}, g_rl_rec_seq{0}, g_rl_rec_age_us{0}, g_rl_pending{0};
+std::atomic<int32_t> g_rl_throttle{0};
+std::mutex g_rl_watch_mu;
+std::vector<std::pair<uint32_t, uint32_t>> g_rl_watch;   // (guest address, bytes) the recorder asked to be hashed at kick time
+std::vector<std::pair<uint32_t, uint64_t>> g_rl_cur_kick_hashes;   // the batch being decoded: WRITTEN by the recorder thread, READ by the split draw thread (RlKickHash) - guarded by g_rl_watch_mu on both sides (five crashes on 2026-09-29 when it was not)
+void RlWatch(uint32_t addr, uint32_t bytes) {
+  std::lock_guard<std::mutex> lk(g_rl_watch_mu);
+  for (auto& w : g_rl_watch) if (w.first == addr) { if (bytes > w.second) w.second = bytes; return; }
+  if (g_rl_watch.size() < 128) g_rl_watch.push_back({addr, bytes});
+}
+uint64_t RlKickHash(uint32_t addr) { std::lock_guard<std::mutex> lk(g_rl_watch_mu); for (const auto& k : g_rl_cur_kick_hashes) if (k.first == addr) return k.second; return 0; }   // [rl] locked: the recorder replaces this vector while the split draw thread reads it (five crashes, 2026-09-29)
+}  // namespace fable2::p2
+int32_t& FLAGS_ngpu_kick_pacing_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_kick_pacing", 1); return s; }   // [pacing] the shipped kick throttle
+int32_t& FLAGS_ngpu_kick_pacing_min_scale_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_kick_pacing_min_scale", 1); return s; }   // [pacing] applies from this internal scale
+int32_t& FLAGS_ngpu_exp_kick_throttle_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_kick_throttle", 0); return s; }   // [rl] 0 off; N = hold the kick until < N batches are queued
+int32_t& FLAGS_ngpu_exp_ps_texel_zero_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_ps_texel_zero", 0); return s; }   // [ps31] 1 = c31.x := 0 for ps 4B1D
+int32_t& FLAGS_ngpu_exp_ps_texel_zero_mask_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_ps_texel_zero_mask", -1); return s; }   // [ps31] species slots
+static uint32_t g_ps31_draws = 0;
+int32_t& FLAGS_ngpu_exp_runlag_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_runlag", 0); return s; }   // [rl] 1 lag, 2 hash ranges, 4 forced re-upload
+int32_t& FLAGS_ngpu_exp_runlag_mask_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_runlag_mask", -1); return s; }   // [rl] species slots for bit 4
+int32_t& FLAGS_ngpu_exp_atlas_readback_probe_lod_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_atlas_readback_probe_lod", 0); return s; }   // [ar] the mip the probe samples
+int32_t& FLAGS_ngpu_exp_atlas_readback_probe_mode_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_atlas_readback_probe_mode", 0); return s; }   // [ar] 0 sample, 1 no-sample control
+int32_t& FLAGS_ngpu_exp_atlas_readback_pmask_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_atlas_readback_pmask", -1); return s; }   // [ar] species-slot mask for the probe
+int32_t& FLAGS_ngpu_exp_atlas_readback_tmask_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_atlas_readback_tmask", -1); return s; }   // [ar] species-slot mask for the T side
+// [ar] the impostor atlases sit at 0x12704000 + n * 0x2B000 (n = species slot, 0..15 seen); a mask bit per slot lets one
+// leg arm a side on SOME species and leave the rest as a within-frame control. Addresses outside the row: always armed.
+static bool ArSlotArmed(uint32_t address, int32_t mask) {
+  if (mask == -1) return true;
+  if (address < 0x12704000u) return true;
+  const uint32_t n = (address - 0x12704000u) / 0x2B000u;
+  if ((address - 0x12704000u) % 0x2B000u != 0u || n >= 31u) return true;
+  return ((uint32_t(mask) >> n) & 1u) != 0u;
+}
+int32_t& FLAGS_ngpu_exp_atlas_readback_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_atlas_readback", 0); return s; }   // [ar] experiment: bit 1 = A (after resolve), bit 2 = T (before draw)
+int32_t& FLAGS_ngpu_exp_atlas_sentinel_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_atlas_sentinel", 0); return s; }   // [sentinel] experiment: 0 off, 1 barriers only, 2 barriers + green fill
 int32_t& FLAGS_ngpu_exp_cbuf_early_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("ngpu_exp_cbuf_early", 0); return s; }   // [exp] hazard injection
 bool& FLAGS_ngpu_exp_scratch_nobarrier_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("ngpu_exp_scratch_nobarrier", false); return s; }   // [exp] hazard injection
 int32_t& FLAGS_gpu_draw_dump_filter_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("gpu_draw_dump_filter", 0); return s; }
@@ -147,6 +185,10 @@ bool& FLAGS_shared_memory_upload_reach_storage_() { static bool s = ::fable2::ng
 namespace fable2::ngpu::rtc { bool NgpuBackendUploadSkipCvar(); }
 extern uint64_t g_scaled_uav_barriers;   // texture_cache.cpp: NATIVE FIX [scaled uav], reported on the fence line
 extern uint64_t g_scaled_window_switches, g_scaled_window_buffers;   // texture_cache.cpp: [scaled windows], fence line
+extern uint64_t g_sentinel_fills;   // texture_cache.cpp: [sentinel], fence line
+uint64_t g_ar_a = 0, g_ar_t = 0, g_ar_landed = 0, g_ar_dropped = 0, g_ar_v = 0;   // [ar] fence line
+int g_ar_state = 0;   // [ar] 0 not started, 1 on, 2 failed
+extern uint64_t g_scaled_tr[6];     // texture_cache.cpp: [scaled transitions] emitted x3, dropped x3
 bool& FLAGS_shared_memory_upload_skip_unchanged_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("shared_memory_upload_skip_unchanged", false) || ::fable2::ngpu::rtc::NgpuBackendUploadSkipCvar(); return s; }
 bool& FLAGS_shared_memory_upload_churn_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("shared_memory_upload_churn", false); return s; }
 int32_t& FLAGS_fable2_2d_census_storage_() { static int32_t s = ::fable2::ngpu::xlat::PluginInt("fable2_2d_census", 0); return s; }
@@ -2830,6 +2872,16 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
     }
     dd_draw_ = 0;
   }
+  {   // [pacing] publish the kick throttle to the front end every frame: the experiment cvar overrides when set, else the shipped setting scoped by internal scale
+    const int32_t exp = REXCVAR_GET(ngpu_exp_kick_throttle);
+    const uint32_t sc = texture_cache_ ? texture_cache_->draw_resolution_scale_x() : 1u;
+    int32_t v = exp;
+    if (!exp) v = (int32_t(sc) >= REXCVAR_GET(ngpu_kick_pacing_min_scale)) ? REXCVAR_GET(ngpu_kick_pacing) : 0;
+    fable2::p2::g_rl_throttle.store(v, std::memory_order_relaxed);
+    static int32_t s_said = -1;
+    if (s_said != v) { s_said = v; REXLOG_INFO("[pacing] kick pacing {} (experiment override {}, setting {}, min scale {}, internal scale {})", v, exp, REXCVAR_GET(ngpu_kick_pacing), REXCVAR_GET(ngpu_kick_pacing_min_scale), sc); }
+  }
+  ArSwap();   // [ar]
 
   system::X_VIDEO_MODE video_mode;
   kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
@@ -3460,11 +3512,36 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
     DrawDumpLine(vertex_shader, pixel_shader, primitive_processing_result, viewport_info, scissor,
                  normalized_depth_control);
   }
+  if ((REXCVAR_GET(ngpu_exp_atlas_readback) & 6) && pixel_shader) AtlasReadbackDraw(vertex_shader, pixel_shader);   // [ar]
+  uint32_t ps31_saved = 0; bool ps31_set = false;   // [ps31] o3-only oracle: zero the texel term's multiplier for this draw
+  if (REXCVAR_GET(ngpu_exp_ps_texel_zero) && pixel_shader && pixel_shader->ucode_data_hash() == 0x4B1D3E6E8E58D3ACull) {
+    uint32_t ps31_species = 0;
+    for (const auto& b : pixel_shader->GetTextureBindingsAfterTranslation()) {
+      xenos::xe_gpu_texture_fetch_t fetch;
+      std::memcpy(&fetch, &(*register_file_)[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + b.fetch_constant * 6], sizeof(fetch));
+      if (uint32_t(fetch.format) == 3u && fetch.size_2d.width == 255u) { ps31_species = uint32_t(fetch.base_address) << 12; break; }
+    }
+    if (ps31_species && ArSlotArmed(ps31_species, REXCVAR_GET(ngpu_exp_ps_texel_zero_mask))) {
+      const uint32_t idx = XE_GPU_REG_SHADER_CONSTANT_256_X + 31u * 4u;
+      ps31_saved = ReadRegisterValue(idx); WriteRegister(idx, 0u); ps31_set = true; ++g_ps31_draws; ++rl_ps31_;
+      static bool s_said = false;
+      if (!s_said) { s_said = true; REXLOG_INFO("[ps31] o3-only oracle ON: c31.x forced to 0 for ps 4B1D on species mask {:X} (first species {:08X}, c31.x was {:08X})", uint32_t(REXCVAR_GET(ngpu_exp_ps_texel_zero_mask)), ps31_species, ps31_saved); }
+    }
+  }
   if (!UpdateBindings(vertex_shader, pixel_shader, root_signature, memexport_used)) {
     uw_ppr_ = nullptr;
+    if (ps31_set) WriteRegister(XE_GPU_REG_SHADER_CONSTANT_256_X + 31u * 4u, ps31_saved);   // [ps31]
     DrawFailReason("UpdateBindings");
     return false;
   }
+  if (ps31_set) WriteRegister(XE_GPU_REG_SHADER_CONSTANT_256_X + 31u * 4u, ps31_saved);   // [ps31] the constants are uploaded; give the game its value back
+  if ((REXCVAR_GET(ngpu_exp_atlas_readback) & 8) && vertex_shader && pixel_shader) AtlasReadbackConstants(vertex_shader, pixel_shader);   // [ar] K
+  if ((REXCVAR_GET(ngpu_exp_atlas_readback) & 32) && vertex_shader && pixel_shader)   // [ar] S
+    AtlasReadbackSystem(vertex_shader, pixel_shader, vertex_shader_modification.value, pixel_shader_modification.value);
+  if ((REXCVAR_GET(ngpu_exp_atlas_readback) & 64) && vertex_shader && pixel_shader &&
+      vertex_shader->ucode_data_hash() == 0x129F7F2793DA9084ull) AtlasReadbackProbe(pixel_shader);   // [ar] P
+  if (REXCVAR_GET(ngpu_exp_runlag) && vertex_shader && pixel_shader &&
+      vertex_shader->ucode_data_hash() == 0x129F7F2793DA9084ull) RunLagDraw(vertex_shader, pixel_shader);   // [rl]
   uw_ppr_ = nullptr;
   // Must not call anything that can change the descriptor heap from now on!
 
@@ -4007,12 +4084,30 @@ void MaybeReportFenceWaits() {
                     (unsigned long long)upload_mb, g_upload_copies_window.exchange(0));
       line += b;
     }
+    if (REXCVAR_GET(ngpu_exp_atlas_readback) > 0) {   // [ar]: the arm's own counts
+      char b[128];
+      std::snprintf(b, sizeof(b), "%satlas readback A %llu T %llu V %llu landed %llu dropped %llu%s", line.empty() ? "" : ", ",
+                    (unsigned long long)g_ar_a, (unsigned long long)g_ar_t, (unsigned long long)g_ar_v, (unsigned long long)g_ar_landed,
+                    (unsigned long long)g_ar_dropped, g_ar_state == 2 ? " FAILED" : (g_ar_state == 1 ? "" : " (not started)"));
+      line += b;
+      g_ar_a = g_ar_t = g_ar_v = g_ar_landed = g_ar_dropped = 0;
+    }
+    if (REXCVAR_GET(ngpu_exp_atlas_sentinel) > 0) {   // [sentinel]: the arm's own count and mode
+      char b[80];
+      std::snprintf(b, sizeof(b), "%ssentinel %s %llu", line.empty() ? "" : ", ",
+                    REXCVAR_GET(ngpu_exp_atlas_sentinel) == 9 ? "UAV barriers before atlas loads" : REXCVAR_GET(ngpu_exp_atlas_sentinel) == 8 ? "shared-memory transition-only passes" : REXCVAR_GET(ngpu_exp_atlas_sentinel) == 7 ? "unscaled touch-only passes" : REXCVAR_GET(ngpu_exp_atlas_sentinel) == 6 ? "unscaled BLUE fills" : REXCVAR_GET(ngpu_exp_atlas_sentinel) == 5 ? "edram fills-after (positive control)" : REXCVAR_GET(ngpu_exp_atlas_sentinel) == 4 ? "edram fills-before" : REXCVAR_GET(ngpu_exp_atlas_sentinel) == 3 ? "fills-after (positive control)" : REXCVAR_GET(ngpu_exp_atlas_sentinel) >= 2 ? "fills" : "barrier-only passes", (unsigned long long)::g_sentinel_fills);
+      line += b;
+      ::g_sentinel_fills = 0;
+    }
     if (::g_scaled_window_buffers) {   // [scaled windows]: printed whenever scaling is on, so a zero switch count is a reading, not an absence
-      char b[96];
-      std::snprintf(b, sizeof(b), "%sscaled windows %llu buffers %llu switches", line.empty() ? "" : ", ",
-                    (unsigned long long)::g_scaled_window_buffers, (unsigned long long)::g_scaled_window_switches);
+      char b[192];
+      std::snprintf(b, sizeof(b), "%sscaled windows %llu buffers %llu switches; scaled transitions ->UAV %llu (%llu dropped) ->SRV %llu (%llu dropped) ->other %llu (%llu dropped)", line.empty() ? "" : ", ",
+                    (unsigned long long)::g_scaled_window_buffers, (unsigned long long)::g_scaled_window_switches,
+                    (unsigned long long)::g_scaled_tr[0], (unsigned long long)::g_scaled_tr[3], (unsigned long long)::g_scaled_tr[1], (unsigned long long)::g_scaled_tr[4],
+                    (unsigned long long)::g_scaled_tr[2], (unsigned long long)::g_scaled_tr[5]);
       line += b;
       ::g_scaled_window_switches = 0;
+      for (auto& v : ::g_scaled_tr) v = 0;
     }
     if (::g_scaled_uav_barriers) {   // NATIVE FIX [scaled uav]: the feature's own line, for verifying an arm
       char b[64];
@@ -4820,6 +4915,7 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
     }
     readback_buffers_to_release_.resize(kept);
   }
+  if (!ar_records_.empty()) ArLand();   // [ar] atlas bytes whose submission has completed
   // [readback] Deferred resolve copies whose submission has completed go to
   // guest memory now - at a frame's opening submission only, so a copy
   // always lands before that frame's own resolves and never over a fresher
@@ -5751,6 +5847,41 @@ float D3D12CommandProcessor::C8QuadSpan(const D3D12Shader* vertex_shader, float&
 // vertex x range, and the pixel shader's textures (size, format, address,
 // GPU-written, readback pending). Written with buffered stdio; the game runs
 // on while the file grows.
+ID3D12Resource* D3D12CommandProcessor::SentinelBuffer(uint32_t pattern16) {
+  Microsoft::WRL::ComPtr<ID3D12Resource>& slot = pattern16 == 0x83E0 ? sentinel_buffer_ : sentinel_buffer_blue_;
+  if (slot) return slot.Get();
+  // [sentinel] k_1_5_5_5 texels in guest byte order (big-endian 16-bit): A1 R5 G5 B5 = 1 00000 11111 00000 = 0x83E0
+  // -> bytes 83 E0. Pure green if the load decodes it as such; a uniform colour of some kind whatever the swap.
+  ID3D12Device* device = GetD3D12Provider().GetDevice();
+  D3D12_HEAP_PROPERTIES hp = {};
+  hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+  D3D12_RESOURCE_DESC rd = {};
+  rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  rd.Width = kSentinelBufferBytes;
+  rd.Height = 1;
+  rd.DepthOrArraySize = 1;
+  rd.MipLevels = 1;
+  rd.SampleDesc.Count = 1;
+  rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                             IID_PPV_ARGS(&slot)))) {
+    REXGPU_ERROR("[sentinel] could not create the sentinel buffer");
+    return nullptr;
+  }
+  void* p = nullptr;
+  D3D12_RANGE no_read = {0, 0};
+  if (SUCCEEDED(slot->Map(0, &no_read, &p)) && p) {
+    uint8_t* b = static_cast<uint8_t*>(p);
+    for (uint64_t i = 0; i + 1 < kSentinelBufferBytes; i += 2) {
+      b[i] = uint8_t(pattern16 >> 8);
+      b[i + 1] = uint8_t(pattern16 & 0xFF);
+    }
+    slot->Unmap(0, nullptr);
+  }
+  REXGPU_INFO("[sentinel] buffer created: {} MB of k_1_5_5_5 pattern {:04X} (guest byte order)", kSentinelBufferBytes >> 20, pattern16);
+  return slot.Get();
+}
+
 void D3D12CommandProcessor::DumpDescriptorEvent(char kind, uint32_t index, const void* texture, uint32_t format,
                                                 uint32_t swizzle, uint32_t generation) {
   if (!dd_file_) return;
@@ -5767,6 +5898,719 @@ void D3D12CommandProcessor::DumpIndicesCbuffer(bool pixel, uint64_t address, con
   for (uint32_t i = 0; i < count && n > 0 && size_t(n) < sizeof(line) - 16; ++i)
     n += std::snprintf(line + n, sizeof(line) - size_t(n), " %u", indices[i]);
   if (n > 0 && size_t(n) < sizeof(line) - 2) { line[n++] = '\n'; line[n] = 0; std::fputs(line, dd_file_); }
+}
+
+// [ar] ----------------------------------------------------------------------------------------------------------
+bool D3D12CommandProcessor::ArEnsure() {
+  if (g_ar_state == 2) return false;
+  if (ar_buffer_ && ar_file_) return true;
+  if (!ar_file_) {
+    const std::string path = rex::cvar::Query<std::string>("ngpu_exp_atlas_readback_file");
+    ar_file_ = path.empty() ? nullptr : std::fopen(path.c_str(), "w");
+    if (!ar_file_) {
+      REXGPU_ERROR("[ar] atlas readback: could not open '{}' - instrument OFF", path);
+      g_ar_state = 2;
+      return false;
+    }
+    std::fprintf(ar_file_, "# atlas readback: A = scaled range after the resolve (guest byte order), T = texture before the draw (host order); box = the 64x32 texel block at (w/2 rounded to 64, 3h/8)\n");
+  }
+  if (!ar_buffer_) {
+    ID3D12Device* device = GetD3D12Provider().GetDevice();
+    D3D12_RESOURCE_DESC desc;
+    ui::ngpu_d3d12::util::FillBufferResourceDesc(desc, uint64_t(kArSlotBytes) * kArSlots, D3D12_RESOURCE_FLAG_NONE);
+    if (FAILED(device->CreateCommittedResource(&ui::ngpu_d3d12::util::kHeapPropertiesReadback,
+                                               GetD3D12Provider().GetHeapFlagCreateNotZeroed(), &desc,
+                                               D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&ar_buffer_)))) {
+      REXGPU_ERROR("[ar] atlas readback: could not create the readback ring - instrument OFF");
+      g_ar_state = 2;
+      return false;
+    }
+    void* p = nullptr;
+    if (FAILED(ar_buffer_->Map(0, nullptr, &p)) || !p) {
+      REXGPU_ERROR("[ar] atlas readback: could not map the readback ring - instrument OFF");
+      ar_buffer_.Reset();
+      g_ar_state = 2;
+      return false;
+    }
+    ar_mapped_ = static_cast<uint8_t*>(p);
+    g_ar_state = 1;
+    REXLOG_INFO("[ar] atlas readback ON: mode {}, ring {} KB, file open", REXCVAR_GET(ngpu_exp_atlas_readback),
+                (kArSlotBytes * kArSlots) >> 10);
+  }
+  return true;
+}
+
+int32_t D3D12CommandProcessor::ArSlot() {
+  if (ar_records_.size() >= size_t(kArSlots) - 4) {   // the ring is full of copies not yet landed
+    ++g_ar_dropped;
+    return -1;
+  }
+  const uint32_t slot = ar_slot_next_;
+  ar_slot_next_ = (ar_slot_next_ + 1) % kArSlots;
+  return int32_t(slot);
+}
+
+void D3D12CommandProcessor::AtlasReadbackResolve(D3D12TextureCache& texture_cache, uint32_t address,
+                                                 uint32_t length) {
+  if (!(REXCVAR_GET(ngpu_exp_atlas_readback) & 1) || !ArEnsure()) return;
+  if (!ArSlotArmed(address, REXCVAR_GET(ngpu_exp_atlas_readback_amask))) return;   // [ar] species subset
+  const int32_t slot = ArSlot();
+  if (slot < 0) return;
+  // AR_2 layout (AR_1 read a different region than T): the scaled buffer keeps the GUEST tiled layout with the sx*sy
+  // host texels of each guest texel contiguous, so the 512-byte guest window at tiled offset 57344 of a 256 x 256
+  // 16-bpp atlas (= guest texels x 128..159, y 96..103, a full 32 x 8 rectangle) sits at 57344 * sx*sy and spans
+  // 512 * sx*sy bytes; the same texels on the texture side are the host box (128*sx, 96*sy) .. +(32*sx, 8*sy).
+  const uint32_t sx = texture_cache.draw_resolution_scale_x(), sy = texture_cache.draw_resolution_scale_y();
+  const uint32_t w = 256u * sx, h = 256u * sy;
+  const uint64_t block = 57344ull * sx * sy;
+  const uint32_t bytes = 512u * sx * sy;
+  if (bytes > kArSlotBytes) return;
+  texture_cache.ReadbackCurrentScaledResolveRange(ar_buffer_.Get(), uint64_t(slot) * kArSlotBytes, block, bytes);
+  ArRecord r = {};
+  r.submission = GetCurrentSubmission(); r.frame = ar_frame_; r.kind = 'A'; r.base = address; r.length = length;
+  r.slot = uint32_t(slot); r.bytes = bytes; r.cols = 32u * sx; r.rows = 8u * sy; r.format = 0; r.width = w; r.height = h;
+  r.x0 = 128u * sx; r.y0 = 96u * sy; r.extra = uint32_t(block); r.texture = nullptr;
+  ar_records_.push_back(r);
+  ++g_ar_a;
+}
+
+void D3D12CommandProcessor::AtlasReadbackVertexTextures(const D3D12Shader* vertex_shader, uint32_t species_base) {
+  // [ar] bit 4: the billboard VERTEX shader (129F7F2793DA9084) samples two small lookup textures (tf16 1D, tf17 2D)
+  // whose values scale the atlas colour and add the haze colour - a zero there is a flat card with the texel's alpha.
+  // Read each bound texture whole (mip 0) right before the draw, and hash the GUEST bytes the CPU holds for it.
+  if (!vertex_shader || vertex_shader->ucode_data_hash() != 0x129F7F2793DA9084ull || !ArEnsure()) return;
+  const RegisterFile& regs = *register_file_;
+  for (const auto& b : vertex_shader->GetTextureBindingsAfterTranslation()) {
+    xenos::xe_gpu_texture_fetch_t fetch;
+    std::memcpy(&fetch, &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + b.fetch_constant * 6], sizeof(fetch));
+    bool scaled = false;
+    const void* tex = texture_cache_->DiagBindingTexture(b.fetch_constant, &scaled);
+    if (!tex) continue;
+    // once per (lookup texture, species) per frame: the same table is bound by every species' draw, and the pairing
+    // with the flashing species needs the copy taken at THAT species' draw (AR_5)
+    const std::pair<const void*, uint32_t> key(tex, species_base);
+    if (std::find(ar_seen_v_.begin(), ar_seen_v_.end(), key) != ar_seen_v_.end()) continue;
+    const int32_t slot = ArSlot();
+    if (slot < 0) return;
+    D3D12TextureCache::ArTexInfo info;
+    if (!texture_cache_->ArCopyBindingTextureBox(b.fetch_constant, 0, 0, 0, 0, 0, ar_buffer_.Get(), uint64_t(slot) * kArSlotBytes, kArSlotBytes, info)) continue;
+    ar_seen_v_.push_back(key);
+    const uint32_t base = uint32_t(fetch.base_address) << 12;
+    {
+      const uint32_t guest_w = uint32_t(fetch.size_2d.width) + 1u, guest_h = uint32_t(fetch.size_2d.height) + 1u;
+      const FormatInfo* fi = FormatInfo::Get(xenos::TextureFormat(fetch.format));
+      const uint32_t guest_bpp = fi ? (fi->bits_per_pixel / 8u) : 0u;
+      const uint32_t host_bytes = info.cols * info.bpp * info.rows, guest_total = guest_w * guest_h * guest_bpp;
+      if (!guest_bpp || host_bytes != guest_total || info.bpp > 16u || info.bpp == 0u) {
+        if (ar_file_) std::fprintf(ar_file_, "V-REFUSED f%u @%08X tf%u host %ux%u bpp %u = %u B vs guest %ux%u fmt %u bpp %u = %u B\n", ar_frame_, base,
+                                   uint32_t(b.fetch_constant), info.cols, info.rows, info.bpp, host_bytes, guest_w, guest_h, uint32_t(fetch.format), guest_bpp, guest_total);
+        continue;   // the copy was recorded but no record is kept: the slot is simply not landed
+      }
+    }
+    // the guest bytes right now (what a CPU-side upload would carry): FNV of the texture's bytes at base
+    uint32_t guest_zero = 0; uint64_t guest_hash = 1469598103934665603ull; uint32_t guest_first = 0;
+    const uint32_t guest_bytes = std::min<uint32_t>(info.cols * info.bpp * info.rows, 4096u);
+    if (memory_) {
+      const uint8_t* g = memory_->TranslatePhysical(base);
+      if (g) {
+        std::memcpy(&guest_first, g, 4);
+        for (uint32_t i = 0; i < guest_bytes; ++i) { guest_hash ^= g[i]; guest_hash *= 1099511628211ull; guest_zero += g[i] == 0; }
+      }
+    }
+    ArRecord r = {};
+    r.submission = GetCurrentSubmission(); r.frame = ar_frame_; r.kind = 'V';
+    r.base = base; r.length = uint32_t(guest_hash); r.slot = uint32_t(slot);
+    r.bytes = ((info.cols * info.bpp + 255u) & ~255u) * info.rows;
+    r.cols = info.cols; r.rows = info.rows; r.format = info.format; r.width = info.width; r.height = info.height;
+    r.x0 = guest_zero; r.y0 = guest_first; r.texture = tex; r.length = uint32_t(guest_hash); r.height = species_base;   // AR_5: species in 'height'
+    r.extra = (info.bpp << 16) | (info.scaled ? 1u : 0u) | (bindless_resources_used_ ? (texture_cache_->GetActiveTextureBindlessSRVIndex(b) << 1) : 0u) | (uint32_t(b.fetch_constant) << 24);
+    ar_records_.push_back(r);
+    ++g_ar_v;
+  }
+}
+
+void D3D12CommandProcessor::AtlasReadbackConstants(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader) {
+  // [ar] bit 8: the billboard draws' float constants two ways - the CPU register file at record time (packed in the
+  // shader's bitmap order, the same order UpdateBindings copies them) and the bytes the GPU reads (copied out of the
+  // constant buffer pool right after the draw). The VS constants c46/c47 (camera position for the haze distance),
+  // c110/c111 (haze range) and the PS fog constants c72-c76 were never in any dump.
+  if (vertex_shader->ucode_data_hash() != 0x129F7F2793DA9084ull || !ArEnsure()) return;
+  if (!ar_cb_vs_buffer_ || !ar_cb_ps_buffer_) return;
+  const RegisterFile& regs = *register_file_;
+  uint32_t species_base = 0;
+  for (const auto& b : pixel_shader->GetTextureBindingsAfterTranslation()) {
+    xenos::xe_gpu_texture_fetch_t fetch;
+    std::memcpy(&fetch, &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + b.fetch_constant * 6], sizeof(fetch));
+    if (uint32_t(fetch.format) == 3u && fetch.size_2d.width == 255u) { species_base = uint32_t(fetch.base_address) << 12; break; }
+  }
+  const int32_t slot = ArSlot();
+  if (slot < 0) return;
+  ArRecord r = {};
+  r.submission = GetCurrentSubmission(); r.frame = ar_frame_; r.kind = 'K'; r.base = species_base; r.slot = uint32_t(slot);
+  r.ps_hash = pixel_shader->ucode_data_hash();
+  const auto& vm = vertex_shader->constant_register_map(); const auto& pm = pixel_shader->constant_register_map();
+  for (uint32_t i = 0; i < 4; ++i) { r.vs_bm[i] = vm.float_bitmap[i]; r.ps_bm[i] = pm.float_bitmap[i]; }
+  r.vs_count = vm.float_count; r.ps_count = pm.float_count;
+  const uint32_t vs_bytes = std::min<uint32_t>(ar_cb_vs_bytes_, 4096u), ps_bytes = std::min<uint32_t>(ar_cb_ps_bytes_, 4096u);
+  if (vs_bytes != r.vs_count * 16u || ps_bytes != r.ps_count * 16u) {   // the assertion: refuse a size that does not match
+    if (ar_file_) std::fprintf(ar_file_, "K-REFUSED f%u sp %08X vs %u B for %u constants, ps %u B for %u constants\n", ar_frame_, species_base, vs_bytes, r.vs_count, ps_bytes, r.ps_count);
+    return;
+  }
+  // CPU side, in the packed order
+  r.cpu.reserve((r.vs_count + r.ps_count) * 4);
+  for (uint32_t i = 0; i < 4; ++i) {
+    uint64_t e = vm.float_bitmap[i]; uint32_t k;
+    while (rex::bit_scan_forward(e, &k)) { e &= ~(1ull << k); const float* c = reinterpret_cast<const float*>(&regs[XE_GPU_REG_SHADER_CONSTANT_000_X + (i << 8) + (k << 2)]); r.cpu.insert(r.cpu.end(), c, c + 4); }
+  }
+  for (uint32_t i = 0; i < 4; ++i) {
+    uint64_t e = pm.float_bitmap[i]; uint32_t k;
+    while (rex::bit_scan_forward(e, &k)) { e &= ~(1ull << k); const float* c = reinterpret_cast<const float*>(&regs[XE_GPU_REG_SHADER_CONSTANT_256_X + (i << 8) + (k << 2)]); r.cpu.insert(r.cpu.end(), c, c + 4); }
+  }
+  // GPU side: the pool pages are upload-heap buffers (GENERIC_READ): copy without a transition
+  auto& cl = GetDeferredCommandList();
+  if (vs_bytes) cl.D3DCopyBufferRegion(ar_buffer_.Get(), uint64_t(slot) * kArSlotBytes, ar_cb_vs_buffer_, ar_cb_vs_offset_, vs_bytes);
+  if (ps_bytes) cl.D3DCopyBufferRegion(ar_buffer_.Get(), uint64_t(slot) * kArSlotBytes + 4096u, ar_cb_ps_buffer_, ar_cb_ps_offset_, ps_bytes);
+  r.bytes = vs_bytes + ps_bytes;
+  ar_records_.push_back(std::move(r));
+  ++g_ar_v;
+}
+
+typedef HRESULT(WINAPI* ArD3DCompileFn)(LPCVOID, SIZE_T, LPCSTR, const void*, void*, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+
+bool D3D12CommandProcessor::ArProbeEnsure() {
+  if (ar_probe_failed_) return false;
+  if (ar_probe_pso_ && ar_probe_rs_ && ar_probe_uav_) return true;
+  if (!bindless_resources_used_) { REXLOG_INFO("[ar] probe: bindless mode only"); ar_probe_failed_ = true; return false; }
+  const ui::ngpu_d3d12::D3D12Provider& provider = GetD3D12Provider();
+  ID3D12Device* device = provider.GetDevice();
+  HMODULE compiler = LoadLibraryA("d3dcompiler_47.dll");
+  ArD3DCompileFn compile = compiler ? reinterpret_cast<ArD3DCompileFn>(GetProcAddress(compiler, "D3DCompile")) : nullptr;
+  if (!compile) { REXGPU_ERROR("[ar] probe: d3dcompiler_47.dll / D3DCompile not available - probe OFF"); ar_probe_failed_ = true; return false; }
+  // the bindless 2D textures are Texture2DArray views; the table is bound at the heap start, so the index IS the
+  // heap index the draw's descriptor-indices constant buffer carries
+  static const char kSource[] =
+      "Texture2DArray<float4> xe_t2d[] : register(t0, space1);\n"
+      "SamplerState s_point : register(s0);\n"
+      "RWByteAddressBuffer out_buf : register(u0);\n"
+      "cbuffer C : register(b0) { uint idx; uint lod; float u; float v; uint out_off; uint pad0; uint pad1; uint pad2; };\n"
+      "[numthreads(1, 1, 1)] void main() {\n"
+      "  float4 c = xe_t2d[NonUniformResourceIndex(idx)].SampleLevel(s_point, float3(u, v, 0.0), (float)lod);\n"
+      "  out_buf.Store4(out_off, asuint(c));\n"
+      "}\n";
+  // probe_mode 1: the same dispatch, root signature, barriers and copy, but the shader never touches the texture -
+  // the control that separates "a compute dispatch before the draw" from "a sample through the draw's descriptor".
+  static const char kSourceNoSample[] =
+      "RWByteAddressBuffer out_buf : register(u0);\n"
+      "cbuffer C : register(b0) { uint idx; uint lod; float u; float v; uint out_off; uint pad0; uint pad1; uint pad2; };\n"
+      "[numthreads(1, 1, 1)] void main() {\n"
+      "  out_buf.Store4(out_off, uint4(0x3F800000u, 0u, 0x3F800000u, asuint(float(idx))));\n"
+      "}\n";
+  const bool no_sample = REXCVAR_GET(ngpu_exp_atlas_readback_probe_mode) == 1;
+  const char* src = no_sample ? kSourceNoSample : kSource;
+  const size_t src_len = no_sample ? sizeof(kSourceNoSample) - 1 : sizeof(kSource) - 1;
+  ID3DBlob* code = nullptr; ID3DBlob* errors = nullptr;
+  HRESULT hr = compile(src, src_len, "ar_probe", nullptr, nullptr, "main", "cs_5_1", 0x100000u /* D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES */, 0, &code, &errors);
+  if (FAILED(hr) || !code) {
+    REXGPU_ERROR("[ar] probe: compile failed {:08X}: {}", uint32_t(hr), errors ? static_cast<const char*>(errors->GetBufferPointer()) : "");
+    if (errors) errors->Release();
+    ar_probe_failed_ = true; return false;
+  }
+  if (errors) errors->Release();
+  D3D12_ROOT_PARAMETER params[3] = {};
+  params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  params[0].Constants.ShaderRegister = 0; params[0].Constants.RegisterSpace = 0; params[0].Constants.Num32BitValues = 8;
+  params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  D3D12_DESCRIPTOR_RANGE range = {};
+  range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; range.NumDescriptors = UINT_MAX; range.BaseShaderRegister = 0;
+  range.RegisterSpace = 1; range.OffsetInDescriptorsFromTableStart = 0;
+  params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  params[1].DescriptorTable.NumDescriptorRanges = 1; params[1].DescriptorTable.pDescriptorRanges = &range;
+  params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+  params[2].Descriptor.ShaderRegister = 0; params[2].Descriptor.RegisterSpace = 0;
+  params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  D3D12_STATIC_SAMPLER_DESC sampler = {};
+  sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+  sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  sampler.MaxLOD = D3D12_FLOAT32_MAX; sampler.ShaderRegister = 0; sampler.RegisterSpace = 0;
+  sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  D3D12_ROOT_SIGNATURE_DESC rs_desc = {};
+  rs_desc.NumParameters = 3; rs_desc.pParameters = params; rs_desc.NumStaticSamplers = 1; rs_desc.pStaticSamplers = &sampler;
+  rs_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+  ID3D12RootSignature* rs = ui::ngpu_d3d12::util::CreateRootSignature(provider, rs_desc);
+  if (!rs) { REXGPU_ERROR("[ar] probe: root signature failed - probe OFF"); code->Release(); ar_probe_failed_ = true; return false; }
+  ar_probe_rs_.Attach(rs);
+  ID3D12PipelineState* pso = ui::ngpu_d3d12::util::CreateComputePipeline(device, code->GetBufferPointer(), code->GetBufferSize(), rs);
+  code->Release();
+  if (!pso) { REXGPU_ERROR("[ar] probe: pipeline failed - probe OFF"); ar_probe_failed_ = true; return false; }
+  ar_probe_pso_.Attach(pso);
+  D3D12_RESOURCE_DESC bd;
+  ui::ngpu_d3d12::util::FillBufferResourceDesc(bd, 65536, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+  if (FAILED(device->CreateCommittedResource(&ui::ngpu_d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &bd,
+                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&ar_probe_uav_)))) {
+    REXGPU_ERROR("[ar] probe: UAV buffer failed - probe OFF"); ar_probe_failed_ = true; return false;
+  }
+  REXLOG_INFO("[ar] sampling probe ON (cs_5_1 compiled at run time; table at the bindless heap start; mode {})", no_sample ? "NO-SAMPLE control" : "sample");
+  return true;
+}
+
+void D3D12CommandProcessor::AtlasReadbackProbe(const D3D12Shader* pixel_shader) {
+  const uint64_t ps = pixel_shader->ucode_data_hash();
+  if (ps != 0xC915912C36588D26ull && ps != 0x4B1D3E6E8E58D3ACull) return;
+  if (!ArEnsure() || !ArProbeEnsure()) return;
+  const int32_t pm = REXCVAR_GET(ngpu_exp_atlas_readback_probe_mode);
+  if (pm == 2) {   // hitch-only control: pipeline created, nothing dispatched
+    static bool s_said = false;
+    if (!s_said) { s_said = true; REXLOG_INFO("[ar] probe mode 2: pipeline created, NO dispatch (hitch-only control)"); }
+    return;
+  }
+  if (pm == 4) {   // [ar] mode 4: the PIPELINE SWITCH only - the next draw re-sets its PSO; no barrier, no dispatch
+    static bool s4 = false; if (!s4) { s4 = true; REXLOG_INFO("[ar] probe mode 4: external pipeline set only (no barrier, no dispatch)"); }
+    SetExternalPipeline(ar_probe_pso_.Get()); ++g_ar_v; return;
+  }
+  if (pm == 5) {   // [ar] mode 5: the BARRIERS only - a UAV barrier and a transition pair on the probe buffer; no pipeline, no dispatch
+    static bool s5 = false; if (!s5) { s5 = true; REXLOG_INFO("[ar] probe mode 5: barriers only (UAV + transition pair, no pipeline, no dispatch)"); }
+    SubmitBarriers(); PushUAVBarrier(ar_probe_uav_.Get());
+    PushTransitionBarrier(ar_probe_uav_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE); SubmitBarriers();
+    PushTransitionBarrier(ar_probe_uav_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS); ++g_ar_v; return;
+  }
+  if (pm == 6) {   // [ar] mode 6: an EARLY SubmitBarriers of whatever is pending, nothing else
+    static bool s6 = false; if (!s6) { s6 = true; REXLOG_INFO("[ar] probe mode 6: early SubmitBarriers only"); }
+    SubmitBarriers(); ++g_ar_v; return;
+  }
+  const RegisterFile& regs = *register_file_;
+  for (const auto& b : pixel_shader->GetTextureBindingsAfterTranslation()) {
+    xenos::xe_gpu_texture_fetch_t fetch;
+    std::memcpy(&fetch, &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + b.fetch_constant * 6], sizeof(fetch));
+    if (uint32_t(fetch.format) != 3u || fetch.size_2d.width != 255u || fetch.size_2d.height != 255u) continue;
+    uint32_t w = 0, h = 0;
+    if (!texture_cache_->ArBindingTextureSize(b.fetch_constant, w, h) || !w || !h) continue;
+    if (!ArSlotArmed(uint32_t(fetch.base_address) << 12, REXCVAR_GET(ngpu_exp_atlas_readback_pmask))) continue;   // [ar] probe on a species subset (within-leg control)
+    const uint32_t idx = texture_cache_->GetActiveTextureBindlessSRVIndex(b);
+    const int32_t slot = ArSlot();
+    if (slot < 0) return;
+    const uint32_t lod = uint32_t(std::max(0, std::min(3, REXCVAR_GET(ngpu_exp_atlas_readback_probe_lod))));
+    const uint32_t wl = std::max<uint32_t>(1u, w >> lod), hl = std::max<uint32_t>(1u, h >> lod);
+    const uint32_t x0 = wl / 2u, y0 = hl * 3u / 8u;   // the T box's first texel AT THAT MIP (the same guest texel)
+    struct { uint32_t idx, lod; float u, v; uint32_t out_off, pad0, pad1, pad2; } c = {idx, lod, (float(x0) + 0.5f) / float(wl), (float(y0) + 0.5f) / float(hl), uint32_t(slot % 4096) * 16u, 0u, 0u, 0u};
+    auto& cl = GetDeferredCommandList();
+    SetExternalPipeline(ar_probe_pso_.Get());
+    cl.D3DSetComputeRootSignature(ar_probe_rs_.Get());
+    cl.D3DSetComputeRoot32BitConstants(0, 8, &c, 0);
+    cl.D3DSetComputeRootDescriptorTable(1, view_bindless_heap_gpu_start_);
+    cl.D3DSetComputeRootUnorderedAccessView(2, ar_probe_uav_->GetGPUVirtualAddress());
+    if (pm == 7) {   // [ar] mode 7: the BARE dispatch - no barrier, no copy, no record
+      static bool s7 = false; if (!s7) { s7 = true; REXLOG_INFO("[ar] probe mode 7: bare dispatch (no barrier, no copy)"); }
+      cl.D3DDispatch(1, 1, 1); ++g_ar_v; break;
+    }
+    SubmitBarriers();
+    cl.D3DDispatch(1, 1, 1);
+    PushUAVBarrier(ar_probe_uav_.Get());
+    PushTransitionBarrier(ar_probe_uav_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    SubmitBarriers();
+    cl.D3DCopyBufferRegion(ar_buffer_.Get(), uint64_t(slot) * kArSlotBytes, ar_probe_uav_.Get(), c.out_off, 16);
+    PushTransitionBarrier(ar_probe_uav_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    ArRecord r = {};
+    r.submission = GetCurrentSubmission(); r.frame = ar_frame_; r.kind = 'P'; r.base = uint32_t(fetch.base_address) << 12;
+    r.slot = uint32_t(slot); r.bytes = 16; r.extra = idx; r.width = wl; r.height = hl; r.x0 = x0; r.y0 = y0; r.ps_hash = ps; r.length = lod;
+    r.texture = texture_cache_->DiagBindingTexture(b.fetch_constant, nullptr);
+    ar_records_.push_back(r);
+    ++g_ar_v;
+    break;   // t0 only
+  }
+}
+
+void D3D12CommandProcessor::AtlasReadbackSystem(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader,
+                                                uint64_t vs_mod, uint64_t ps_mod) {
+  // [ar] bit 32: the billboard draws' SYSTEM constant buffer (texture_swizzled_signs - the per-fetch sign/gamma
+  // flags the pixel shader uses to choose its per-component path -, textures_resolution_scaled, ...) CPU and GPU
+  // side, the pipeline modification keys the draw was recorded with, and the raw fetch constant of the PS's t0.
+  if (vertex_shader->ucode_data_hash() != 0x129F7F2793DA9084ull || !ArEnsure()) return;
+  if (!ar_cb_sys_buffer_) return;
+  const RegisterFile& regs = *register_file_;
+  uint32_t species_base = 0, fetch_index = UINT32_MAX;
+  for (const auto& b : pixel_shader->GetTextureBindingsAfterTranslation()) {
+    xenos::xe_gpu_texture_fetch_t fetch;
+    std::memcpy(&fetch, &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + b.fetch_constant * 6], sizeof(fetch));
+    if (uint32_t(fetch.format) == 3u && fetch.size_2d.width == 255u) { species_base = uint32_t(fetch.base_address) << 12; fetch_index = b.fetch_constant; break; }
+  }
+  const int32_t slot = ArSlot();
+  if (slot < 0) return;
+  const uint32_t bytes = uint32_t(std::min<size_t>(sizeof(system_constants_), size_t(kArSlotBytes)));
+  ArRecord r = {};
+  r.submission = GetCurrentSubmission(); r.frame = ar_frame_; r.kind = 'S'; r.base = species_base; r.slot = uint32_t(slot);
+  r.ps_hash = pixel_shader->ucode_data_hash(); r.vs_mod = vs_mod; r.ps_mod = ps_mod; r.bytes = bytes; r.length = fetch_index;
+  r.cpu_bytes.resize(bytes);
+  std::memcpy(r.cpu_bytes.data(), &system_constants_, bytes);
+  if (fetch_index != UINT32_MAX)
+    for (uint32_t i = 0; i < 6; ++i) r.fetch_dw[i] = regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + fetch_index * 6 + i];
+  GetDeferredCommandList().D3DCopyBufferRegion(ar_buffer_.Get(), uint64_t(slot) * kArSlotBytes, ar_cb_sys_buffer_, ar_cb_sys_offset_, bytes);
+  ar_records_.push_back(std::move(r));
+  ++g_ar_v;
+}
+
+void D3D12CommandProcessor::AtlasReadbackDraw(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader) {
+  if (REXCVAR_GET(ngpu_exp_atlas_readback) & 4) {   // the species = the draw's t0 atlas base (0 when none)
+    uint32_t species_base = 0;
+    if (pixel_shader) {
+      const RegisterFile& regs0 = *register_file_;
+      for (const auto& b : pixel_shader->GetTextureBindingsAfterTranslation()) {
+        xenos::xe_gpu_texture_fetch_t fetch;
+        std::memcpy(&fetch, &regs0[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + b.fetch_constant * 6], sizeof(fetch));
+        if (uint32_t(fetch.format) == 3u && fetch.size_2d.width == 255u) { species_base = uint32_t(fetch.base_address) << 12; break; }
+      }
+    }
+    AtlasReadbackVertexTextures(vertex_shader, species_base);
+  }
+  if (!(REXCVAR_GET(ngpu_exp_atlas_readback) & 2)) return;
+  // the two impostor billboard shaders, sampling the 256 x 256 k_1_5_5_5 atlases as t0
+  const uint64_t ps = pixel_shader->ucode_data_hash();
+  if (ps != 0xC915912C36588D26ull && ps != 0x4B1D3E6E8E58D3ACull) return;
+  if (!ArEnsure()) return;
+  const RegisterFile& regs = *register_file_;
+  for (const auto& b : pixel_shader->GetTextureBindingsAfterTranslation()) {
+    xenos::xe_gpu_texture_fetch_t fetch;
+    std::memcpy(&fetch, &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + b.fetch_constant * 6], sizeof(fetch));
+    if (uint32_t(fetch.format) != 3u || fetch.size_2d.width != 255u || fetch.size_2d.height != 255u) continue;
+    bool scaled = false;
+    const void* tex = texture_cache_->DiagBindingTexture(b.fetch_constant, &scaled);
+    if (!tex) continue;
+    if (!ArSlotArmed(uint32_t(fetch.base_address) << 12, REXCVAR_GET(ngpu_exp_atlas_readback_tmask))) continue;   // [ar] species subset
+    if (std::find(ar_seen_.begin(), ar_seen_.end(), tex) != ar_seen_.end()) continue;   // once per texture per frame
+    const int32_t slot = ArSlot();
+    if (slot < 0) return;
+    D3D12TextureCache::ArTexInfo info;
+    if (!texture_cache_->ArCopyBindingTexture(b.fetch_constant, 0, ar_buffer_.Get(), uint64_t(slot) * kArSlotBytes, info)) continue;
+    ar_seen_.push_back(tex);
+    ArRecord r = {};
+    r.submission = GetCurrentSubmission(); r.frame = ar_frame_; r.kind = 'T';
+    r.base = uint32_t(fetch.base_address) << 12; r.length = 0; r.slot = uint32_t(slot); r.bytes = 256u * info.rows;
+    r.cols = info.cols; r.rows = info.rows; r.format = info.format; r.width = info.width; r.height = info.height;
+    r.x0 = info.x0; r.y0 = info.y0; r.texture = tex;
+    r.extra = (info.bpp << 16) | (info.scaled ? 1u : 0u) | (bindless_resources_used_ ? (texture_cache_->GetActiveTextureBindlessSRVIndex(b) << 1) : 0u);
+    ar_records_.push_back(r);
+    ++g_ar_t;
+    if (REXCVAR_GET(ngpu_exp_atlas_readback) & 16) {   // [ar] mips 1..3 of the same texture, the same guest window
+      for (uint32_t mip = 1; mip <= 3; ++mip) {
+        const int32_t mslot = ArSlot();
+        if (mslot < 0) break;
+        D3D12TextureCache::ArTexInfo mi;
+        const uint32_t w = info.width >> mip, h = info.height >> mip;
+        if (!w || !h) break;
+        const uint32_t x0 = w / 2u, y0 = h * 3u / 8u, cols = std::max<uint32_t>(1u, w / 8u), rows = std::max<uint32_t>(1u, h / 32u);
+        if (!texture_cache_->ArCopyBindingTextureBox(b.fetch_constant, mip, x0, y0, cols, rows, ar_buffer_.Get(), uint64_t(mslot) * kArSlotBytes, kArSlotBytes, mi)) break;
+        ArRecord m = {};
+        m.submission = GetCurrentSubmission(); m.frame = ar_frame_; m.kind = 'T';
+        m.base = uint32_t(fetch.base_address) << 12; m.length = mip; m.slot = uint32_t(mslot); m.bytes = 256u * mi.rows;
+        m.cols = mi.cols; m.rows = mi.rows; m.format = mi.format; m.width = mi.width; m.height = mi.height;
+        m.x0 = mi.x0; m.y0 = mi.y0; m.texture = tex;
+        m.extra = (mi.bpp << 16) | (mi.scaled ? 1u : 0u);
+        ar_records_.push_back(m);
+        ++g_ar_t;
+      }
+    }
+  }
+}
+
+static float ArHalf(uint16_t h) {   // [ar] IEEE half -> float (no NaN care needed for a colour table)
+  const uint32_t s = (h >> 15) & 1u, e = (h >> 10) & 31u, m = h & 1023u;
+  float v;
+  if (e == 0) v = std::ldexp(float(m), -24);
+  else if (e == 31) v = m ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
+  else v = std::ldexp(float(m + 1024u), int(e) - 25);
+  return s ? -v : v;
+}
+
+void D3D12CommandProcessor::ArLand() {
+  if (!ar_file_ || !ar_mapped_) { ar_records_.clear(); return; }
+  const uint64_t completed = GetCompletedSubmission();
+  std::vector<uint16_t> words;
+  while (!ar_records_.empty() && ar_records_.front().submission <= completed) {
+    const ArRecord r = ar_records_.front();
+    ar_records_.pop_front();
+    const uint8_t* p = ar_mapped_ + uint64_t(r.slot) * kArSlotBytes;
+    words.clear();
+    uint32_t bpp = r.kind == 'A' ? 2u : ((r.extra >> 16) & 0xFFu);   // AR_4 bug: the fetch-constant bits sat above bpp
+    if (r.kind == 'P') {
+      float c4[4]; std::memcpy(c4, p, 16);
+      char pl[320];
+      std::snprintf(pl, sizeof(pl), "P f%u sp %08X ps %08X idx %u texel %u,%u of %ux%u rgba %.4f,%.4f,%.4f,%.4f q5 %u,%u,%u,%u tex %p lod %u\n",
+                    r.frame, r.base, uint32_t(r.ps_hash >> 32), r.extra, r.x0, r.y0, r.width, r.height, c4[0], c4[1], c4[2], c4[3],
+                    uint32_t(std::lround(std::min(std::max(c4[0], 0.0f), 1.0f) * 31.0f)), uint32_t(std::lround(std::min(std::max(c4[1], 0.0f), 1.0f) * 31.0f)),
+                    uint32_t(std::lround(std::min(std::max(c4[2], 0.0f), 1.0f) * 31.0f)), uint32_t(std::lround(std::min(std::max(c4[3], 0.0f), 1.0f) * 31.0f)), r.texture, r.length);
+      std::fputs(pl, ar_file_);
+      ++g_ar_landed;
+      continue;
+    }
+    if (r.kind == 'S') {
+      // S f<frame> sp <base> ps <hash8> vsmod <hex> psmod <hex> fetch <6 dwords> sysdiff <n bytes> [first <offset>]
+      //   signs g=<8 x u32> c=<8 x u32> rs g=<u32> c=<u32>
+      const size_t off_signs = offsetof(DxbcShaderTranslator::SystemConstants, texture_swizzled_signs);
+      const size_t off_rs = offsetof(DxbcShaderTranslator::SystemConstants, textures_resolution_scaled);
+      uint32_t diff = 0; int first = -1;
+      for (uint32_t i = 0; i < r.bytes && i < r.cpu_bytes.size(); ++i) if (p[i] != r.cpu_bytes[i]) { ++diff; if (first < 0) first = int(i); }
+      std::string out; char b[160];
+      std::snprintf(b, sizeof(b), "S f%u sp %08X ps %08X vsmod %016llX psmod %016llX fetch", r.frame, r.base, uint32_t(r.ps_hash >> 32),
+                    (unsigned long long)r.vs_mod, (unsigned long long)r.ps_mod);
+      out += b;
+      for (int i = 0; i < 6; ++i) { std::snprintf(b, sizeof(b), " %08X", r.fetch_dw[i]); out += b; }
+      std::snprintf(b, sizeof(b), " sysdiff %u first %d signs g=", diff, first); out += b;
+      uint32_t v;
+      for (int i = 0; i < 8; ++i) { std::memcpy(&v, p + off_signs + i * 4, 4); std::snprintf(b, sizeof(b), "%s%08X", i ? "," : "", v); out += b; }
+      out += " c=";
+      for (int i = 0; i < 8; ++i) { std::memcpy(&v, r.cpu_bytes.data() + off_signs + i * 4, 4); std::snprintf(b, sizeof(b), "%s%08X", i ? "," : "", v); out += b; }
+      std::memcpy(&v, p + off_rs, 4); std::snprintf(b, sizeof(b), " rs g=%08X", v); out += b;
+      std::memcpy(&v, r.cpu_bytes.data() + off_rs, 4); std::snprintf(b, sizeof(b), " c=%08X", v); out += b;
+      out += '\n';
+      std::fputs(out.c_str(), ar_file_);
+      ++g_ar_landed;
+      continue;
+    }
+    if (r.kind == 'K') {
+      // one line: K f<frame> sp <base> ps <hash8> vs <n> diff <d> | c<k> g=x,y,z,w [c=x,y,z,w] ... | ps <n> diff <d> | ...
+      std::string out;
+      char b[256];
+      std::snprintf(b, sizeof(b), "K f%u sp %08X ps %08X", r.frame, r.base, uint32_t(r.ps_hash >> 32));
+      out += b;
+      size_t ci = 0;
+      for (int side = 0; side < 2; ++side) {
+        const uint64_t* bm = side == 0 ? r.vs_bm : r.ps_bm;
+        const uint32_t count = side == 0 ? r.vs_count : r.ps_count;
+        const uint8_t* g = p + (side == 0 ? 0u : 4096u);
+        std::string part; uint32_t diff = 0, n = 0;
+        for (uint32_t i = 0; i < 4 && n < count; ++i) {
+          uint64_t e = bm[i]; uint32_t k;
+          while (rex::bit_scan_forward(e, &k) && n < count) {
+            e &= ~(1ull << k);
+            float gv[4]; std::memcpy(gv, g + n * 16u, 16);
+            const float* cv = ci + 4 <= r.cpu.size() ? &r.cpu[ci] : nullptr;
+            const bool d = cv && std::memcmp(gv, cv, 16) != 0;
+            diff += d;
+            std::snprintf(b, sizeof(b), " c%u g=%.5g,%.5g,%.5g,%.5g", (i << 6) + k, gv[0], gv[1], gv[2], gv[3]);
+            part += b;
+            if (d) { std::snprintf(b, sizeof(b), " c=%.5g,%.5g,%.5g,%.5g!", cv[0], cv[1], cv[2], cv[3]); part += b; }
+            ++n; ci += 4;
+          }
+        }
+        std::snprintf(b, sizeof(b), " | %s %u diff %u", side == 0 ? "vs" : "ps", count, diff);
+        out += b; out += part;
+      }
+      out += '\n';
+      std::fputs(out.c_str(), ar_file_);
+      ++g_ar_landed;
+      continue;
+    }
+    if (r.kind == 'V') {
+      const uint32_t pitch = (r.cols * bpp + 255u) & ~255u;
+      uint32_t zero = 0; std::vector<uint32_t> firsts;
+      char vline[640];
+      int vn = std::snprintf(vline, sizeof(vline), "V f%u @%08X tf%u sp %08X n %u", r.frame, r.base, r.extra >> 24, r.height, r.cols * r.rows);
+      for (uint32_t y = 0; y < r.rows; ++y)
+        for (uint32_t x = 0; x < r.cols; ++x) {
+          const uint8_t* q = p + y * pitch + x * bpp;
+          bool z = true;
+          for (uint32_t k = 0; k < bpp; ++k) z = z && q[k] == 0;
+          zero += z;
+          uint32_t f4 = 0; std::memcpy(&f4, q, std::min<uint32_t>(4u, bpp)); firsts.push_back(f4);
+        }
+      std::vector<uint32_t> uniq(firsts); std::sort(uniq.begin(), uniq.end());
+      const size_t distinct = size_t(std::unique(uniq.begin(), uniq.end()) - uniq.begin());
+      // the host bytes hashed the way the guest's were (FNV over the texel bytes in guest order): undo the load
+      // shader's endian swap two ways - 8-in-16 (16-bit components) and 8-in-32 (8888) - and print both.
+      uint64_t h16 = 1469598103934665603ull, h32 = 1469598103934665603ull;
+      for (uint32_t y = 0; y < r.rows; ++y)
+        for (uint32_t x = 0; x < r.cols * bpp; x += 4) {
+          const uint8_t* q = p + y * pitch + x;
+          const uint8_t s16[4] = {q[1], q[0], q[3], q[2]}, s32[4] = {q[3], q[2], q[1], q[0]};
+          for (int k = 0; k < 4; ++k) { h16 ^= s16[k]; h16 *= 1099511628211ull; h32 ^= s32[k]; h32 *= 1099511628211ull; }
+        }
+      vn += std::snprintf(vline + vn, sizeof(vline) - size_t(vn), " zero %u dist %u %ux%u fmt %u bpp %u tex %p sc%u idx%u guest_hash %08X guest_zero %u guest_first %08X host_hash16 %08X host_hash32 %08X t",
+                          zero, uint32_t(distinct), r.width, r.rows, r.format, bpp, r.texture, r.extra & 1u, (r.extra >> 1) & 0x7FFFu, r.length, r.x0, r.y0, uint32_t(h16), uint32_t(h32));
+      for (size_t i = 0; i < firsts.size() && i < 8 && vn > 0 && size_t(vn) < sizeof(vline) - 12; ++i)
+        vn += std::snprintf(vline + vn, sizeof(vline) - size_t(vn), " %08X", firsts[i]);
+      std::string tail;
+      if (bpp == 8u) {   // RGBA16F haze table: can ANY texel produce the flash's hue (R/G >= 1.3 and B/G >= 1.6)?
+        float rg_min = 1e9f, rg_max = -1e9f, bg_min = 1e9f, bg_max = -1e9f, gmin = 1e9f, gmax = -1e9f; uint32_t sig = 0, valid = 0;
+        std::string tbl;
+        static uint32_t s_tables_printed = 0;
+        for (uint32_t y = 0; y < r.rows; ++y)
+          for (uint32_t x = 0; x < r.cols; ++x) {
+            const uint8_t* q = p + y * pitch + x * 8u;
+            uint16_t hv[4]; std::memcpy(hv, q, 8);
+            const float R = ArHalf(hv[0]), G = ArHalf(hv[1]), B = ArHalf(hv[2]);
+            if (G > 1e-4f) { const float rg = R / G, bg = B / G; ++valid; rg_min = std::min(rg_min, rg); rg_max = std::max(rg_max, rg); bg_min = std::min(bg_min, bg); bg_max = std::max(bg_max, bg); if (rg >= 1.3f && bg >= 1.6f) ++sig; }
+            gmin = std::min(gmin, G); gmax = std::max(gmax, G);
+            char t[64]; std::snprintf(t, sizeof(t), "%s%.3f,%.3f,%.3f", tbl.empty() ? "" : ";", R, G, B); tbl += t;
+          }
+        char hb[200];
+        std::snprintf(hb, sizeof(hb), " hue valid %u rg %.2f..%.2f bg %.2f..%.2f g %.3f..%.3f sig %u", valid, rg_min, rg_max, bg_min, bg_max, gmin, gmax, sig);
+        tail += hb;
+        if (sig || s_tables_printed < 6) { ++s_tables_printed; tail += " tbl "; tail += tbl; }
+      }
+      if (vn > 0 && size_t(vn) < sizeof(vline) - 2) { vline[vn] = 0; std::fputs(vline, ar_file_); std::fputs(tail.c_str(), ar_file_); std::fputc('\n', ar_file_); }
+      ++g_ar_landed;
+      continue;
+    }
+    if (r.kind == 'A') {   // guest byte order: big-endian 16-bit words, 4 KB contiguous
+      for (uint32_t i = 0; i + 1 < r.bytes; i += 2) words.push_back(uint16_t((p[i] << 8) | p[i + 1]));
+    } else if (bpp == 2) {   // host B5G5R5A1: little-endian words, rows of 256 B pitch
+      for (uint32_t y = 0; y < r.rows; ++y)
+        for (uint32_t x = 0; x < r.cols; ++x) words.push_back(uint16_t(p[y * 256 + x * 2] | (p[y * 256 + x * 2 + 1] << 8)));
+    } else if (bpp == 4) {   // RGBA8: fold to 1555 so the two sides compare
+      for (uint32_t y = 0; y < r.rows; ++y)
+        for (uint32_t x = 0; x < r.cols; ++x) {
+          const uint8_t* q = p + y * 256 + x * 4;
+          words.push_back(uint16_t(((q[3] >> 7) << 15) | ((q[0] >> 3) << 10) | ((q[1] >> 3) << 5) | (q[2] >> 3)));
+        }
+    }
+    uint32_t opaque = 0; uint64_t sr = 0, sg = 0, sb = 0;
+    for (uint16_t v : words) {
+      if (v & 0x8000u) { ++opaque; sr += (v >> 10) & 31u; sg += (v >> 5) & 31u; sb += v & 31u; }
+    }
+    std::vector<uint16_t> uniq(words);
+    std::sort(uniq.begin(), uniq.end());
+    const size_t distinct = size_t(std::unique(uniq.begin(), uniq.end()) - uniq.begin());
+    char line[512];
+    int n = std::snprintf(line, sizeof(line), "%c f%u @%08X n %u opq %u dist %u rgb %u,%u,%u box %u,%u %ux%u %ux%u fmt %u",
+                          r.kind, r.frame, r.base, uint32_t(words.size()), opaque, uint32_t(distinct),
+                          uint32_t(opaque ? (sr * 8 / opaque) : 0), uint32_t(opaque ? (sg * 8 / opaque) : 0),
+                          uint32_t(opaque ? (sb * 8 / opaque) : 0), r.x0, r.y0, r.cols, r.rows, r.width, r.height, r.format);
+    if (r.kind == 'A') n += std::snprintf(line + n, sizeof(line) - size_t(n), " blk %u len %u", r.extra, r.length);
+    else n += std::snprintf(line + n, sizeof(line) - size_t(n), " tex %p sc%u idx%u bpp %u mip %u", r.texture, r.extra & 1u, (r.extra >> 1) & 0x7FFFu, bpp, r.length);
+    n += std::snprintf(line + n, sizeof(line) - size_t(n), " w");
+    for (size_t i = 0; i < words.size() && i < 12 && n > 0 && size_t(n) < sizeof(line) - 8; ++i)
+      n += std::snprintf(line + n, sizeof(line) - size_t(n), " %04X", words[i]);
+    if (n > 0 && size_t(n) < sizeof(line) - 2) { line[n++] = '\n'; line[n] = 0; std::fputs(line, ar_file_); }
+    ++g_ar_landed;
+  }
+}
+
+void D3D12CommandProcessor::RlKickCompare(uint32_t addr, uint32_t size, uint32_t species, uint64_t rec_hash, const uint8_t* p) {
+  // [rl] the same range's hash at the KICK of the batch this draw comes from (0 = not watched at that kick yet)
+  const uint64_t kh = fable2::p2::RlKickHash(addr);
+  if (!kh) return;
+  ++rl_kick_known_;
+  if (kh == rec_hash) return;
+  ++rl_kickdiff_;
+  if (ar_file_ && rl_kickdiff_logged_ < 200) {
+    ++rl_kickdiff_logged_;
+    char hx[80]; int n = 0; for (uint32_t i = 0; i < std::min<uint32_t>(32u, size) && n < 70; ++i) n += std::snprintf(hx + n, sizeof(hx) - n, "%02X", p[i]);
+    std::fprintf(ar_file_, "RK f%u sp %08X%s addr %08X size %u kick %016llX rec %016llX head %s\n", ar_frame_, species & ~1u, (species & 1u) ? "t" : "v", addr, size,
+                 (unsigned long long)kh, (unsigned long long)rec_hash, hx);
+  }
+}
+
+void D3D12CommandProcessor::RunLagDraw(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader) {
+  // [rl] at a billboard draw, before its vertex buffers are made resident.
+  const int32_t bits = REXCVAR_GET(ngpu_exp_runlag);
+  const RegisterFile& regs = *register_file_;
+  ++rl_draws_;
+  if (REXCVAR_GET(ngpu_exp_kick_throttle)) fable2::p2::g_rl_throttle.store(REXCVAR_GET(ngpu_exp_kick_throttle), std::memory_order_relaxed);   // [pacing] the swap publishes the shipped setting
+  {   // [rl] the kick-to-record age of the batch this draw comes from, and the batches queued behind it
+    const uint32_t age = uint32_t(std::min<uint64_t>(fable2::p2::g_rl_rec_age_us.load(std::memory_order_relaxed), 0xFFFFFFFFull));
+    const uint32_t pend = uint32_t(std::min<uint64_t>(fable2::p2::g_rl_pending.load(std::memory_order_relaxed), 0xFFFFFFFFull));
+    rl_age_min_ = std::min(rl_age_min_, age); rl_age_max_ = std::max(rl_age_max_, age); rl_age_sum_ += age; rl_pend_max_ = std::max(rl_pend_max_, pend);
+  }
+  if (bits & 1) {
+    const uint32_t w = write_ptr_index_.load(std::memory_order_relaxed), r = cur_read_index_.load(std::memory_order_relaxed), n = primary_buffer_size_ >> 2;
+    if (w != 0xBAADF00Du && n) { const uint32_t lag = w >= r ? w - r : w + n - r; rl_lag_min_ = std::min(rl_lag_min_, lag); rl_lag_max_ = std::max(rl_lag_max_, lag); rl_lag_sum_ += lag; }
+  }
+  if (!(bits & 6)) return;
+  uint32_t species = 0;
+  for (const auto& b : pixel_shader->GetTextureBindingsAfterTranslation()) {
+    xenos::xe_gpu_texture_fetch_t fetch;
+    std::memcpy(&fetch, &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + b.fetch_constant * 6], sizeof(fetch));
+    if (uint32_t(fetch.format) == 3u && fetch.size_2d.width == 255u) { species = uint32_t(fetch.base_address) << 12; break; }
+  }
+  auto fnv = [](const uint8_t* q, size_t n) { uint64_t h = 1469598103934665603ull; for (size_t i = 0; i < n; ++i) { h ^= q[i]; h *= 1099511628211ull; } return h; };
+  bool hashable = false;
+  const bool refresh = (bits & 4) && species && ArSlotArmed(species, REXCVAR_GET(ngpu_exp_runlag_mask));
+  for (const auto& vb : vertex_shader->vertex_bindings()) {
+    const xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(vb.fetch_constant);
+    const uint32_t vaddr = uint32_t(vf.address) << 2, vsize = std::min<uint32_t>(uint32_t(vf.size) << 2, 65536u);
+    const uint8_t* vp = (memory_ && vsize) ? memory_->TranslatePhysical(vaddr) : nullptr;
+    if (!vp) continue;
+    if (refresh) {   // [rl] TREATMENT: forget the GPU copy of this range and upload the guest bytes again for this draw
+      shared_memory_->MemoryInvalidationCallback(vaddr, uint32_t(vf.size) << 2, true);
+      InvalidateVertexBufferResidency(vb.fetch_constant); ++rl_refreshed_;
+    }
+    if (bits & 2) {
+      hashable = true;
+      static uint32_t s_logged = 0;   // the first draws' vertex streams, so the size of the per-card record is on the record
+      if (s_logged < 24) { ++s_logged; REXLOG_INFO("[rl] billboard draw species {:08X}: vertex binding fetch {} at {:08X} size {} B (stride {} words); hashed {} B", species, vb.fetch_constant, vaddr, uint32_t(vf.size) << 2, vb.stride_words, vsize); }
+      const uint64_t h = fnv(vp, vsize);
+      fable2::p2::RlWatch(vaddr, vsize);
+      RlKickCompare(vaddr, vsize, species, h, vp);
+      bool seen = false; for (const auto& r0 : rl_ranges_) if (r0.addr == vaddr) { seen = true; break; }
+      if (!seen && rl_ranges_.size() < 512) { RlRange rr{vaddr, vsize, species, h, {}}; std::memcpy(rr.head, vp, std::min<uint32_t>(32u, vsize)); rl_ranges_.push_back(rr); rl_bytes_ += vsize; }
+    }
+  }
+  if (bits & 2) {   // the VS lookup tables' pages (tf16 blend, tf17 haze)
+    for (const auto& b : vertex_shader->GetTextureBindingsAfterTranslation()) {
+      xenos::xe_gpu_texture_fetch_t fetch;
+      std::memcpy(&fetch, &regs[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + b.fetch_constant * 6], sizeof(fetch));
+      const uint32_t taddr = uint32_t(fetch.base_address) << 12; const uint8_t* tp = memory_ ? memory_->TranslatePhysical(taddr) : nullptr;
+      if (!tp) continue;
+      const uint64_t th = fnv(tp, 4096u);
+      fable2::p2::RlWatch(taddr, 4096u);
+      RlKickCompare(taddr, 4096u, species | 1u, th, tp);
+      bool seen = false; for (const auto& r0 : rl_ranges_) if (r0.addr == taddr) { seen = true; break; }
+      if (!seen && rl_ranges_.size() < 512) { RlRange rr{taddr, 4096u, species | 1u, th, {}}; std::memcpy(rr.head, tp, 32u); rl_ranges_.push_back(rr); }
+    }
+  }
+  if (hashable) ++rl_hashable_;
+}
+
+void D3D12CommandProcessor::RunLagSwap() {
+  // [rl] at the swap: re-hash the frame's ranges, write the R line, reset.
+  const uint32_t w = write_ptr_index_.load(std::memory_order_relaxed), r = cur_read_index_.load(std::memory_order_relaxed), n = primary_buffer_size_ >> 2;
+  const uint32_t lag_swap = (w != 0xBAADF00Du && n) ? (w >= r ? w - r : w + n - r) : 0u;
+  const uint32_t ring_dw = n ? (r >= rl_last_swap_read_ ? r - rl_last_swap_read_ : r + n - rl_last_swap_read_) : 0u; rl_last_swap_read_ = r;
+  uint32_t changed = 0, changed_vb = 0; char sp[160]; int spn = 0; sp[0] = 0;
+  for (const auto& rr : rl_ranges_) {
+    const uint8_t* p = memory_ ? memory_->TranslatePhysical(rr.addr) : nullptr;
+    if (!p) continue;
+    uint64_t h = 1469598103934665603ull; for (uint32_t i = 0; i < rr.size; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    if (h != rr.hash) {
+      ++changed; if (!(rr.species & 1u)) ++changed_vb; if (spn < 120) spn += std::snprintf(sp + spn, sizeof(sp) - spn, " %08X%s", rr.species & ~1u, (rr.species & 1u) ? "t" : "v");
+      if (ar_file_ && rl_changed_logged_ < 200) {   // [rl] the bytes: what the draw read (old) and what is there at the swap (new)
+        ++rl_changed_logged_; char o[80], nw[80]; int a = 0, b = 0;
+        for (uint32_t i = 0; i < std::min<uint32_t>(32u, rr.size); ++i) { a += std::snprintf(o + a, sizeof(o) - a, "%02X", rr.head[i]); b += std::snprintf(nw + b, sizeof(nw) - b, "%02X", p[i]); }
+        std::fprintf(ar_file_, "RC f%u sp %08X%s addr %08X size %u old %s new %s\n", ar_frame_, rr.species & ~1u, (rr.species & 1u) ? "t" : "v", rr.addr, rr.size, o, nw);
+      }
+    }
+  }
+  const uint64_t tc_c = rex::graphics::g_tc_created, tc_e = rex::graphics::g_tc_evicted, tc_r = rex::graphics::g_tc_recreated;   // [rl] texture cache churn this frame
+  const uint32_t d_c = uint32_t(tc_c - rl_tc_created_), d_e = uint32_t(tc_e - rl_tc_evicted_), d_r = uint32_t(tc_r - rl_tc_recreated_);
+  rl_tc_created_ = tc_c; rl_tc_evicted_ = tc_e; rl_tc_recreated_ = tc_r;
+  if (ar_file_) std::fprintf(ar_file_, "R f%u lag_swap %u lag_min %u lag_max %u lag_mean %u age_min %u age_max %u age_mean %u pend_max %u kickdiff %u kickknown %u tex_created %u tex_evicted %u tex_recreated %u draws %u ring_dw %u ranges %u bytes %llu changed %u changed_vb %u hashable_draws %u refreshed %u ps31 %u sp%s\n",
+                             ar_frame_, lag_swap, rl_draws_ ? rl_lag_min_ : 0u, rl_lag_max_, rl_draws_ ? uint32_t(rl_lag_sum_ / rl_draws_) : 0u,
+                             rl_draws_ ? rl_age_min_ : 0u, rl_age_max_, rl_draws_ ? uint32_t(rl_age_sum_ / rl_draws_) : 0u, rl_pend_max_, rl_kickdiff_, rl_kick_known_, d_c, d_e, d_r, rl_draws_, ring_dw,
+                             uint32_t(rl_ranges_.size()), (unsigned long long)rl_bytes_, changed, changed_vb, rl_hashable_, rl_refreshed_, rl_ps31_, sp);
+  static uint32_t s_n = 0; if ((++s_n % 300) == 0) REXLOG_INFO("[rl] f{} kick age at billboard draws min {} max {} mean {} us, pending max {}; kick-hash known {} differ {}; ranges {} changed {}; refreshed {}", ar_frame_, rl_draws_ ? rl_age_min_ : 0u, rl_age_max_, rl_draws_ ? uint32_t(rl_age_sum_ / rl_draws_) : 0u, rl_pend_max_, rl_kick_known_, rl_kickdiff_, rl_ranges_.size(), changed, rl_refreshed_);
+  rl_ranges_.clear(); rl_lag_min_ = ~0u; rl_lag_max_ = 0; rl_lag_sum_ = 0; rl_bytes_ = 0; rl_draws_ = rl_hashable_ = rl_refreshed_ = 0;
+  rl_age_min_ = ~0u; rl_age_max_ = 0; rl_age_sum_ = 0; rl_pend_max_ = 0; rl_kickdiff_ = rl_kick_known_ = 0; rl_ps31_ = 0;
+}
+
+void D3D12CommandProcessor::ArSwap() {
+  if (REXCVAR_GET(ngpu_exp_runlag)) RunLagSwap();   // [rl]
+  if ((REXCVAR_GET(ngpu_exp_atlas_readback) & 64) && REXCVAR_GET(ngpu_exp_atlas_readback_probe_mode) == 3 && !ar_probe_pso_ &&
+      !ar_probe_failed_ && ar_frame_ >= 2) {   // [ar] mode 3: the probe's compile + pipeline at the 3rd swap (the menu), not at the reveal
+    if (ArEnsure() && ArProbeEnsure()) REXLOG_INFO("[ar] probe mode 3: pipeline created at swap {} (before any world load)", ar_frame_);
+  }
+  if (ar_file_) {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+    localtime_s(&tm, &tt);
+    const int ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+    std::fprintf(ar_file_, "# swap after frame %u (%u draws) at %02d:%02d:%02d.%03d\n", ar_frame_, g_frame_draws_snapshot,
+                 tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
+    if ((ar_frame_ & 63u) == 0u) std::fflush(ar_file_);
+  }
+  ++ar_frame_;
+  ar_seen_.clear();
+  ar_seen_v_.clear();
 }
 
 void D3D12CommandProcessor::DumpResolveLine(uint32_t address, uint32_t length) {
@@ -5842,6 +6686,13 @@ void D3D12CommandProcessor::DrawDumpLine(const D3D12Shader* vertex_shader,
   }
   if ((bmu[0] >> 8) & 1ull) put(" c8 %.5g,%.5g,%.4g,%.4g", c[32], c[33], c[34], c[35]);
   put(" vconst %016llX", (unsigned long long)bmu[0]);
+  {   // [dd] the PIXEL-side constants c0-c7 (light, ambient, tint): the one CPU-side input the dump never held (16:15)
+    const auto& bmp0 = pixel_shader->constant_register_map().float_bitmap;
+    const float* cp0 = reinterpret_cast<const float*>(&regs[XE_GPU_REG_SHADER_CONSTANT_256_X]);
+    put(" pconst %016llX", (unsigned long long)bmp0[0]);
+    for (uint32_t k = 0; k < 64; ++k)   // every pixel constant the shader USES among c0-c63 (the species shader: c0, c8, c10-14, c23, c27-28, c49)
+      if ((bmp0[0] >> k) & 1ull) put(" p%u %.4g,%.4g,%.4g,%.4g", k, cp0[k * 4], cp0[k * 4 + 1], cp0[k * 4 + 2], cp0[k * 4 + 3]);
+  }
   if (REXCVAR_GET(gpu_draw_dump_hashes)) {   // [dd] the draw's inputs, hashed (DD_4-6: this alone halved the frame rate)
     auto fnv = [](uint64_t h, const uint8_t* q, size_t n) { for (size_t i = 0; i < n; ++i) { h ^= q[i]; h *= 1099511628211ull; } return h; };
     uint32_t nvb = 0;
@@ -5994,7 +6845,7 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
   if (!cbuffer_binding_system_.up_to_date) {
     uint8_t* system_constants = constant_buffer_pool_->Request(
         frame_current_, sizeof(system_constants_), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT,
-        nullptr, nullptr, &cbuffer_binding_system_.address);
+        &ar_cb_sys_buffer_, &ar_cb_sys_offset_, &cbuffer_binding_system_.address);
     if (system_constants == nullptr) {
       return false;
     }
@@ -6009,8 +6860,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
     // empty buffer.
     uint8_t* float_constants = constant_buffer_pool_->Request(
         frame_current_, sizeof(float) * 4 * std::max(float_constant_count_vertex, uint32_t(1)),
-        D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, nullptr, nullptr,
+        D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, &ar_cb_vs_buffer_, &ar_cb_vs_offset_,
         &cbuffer_binding_float_vertex_.address);
+    ar_cb_vs_bytes_ = uint32_t(sizeof(float) * 4 * float_constant_count_vertex);   // [ar] K
     if (float_constants == nullptr) {
       return false;
     }
@@ -6530,8 +7382,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
   if (!cbuffer_binding_float_pixel_.up_to_date) {
     uint8_t* float_constants = constant_buffer_pool_->Request(
         frame_current_, sizeof(float) * 4 * std::max(float_constant_count_pixel, uint32_t(1)),
-        D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, nullptr, nullptr,
+        D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, &ar_cb_ps_buffer_, &ar_cb_ps_offset_,
         &cbuffer_binding_float_pixel_.address);
+    ar_cb_ps_bytes_ = uint32_t(sizeof(float) * 4 * float_constant_count_pixel);   // [ar] K
     if (float_constants == nullptr) {
       return false;
     }

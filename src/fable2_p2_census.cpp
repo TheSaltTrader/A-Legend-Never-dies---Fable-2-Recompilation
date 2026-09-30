@@ -13,6 +13,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <chrono>
 #include <unordered_map>
 #include <vector>
 
@@ -23,6 +24,19 @@
 #include "fable2_native_gs.h"     // [gs] the game's own graphics system
 
 namespace fable2::p2 {
+// [rl] kick-to-record age, per-batch kick-time hashes of the recorder's watched guest ranges, and the kick throttle.
+// The counters and the watch list are DEFINED in command_processor.cpp (that module is also built as ngpu_backend.dll
+// without this file); this exe-only file writes them.
+extern std::atomic<uint64_t> g_rl_kick_seq, g_rl_rec_seq, g_rl_rec_age_us, g_rl_pending;
+extern std::atomic<int32_t> g_rl_throttle;
+extern std::mutex g_rl_watch_mu;
+extern std::vector<std::pair<uint32_t, uint32_t>> g_rl_watch;
+extern std::vector<std::pair<uint32_t, uint64_t>> g_rl_cur_kick_hashes;
+std::atomic<uint64_t> g_rl_throttle_waits{0}, g_rl_throttle_timeouts{0}, g_rl_throttle_us{0}, g_rl_age_max_us{0}, g_rl_age_sum_us{0}, g_rl_age_n{0}, g_rl_pending_max{0};
+namespace {
+uint64_t RlQpcUs() { static LARGE_INTEGER f{}; if (!f.QuadPart) QueryPerformanceFrequency(&f); LARGE_INTEGER c; QueryPerformanceCounter(&c); return uint64_t(c.QuadPart) * 1000000ull / uint64_t(f.QuadPart); }
+uint64_t RlFnv(const uint8_t* q, size_t n) { uint64_t h = 1469598103934665603ull; for (size_t i = 0; i < n; ++i) { h ^= q[i]; h *= 1099511628211ull; } return h; }
+}  // namespace
 namespace {
 
 struct Rec {
@@ -134,7 +148,7 @@ std::mutex g_fe_kick_mu;
 bool g_p3rec = false;
 std::mutex g_rec_mu;
 std::condition_variable g_rec_cv;
-struct RecBatch { std::vector<uint8_t> bytes; uint32_t rptr_end; };
+struct RecBatch { std::vector<uint8_t> bytes; uint32_t rptr_end; uint64_t t_kick = 0; uint32_t seq = 0; std::vector<std::pair<uint32_t, uint64_t>> kick_hashes; };   // [rl] + kick time, sequence, kick-time hashes
 std::deque<RecBatch> g_rec_queue;
 std::atomic<uint64_t> g_rec_draws_done{0}, g_rec_batches{0}, g_rec_bytes{0}, g_rec_waits{0}, g_rec_wait_timeouts{0};
 std::atomic<uint64_t> g_rec_wait_us{0}, g_br_draws_seen{0};
@@ -835,6 +849,15 @@ void RecorderThread() {
       g_rec_cv.wait(lock, [] { return !g_rec_queue.empty(); });
       batch = std::move(g_rec_queue.front());
       g_rec_queue.pop_front();
+      g_rl_pending.store(g_rec_queue.size(), std::memory_order_relaxed);
+    }
+    {   // [rl] this batch's kick-to-record age and its kick-time hashes, for the draws recorded from it
+      const uint64_t age = batch.t_kick ? RlQpcUs() - batch.t_kick : 0;
+      g_rl_rec_age_us.store(age, std::memory_order_relaxed); g_rl_rec_seq.store(batch.seq, std::memory_order_relaxed);
+      { std::lock_guard<std::mutex> lk(g_rl_watch_mu); g_rl_cur_kick_hashes = std::move(batch.kick_hashes); }   // [rl] locked against RlKickHash on the draw thread
+      uint64_t m = g_rl_age_max_us.load(std::memory_order_relaxed); while (age > m && !g_rl_age_max_us.compare_exchange_weak(m, age)) {}
+      g_rl_age_sum_us.fetch_add(age, std::memory_order_relaxed); g_rl_age_n.fetch_add(1, std::memory_order_relaxed);
+      const uint64_t pend = g_rl_pending.load(std::memory_order_relaxed); uint64_t pm = g_rl_pending_max.load(std::memory_order_relaxed); while (pend > pm && !g_rl_pending_max.compare_exchange_weak(pm, pend)) {}
     }
     std::lock_guard<std::mutex> kick_lock(g_fe_kick_mu);   // the decoder's state is the recorder's alone in this mode
     // BUSY SHARE (the readout that keeps working at the frame cap, where fps stops moving): time spent decoding and
@@ -862,6 +885,11 @@ void RecorderThread() {
     if (b1.QuadPart - win0.QuadPart >= 5 * qf.QuadPart) {
       REXLOG_INFO("[p3rec] recorder busy {:.1f}% of the last {:.1f} s", 100.0 * double(busy) / double(b1.QuadPart - win0.QuadPart),
                   double(b1.QuadPart - win0.QuadPart) / double(qf.QuadPart));
+      {   // [rl] kick-to-record age over the window
+        const uint64_t n = g_rl_age_n.exchange(0), s = g_rl_age_sum_us.exchange(0), mx = g_rl_age_max_us.exchange(0), pm = g_rl_pending_max.exchange(0);
+        REXLOG_INFO("[rl] kick age: mean {} us, max {} us over {} batches; pending max {}; throttle {} waits {} timeouts {} ms total (setting {})", n ? s / n : 0, mx, n, pm,
+                    g_rl_throttle_waits.load(), g_rl_throttle_timeouts.load(), g_rl_throttle_us.load() / 1000, g_rl_throttle.load());
+      }
       busy = 0;
       win0 = b1;
     }
@@ -932,9 +960,27 @@ void FeKick(uint32_t ring_ptr, uint32_t ring_bytes, uint32_t wptr) {
     if (!flat.empty()) {
       g_rec_batches.fetch_add(1, std::memory_order_relaxed);
       g_rec_bytes.fetch_add(flat.size(), std::memory_order_relaxed);
+      RecBatch rb; rb.bytes = std::move(flat); rb.rptr_end = g_fe_rptr; rb.seq = uint32_t(g_rl_kick_seq.fetch_add(1, std::memory_order_relaxed) + 1);
+      const int32_t thr = g_rl_throttle.load(std::memory_order_relaxed);
+      if (thr > 0) {   // [rl] TREATMENT: hold the game's kick until the recorder has at most thr-1 batches queued (bounded 100 ms)
+        const uint64_t t0 = RlQpcUs(); bool waited = false;
+        for (;;) {
+          size_t q; { std::lock_guard<std::mutex> lock(g_rec_mu); q = g_rec_queue.size(); }
+          if (q < size_t(thr)) break;
+          if (RlQpcUs() - t0 > 100000ull) { g_rl_throttle_timeouts.fetch_add(1, std::memory_order_relaxed); break; }
+          waited = true; std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+        if (waited) { g_rl_throttle_waits.fetch_add(1, std::memory_order_relaxed); g_rl_throttle_us.fetch_add(RlQpcUs() - t0, std::memory_order_relaxed); }
+      }
+      {   // [rl] kick-time hashes of the recorder's watched ranges: the bytes the game submitted with this kick
+        std::lock_guard<std::mutex> lk(g_rl_watch_mu);
+        rb.kick_hashes.reserve(g_rl_watch.size());
+        for (const auto& w : g_rl_watch) if (const uint8_t* p = ks->memory()->TranslatePhysical<const uint8_t*>(w.first)) rb.kick_hashes.push_back({w.first, RlFnv(p, w.second)});
+      }
+      rb.t_kick = RlQpcUs();
       {
         std::lock_guard<std::mutex> lock(g_rec_mu);
-        g_rec_queue.push_back(RecBatch{std::move(flat), g_fe_rptr});
+        g_rec_queue.push_back(std::move(rb));
       }
       g_rec_cv.notify_one();
     }

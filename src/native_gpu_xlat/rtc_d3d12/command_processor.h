@@ -206,6 +206,11 @@ class D3D12CommandProcessor : public CommandProcessor {
   // Returns a single temporary GPU-side buffer within a submission for tasks
   // like texture untiling and resolving.
   ID3D12Resource* RequestScratchGPUBuffer(uint32_t size, D3D12_RESOURCE_STATES state);
+  // [sentinel] a 4 MB upload buffer holding the sentinel texel pattern (created on first use); see
+  // ngpu_exp_atlas_sentinel. Returns null if it could not be created.
+  ID3D12Resource* SentinelBuffer(uint32_t pattern16 = 0x83E0);   // 0x83E0 = green, 0x801F = blue (k_1_5_5_5, guest order)
+  static constexpr uint64_t kSentinelBufferBytes = 4u << 20;
+  Microsoft::WRL::ComPtr<ID3D12Resource> sentinel_buffer_, sentinel_buffer_blue_;
   // This must be called when done with the scratch buffer, to notify the
   // command processor about the new state in case the buffer was transitioned
   // by its user.
@@ -811,6 +816,67 @@ class D3D12CommandProcessor : public CommandProcessor {
   bool rt_rebind_after_split_ = false;
   void NoteFreshResolve(uint32_t address, uint32_t length);
   // [dd] Per-draw dump diagnostic (gpu_draw_dump_frames): one line per draw.
+  // [ar] EXPERIMENT ngpu_exp_atlas_readback: GPU-side bytes of the impostor atlases, copied into a readback ring and
+  // landed (decoded + written to ngpu_exp_atlas_readback_file) once their submission has completed. 'A' = the scaled
+  // range right after the resolve's copy shader (what the resolve wrote); 'T' = the texture right before a billboard
+  // draw samples it (what the draw sees). Both read the same texels: guest (128..159, 96..103) of the 256 x 256 atlas,
+  // i.e. 96 x 24 host texels at 3x (A as 4,608 contiguous bytes of the scaled range, T as a texture box).
+  struct ArRecord {
+    uint64_t submission;
+    uint32_t frame;
+    char kind;
+    uint32_t base, length, slot, bytes, cols, rows, format, width, height, x0, y0, extra;
+    const void* texture;
+    // [ar] 'K' (bit 8): the draw's float constants - CPU register values at record time (packed in bitmap order,
+    // vertex then pixel) and the bitmaps; the GPU-side bytes are copied out of the constant buffer pool.
+    std::vector<float> cpu;
+    uint64_t vs_bm[4] = {}, ps_bm[4] = {};
+    uint32_t vs_count = 0, ps_count = 0;
+    uint64_t ps_hash = 0;
+    // [ar] 'S' (bit 32): the draw's SYSTEM constants (CPU copy at record time; the GPU bytes come from the pool), the
+    // pipeline modification keys the draw was recorded with, and the raw fetch constant of the pixel shader's t0.
+    std::vector<uint8_t> cpu_bytes;
+    uint64_t vs_mod = 0, ps_mod = 0;
+    uint32_t fetch_dw[6] = {};
+  };
+  static constexpr uint32_t kArSlotBytes = 8192, kArSlots = 512;
+  std::deque<ArRecord> ar_records_;
+  Microsoft::WRL::ComPtr<ID3D12Resource> ar_buffer_;
+  uint8_t* ar_mapped_ = nullptr;
+  std::FILE* ar_file_ = nullptr;
+  uint32_t ar_slot_next_ = 0, ar_frame_ = 0;
+  std::vector<const void*> ar_seen_;
+  bool ArEnsure();
+  int32_t ArSlot();
+  void ArLand();
+  void ArSwap();
+  void RunLagDraw(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader);   // [rl]
+  void RunLagSwap();   // [rl]
+  void RlKickCompare(uint32_t addr, uint32_t size, uint32_t species, uint64_t rec_hash, const uint8_t* p);   // [rl]
+  void AtlasReadbackDraw(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader);
+  void AtlasReadbackVertexTextures(const D3D12Shader* vertex_shader, uint32_t species_base);   // [ar] bit 4: 'V' records
+  void AtlasReadbackConstants(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader);   // [ar] bit 8: 'K'
+  void AtlasReadbackSystem(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader, uint64_t vs_mod,
+                           uint64_t ps_mod);   // [ar] bit 32: 'S'
+  // [ar] bit 64: 'P' - the SAMPLING PROBE. A one-thread compute dispatch, recorded right before the billboard draw,
+  // samples the atlas THROUGH THE DRAW'S OWN bindless descriptor index (the same shader-visible heap, table bound at
+  // the heap start exactly as the graphics root does) with a point sampler at the T box's first texel, and writes
+  // the RGBA it gets to a UAV buffer copied into the ring. The only instrument that reads the fetch's OUTPUT.
+  bool ArProbeEnsure();
+  void AtlasReadbackProbe(const D3D12Shader* pixel_shader);
+  Microsoft::WRL::ComPtr<ID3D12RootSignature> ar_probe_rs_;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState> ar_probe_pso_;
+  Microsoft::WRL::ComPtr<ID3D12Resource> ar_probe_uav_;
+  bool ar_probe_failed_ = false;
+  ID3D12Resource* ar_cb_sys_buffer_ = nullptr; size_t ar_cb_sys_offset_ = 0;
+  ID3D12Resource* ar_cb_vs_buffer_ = nullptr; size_t ar_cb_vs_offset_ = 0; uint32_t ar_cb_vs_bytes_ = 0;
+  ID3D12Resource* ar_cb_ps_buffer_ = nullptr; size_t ar_cb_ps_offset_ = 0; uint32_t ar_cb_ps_bytes_ = 0;
+  struct RlRange { uint32_t addr, size, species; uint64_t hash; uint8_t head[32]; };   // [rl]
+  std::vector<RlRange> rl_ranges_;
+  uint32_t rl_lag_min_ = ~0u, rl_lag_max_ = 0, rl_draws_ = 0, rl_hashable_ = 0, rl_refreshed_ = 0, rl_last_swap_read_ = 0;
+  uint64_t rl_lag_sum_ = 0, rl_bytes_ = 0, rl_age_sum_ = 0, rl_tc_created_ = 0, rl_tc_evicted_ = 0, rl_tc_recreated_ = 0;
+  uint32_t rl_age_min_ = ~0u, rl_age_max_ = 0, rl_pend_max_ = 0, rl_kickdiff_ = 0, rl_kick_known_ = 0, rl_kickdiff_logged_ = 0, rl_changed_logged_ = 0, rl_ps31_ = 0;
+  std::vector<std::pair<const void*, uint32_t>> ar_seen_v_;   // [ar] (lookup texture, species) pairs seen this frame
   std::FILE* dd_file_ = nullptr;
   uint32_t dd_frames_left_ = 0, dd_frame_ = 0, dd_draw_ = 0;
   void DrawDumpLine(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader,
@@ -824,6 +890,8 @@ class D3D12CommandProcessor : public CommandProcessor {
   void NoteTextureLoad(uint64_t guest_bytes);
   // [dd] a resolve, written into the open draw dump (no-op when none is open).
   void DumpResolveLine(uint32_t address, uint32_t length);
+  // [ar] the resolve-side read of a small scaled resolve that just dispatched (called by the render target cache).
+  void AtlasReadbackResolve(D3D12TextureCache& texture_cache, uint32_t address, uint32_t length);
   // [dd] descriptor bookkeeping into the open draw dump: 'D' a persistent texture SRV created at index for texture,
   // 'X' an index released; 'C' the per-draw descriptor-indices constant buffer written (its GPU address + values).
   void DumpDescriptorEvent(char kind, uint32_t index, const void* texture, uint32_t format, uint32_t swizzle,

@@ -49,6 +49,9 @@ bool& FLAGS_native_stencil_value_output_d3d12_intel_storage_() { static bool s =
 std::string& FLAGS_render_target_path_d3d12_storage_() { static std::string s = ::fable2::ngpu::xlat::PluginString("render_target_path_d3d12", ""); return s; }
 
 bool& FLAGS_native_stencil_value_output_storage_() { static bool s = ::fable2::ngpu::xlat::PluginBool("native_stencil_value_output", true); return s; }
+int32_t& FLAGS_ngpu_exp_atlas_sentinel_storage_();   // [sentinel] defined in command_processor.cpp: 0 off, 1 barriers only, 2 barriers + fill
+int32_t& FLAGS_ngpu_exp_atlas_readback_storage_();   // [ar] defined in command_processor.cpp
+extern uint64_t g_sentinel_fills;   // [sentinel] texture_cache.cpp, file scope
 
 namespace rex::graphics::ngpu_d3d12 {
 
@@ -1217,10 +1220,17 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
           uint32_t dump_rows;
           uint32_t dump_pitch;
           resolve_info.GetCopyEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
+          // [sentinel] mode 4: fill the span BEFORE the dump (a resolve that reads the EDRAM buffer before the dump
+          // lands shows the sentinel); mode 5: the same fill AFTER the dump (positive control: every canopy).
+          const bool sentinel_small = resolve_info.copy_dest_extent_length <= 0x20000;
+          if (REXCVAR_GET(ngpu_exp_atlas_sentinel) == 4 && sentinel_small)
+            SentinelFillEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
           if (!DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch)) {
             REXGPU_ERROR("D3D12RenderTargetCache: Failed to dump host render targets for resolve");
             return false;
           }
+          if (REXCVAR_GET(ngpu_exp_atlas_sentinel) == 5 && sentinel_small)
+            SentinelFillEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
         }
       }
 
@@ -1281,6 +1291,16 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
             }
           }
           if (draw_resolution_scaled) {
+            // [sentinel] EXPERIMENT ngpu_exp_atlas_sentinel: small destinations only (the impostor atlases: 128 KB
+            // base, 32/8/3 KB mips) - fill the scaled range with the sentinel before the resolve writes it.
+            // Mode 1 = the COPY_DEST / UAV transitions around NO copy (the barrier-only CONTROL: a clean leg there
+            // means the ordering alone closed it); mode 2 = the transitions around the green fill.
+            const int32_t sentinel_mode = REXCVAR_GET(ngpu_exp_atlas_sentinel);
+            if ((sentinel_mode == 1 || sentinel_mode == 2) && resolve_info.copy_dest_extent_length <= 0x20000) {
+              texture_cache.SentinelFillCurrentScaledResolveRange(
+                  sentinel_mode >= 2 ? command_processor_.SentinelBuffer() : nullptr,
+                  D3D12CommandProcessor::kSentinelBufferBytes);
+            }
             texture_cache.CreateCurrentScaledResolveRangeUintPow2UAV(
                 descriptor_dest.first, copy_shader_info.dest_bpe_log2);
             texture_cache.TransitionCurrentScaledResolveRange(
@@ -1309,6 +1329,40 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
           // Order the resolve with other work using the destination as a UAV.
           if (draw_resolution_scaled) {
             texture_cache.MarkCurrentScaledResolveRangeUAVWritesCommitNeeded();
+            // [ar] EXPERIMENT ngpu_exp_atlas_readback bit 1: read the atlas bytes the resolve just wrote (base level
+            // of the 128 KB impostor atlases only).
+            if ((REXCVAR_GET(ngpu_exp_atlas_readback) & 1) && resolve_info.copy_dest_extent_length == 0x20000)
+              command_processor_.AtlasReadbackResolve(texture_cache, resolve_info.copy_dest_extent_start,
+                                                      resolve_info.copy_dest_extent_length);
+            // [sentinel] mode 6: BLUE into the UNSCALED shared-memory copy of the destination range (the mirror path
+            // with a pattern instead of the 1x downscale; pages touched valid). A flash that turns blue read the
+            // unscaled GPU copy; one that stays magenta read something else (a CPU upload of guest memory, or another
+            // resource).
+            // Mode 7 separates the two things mode 6 does: TouchRange (pages marked valid, no upload from the CPU
+            // copy of guest memory) WITHOUT any fill. Clean in 7 too = the page validity is the lever; dirty in 7 =
+            // the blue content mattered.
+            // Mode 8 = only the shared-memory buffer's UAV-commit + COPY_DEST transition (a GPU drain point after
+            // every atlas resolve), no touch, no copy - isolates the barrier half of mode 6.
+            const int32_t sentinel_mode_u = REXCVAR_GET(ngpu_exp_atlas_sentinel);
+            if ((sentinel_mode_u == 6 || sentinel_mode_u == 7 || sentinel_mode_u == 8) && resolve_info.copy_dest_extent_length <= 0x20000) {
+              ID3D12Resource* blue = sentinel_mode_u == 6 ? command_processor_.SentinelBuffer(0x801F) : nullptr;
+              if (blue || sentinel_mode_u == 8) {
+                shared_memory.UseAsCopyDestination();
+                command_processor_.SubmitBarriers();
+              }
+              if (sentinel_mode_u != 8) shared_memory.TouchRange(resolve_info.copy_dest_extent_start, resolve_info.copy_dest_extent_length);
+              if (blue) {
+                command_list.D3DCopyBufferRegion(shared_memory.GetBuffer(), resolve_info.copy_dest_extent_start, blue, 0,
+                                                 std::min<uint64_t>(resolve_info.copy_dest_extent_length, D3D12CommandProcessor::kSentinelBufferBytes));
+              }
+              ++::g_sentinel_fills;
+            }
+            // [sentinel] mode 3 = the POSITIVE CONTROL: the same fill AFTER the resolve, so the atlas the billboards
+            // sample must show the fill colour on every canopy - proves the fill reaches the bytes the load reads.
+            if (REXCVAR_GET(ngpu_exp_atlas_sentinel) == 3 && resolve_info.copy_dest_extent_length <= 0x20000) {
+              texture_cache.SentinelFillCurrentScaledResolveRange(command_processor_.SentinelBuffer(),
+                                                                  D3D12CommandProcessor::kSentinelBufferBytes);
+            }
           } else {
             shared_memory.MarkUAVWritesCommitNeeded();
           }
@@ -1718,6 +1772,26 @@ bool D3D12RenderTargetCache::IsGammaFormatHostStorageSeparate() const {
 
 void D3D12RenderTargetCache::RequestPixelShaderInterlockBarrier() {
   CommitEdramBufferUAVWrites();
+}
+
+void D3D12RenderTargetCache::SentinelFillEdramTileSpan(uint32_t base, uint32_t row_length, uint32_t rows,
+                                                        uint32_t pitch) {
+  ID3D12Resource* src = command_processor_.SentinelBuffer();
+  if (!src || !rows || !row_length) return;
+  const uint64_t tile_bytes = uint64_t(xenos::kEdramSizeBytes / xenos::kEdramTileCount) *
+                              (draw_resolution_scale_x() * draw_resolution_scale_y());
+  CommitEdramBufferUAVWrites();
+  TransitionEdramBuffer(D3D12_RESOURCE_STATE_COPY_DEST);
+  command_processor_.SubmitBarriers();
+  DeferredCommandList& cl = command_processor_.GetDeferredCommandList();
+  for (uint32_t r = 0; r < rows; ++r) {
+    const uint64_t offset = (uint64_t(base) + uint64_t(r) * pitch) * tile_bytes;
+    const uint64_t length = std::min<uint64_t>(uint64_t(row_length) * tile_bytes, D3D12CommandProcessor::kSentinelBufferBytes);
+    if (offset + length > uint64_t(xenos::kEdramSizeBytes) * (draw_resolution_scale_x() * draw_resolution_scale_y())) break;
+    cl.D3DCopyBufferRegion(edram_buffer_, offset, src, 0, length);
+  }
+  TransitionEdramBuffer(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  ++::g_sentinel_fills;
 }
 
 void D3D12RenderTargetCache::TransitionEdramBuffer(D3D12_RESOURCE_STATES new_state) {
@@ -5582,7 +5656,15 @@ bool D3D12RenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInfo
 
   // Dedicated direct resolve dispatches are staged behind the same preflight;
   // keep using the existing dump path until source-image direct shaders land.
-  return DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch);
+  // [sentinel] modes 4/5 live HERE too: this is the dump the atlases actually take (the caller's second dump is
+  // skipped when this returns true). Mode 4 = fill the EDRAM span BEFORE the dump; mode 5 = AFTER (positive control).
+  const bool sentinel_small = resolve_info.copy_dest_extent_length <= 0x20000;
+  if (REXCVAR_GET(ngpu_exp_atlas_sentinel) == 4 && sentinel_small)
+    SentinelFillEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
+  const bool dumped = DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch);
+  if (dumped && REXCVAR_GET(ngpu_exp_atlas_sentinel) == 5 && sentinel_small)
+    SentinelFillEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
+  return dumped;
 }
 
 bool D3D12RenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,

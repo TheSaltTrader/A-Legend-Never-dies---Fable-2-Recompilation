@@ -106,6 +106,9 @@ bool& FLAGS_scaled_resolve_uav_barrier_storage_() { static bool s = ::fable2::ng
 uint64_t g_scaled_uav_barriers = 0;   // barriers emitted, reported on the [gpu] fence line (GPU thread only)
 uint64_t g_scaled_window_switches = 0;   // [scaled windows] MakeScaledResolveRangeCurrent changed a gigabyte's current 2 GB buffer (fence line)
 uint64_t g_scaled_window_buffers = 0;    // [scaled windows] 2 GB reserved buffers created so far (fence line)
+uint64_t g_sentinel_fills = 0;           // [sentinel] fills or barrier-only passes, reported on the fence line
+uint64_t g_scaled_tr[6] = {};            // [scaled transitions] emitted/dropped(equal state) x {->UAV, ->SRV, ->other}, fence line
+int32_t& FLAGS_ngpu_exp_atlas_sentinel_storage_();   // [sentinel] command_processor.cpp
 namespace rex::graphics::ngpu_d3d12 {
 // [texpack] Same-binary control (mirrors NG2's NG2_TEXPACK_FULLCLEAR): FABLE2_TEXPACK_FULLCLEAR=1 takes the pre-1.3.2
 // full ClearCaches on a pack/dump switch - known to flash - so a flash counter can be validated in the very build it
@@ -2648,8 +2651,176 @@ void D3D12TextureCache::TransitionCurrentScaledResolveRange(D3D12_RESOURCE_STATE
     buffer.ClearUAVBarrierPending();
     ++::g_scaled_uav_barriers;
   }
-  command_processor_.PushTransitionBarrier(buffer.resource(), buffer.SetResourceState(new_state),
-                                           new_state);
+  const D3D12_RESOURCE_STATES old_state = buffer.SetResourceState(new_state);
+  {   // [scaled transitions] is a barrier actually emitted here? PushTransitionBarrier drops equal states.
+    const int dir = new_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ? 0
+                  : new_state == D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE ? 1 : 2;
+    ++::g_scaled_tr[(old_state == new_state ? 3 : 0) + dir];
+  }
+  command_processor_.PushTransitionBarrier(buffer.resource(), old_state, new_state);
+}
+
+void D3D12TextureCache::SentinelFillCurrentScaledResolveRange(ID3D12Resource* source, uint64_t source_capacity) {
+  assert_true(IsDrawResolutionScaled());
+  // source == nullptr: the barrier-only control - the same two transitions around nothing.
+  size_t buffer_index = GetCurrentScaledResolveBufferIndex();
+  ScaledResolveVirtualBuffer& buffer = GetCurrentScaledResolveBuffer();
+  const uint64_t offset = scaled_resolve_current_range_start_scaled_ - (uint64_t(buffer_index) << 30);
+  const uint64_t length = std::min<uint64_t>(scaled_resolve_current_range_length_scaled_, source_capacity);
+  TransitionCurrentScaledResolveRange(D3D12_RESOURCE_STATE_COPY_DEST);
+  command_processor_.SubmitBarriers();
+  if (source && length) command_processor_.GetDeferredCommandList().D3DCopyBufferRegion(buffer.resource(), offset, source, 0, length);
+  TransitionCurrentScaledResolveRange(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  ++::g_sentinel_fills;
+}
+
+void D3D12TextureCache::ReadbackCurrentScaledResolveRange(ID3D12Resource* dest, uint64_t dest_offset,
+                                                          uint64_t range_offset, uint64_t bytes) {
+  assert_true(IsDrawResolutionScaled());
+  if (!dest || !bytes) return;
+  size_t buffer_index = GetCurrentScaledResolveBufferIndex();
+  ScaledResolveVirtualBuffer& buffer = GetCurrentScaledResolveBuffer();
+  const uint64_t offset = scaled_resolve_current_range_start_scaled_ - (uint64_t(buffer_index) << 30);
+  if (range_offset + bytes > scaled_resolve_current_range_length_scaled_) return;
+  TransitionCurrentScaledResolveRange(D3D12_RESOURCE_STATE_COPY_SOURCE);
+  command_processor_.SubmitBarriers();
+  command_processor_.GetDeferredCommandList().D3DCopyBufferRegion(dest, dest_offset, buffer.resource(),
+                                                                  offset + range_offset, bytes);
+  TransitionCurrentScaledResolveRange(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+}
+
+bool D3D12TextureCache::ArCopyBindingTexture(uint32_t fetch_constant, uint32_t mip, ID3D12Resource* dest,
+                                             uint64_t dest_offset, ArTexInfo& info) {
+  if (!dest || fetch_constant >= 32) return false;
+  Texture* bound = ArBindingTexture(fetch_constant);
+  if (!bound) return false;
+  D3D12Texture& texture = *static_cast<D3D12Texture*>(bound);
+  ID3D12Resource* resource = texture.resource();
+  if (!resource) return false;
+  const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+  if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || mip >= desc.MipLevels) return false;
+  uint32_t bpp = 0;
+  switch (desc.Format) {
+    case DXGI_FORMAT_B5G5R5A1_UNORM: case DXGI_FORMAT_B5G6R5_UNORM: case DXGI_FORMAT_B4G4R4A4_UNORM:
+    case DXGI_FORMAT_R16_UNORM: case DXGI_FORMAT_R16_FLOAT: case DXGI_FORMAT_R8G8_UNORM: bpp = 2; break;
+    case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_R10G10B10A2_UNORM: case DXGI_FORMAT_R16G16_UNORM: case DXGI_FORMAT_R32_FLOAT: bpp = 4; break;
+    case DXGI_FORMAT_R16G16B16A16_UNORM: case DXGI_FORMAT_R16G16B16A16_FLOAT: bpp = 8; break;
+    default: return false;
+  }
+  const uint32_t w = std::max<uint32_t>(1u, uint32_t(desc.Width) >> mip);
+  const uint32_t h = std::max<uint32_t>(1u, uint32_t(desc.Height) >> mip);
+  // the same texels the resolve-side read takes: guest texels (128..159, 96..103) of a 256 x 256 atlas at the draw
+  // scale = the box (w/2, 3h/8) .. +(w/8, h/32): 96 x 24 at 3x, 192 B rows in a 256 B pitch
+  const uint32_t x0 = w / 2u, y0 = h * 3u / 8u;
+  const uint32_t cols = std::min<uint32_t>(w / 8u, 256u / bpp), rows = std::min<uint32_t>(h / 32u, 32u);
+  if (!cols || !rows || x0 + cols > w || y0 + rows > h) return false;
+  const D3D12_RESOURCE_STATES old_state = texture.SetResourceState(D3D12_RESOURCE_STATE_COPY_SOURCE);
+  command_processor_.PushTransitionBarrier(resource, old_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  command_processor_.SubmitBarriers();
+  D3D12_TEXTURE_COPY_LOCATION src = {};
+  src.pResource = resource;
+  src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  src.SubresourceIndex = mip;
+  D3D12_TEXTURE_COPY_LOCATION dst = {};
+  dst.pResource = dest;
+  dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  dst.PlacedFootprint.Offset = dest_offset;
+  dst.PlacedFootprint.Footprint.Format = desc.Format;
+  dst.PlacedFootprint.Footprint.Width = cols;
+  dst.PlacedFootprint.Footprint.Height = rows;
+  dst.PlacedFootprint.Footprint.Depth = 1;
+  dst.PlacedFootprint.Footprint.RowPitch = 256;
+  D3D12_BOX box = {x0, y0, 0u, x0 + cols, y0 + rows, 1u};
+  command_processor_.GetDeferredCommandList().D3DCopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+  texture.SetResourceState(old_state);
+  command_processor_.PushTransitionBarrier(resource, D3D12_RESOURCE_STATE_COPY_SOURCE, old_state);
+  info.texture = bound;
+  info.format = uint32_t(desc.Format);
+  info.width = w; info.height = h; info.x0 = x0; info.y0 = y0; info.cols = cols; info.rows = rows;
+  info.bpp = bpp; info.mip = mip; info.scaled = texture.key().scaled_resolve != 0;
+  return true;
+}
+
+bool D3D12TextureCache::ArBindingTextureSize(uint32_t fetch_constant, uint32_t& width, uint32_t& height) {
+  Texture* bound = ArBindingTexture(fetch_constant);
+  if (!bound) return false;
+  ID3D12Resource* resource = static_cast<D3D12Texture*>(bound)->resource();
+  if (!resource) return false;
+  const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+  width = uint32_t(desc.Width); height = uint32_t(desc.Height);
+  return true;
+}
+
+bool D3D12TextureCache::ArCopyBindingTextureBox(uint32_t fetch_constant, uint32_t mip, uint32_t x0, uint32_t y0,
+                                                uint32_t cols, uint32_t rows, ID3D12Resource* dest,
+                                                uint64_t dest_offset, uint32_t slot_bytes, ArTexInfo& info) {
+  if (!dest) return false;
+  Texture* bound = ArBindingTexture(fetch_constant);
+  if (!bound) return false;
+  D3D12Texture& texture = *static_cast<D3D12Texture*>(bound);
+  ID3D12Resource* resource = texture.resource();
+  if (!resource) return false;
+  const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+  if ((desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE1D) ||
+      mip >= desc.MipLevels) return false;
+  uint32_t bpp = 0;
+  DXGI_FORMAT footprint_format = desc.Format;   // a TYPELESS resource needs a typed footprint of the same family
+  switch (desc.Format) {
+    case DXGI_FORMAT_R8_TYPELESS: footprint_format = DXGI_FORMAT_R8_UNORM; bpp = 1; break;
+    case DXGI_FORMAT_R8G8_TYPELESS: footprint_format = DXGI_FORMAT_R8G8_UNORM; bpp = 2; break;
+    case DXGI_FORMAT_R16_TYPELESS: footprint_format = DXGI_FORMAT_R16_UNORM; bpp = 2; break;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS: footprint_format = DXGI_FORMAT_R8G8B8A8_UNORM; bpp = 4; break;
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS: footprint_format = DXGI_FORMAT_B8G8R8A8_UNORM; bpp = 4; break;
+    case DXGI_FORMAT_R16G16_TYPELESS: footprint_format = DXGI_FORMAT_R16G16_UNORM; bpp = 4; break;
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS: footprint_format = DXGI_FORMAT_R10G10B10A2_UNORM; bpp = 4; break;
+    case DXGI_FORMAT_R32_TYPELESS: footprint_format = DXGI_FORMAT_R32_FLOAT; bpp = 4; break;
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS: footprint_format = DXGI_FORMAT_R16G16B16A16_UNORM; bpp = 8; break;
+    case DXGI_FORMAT_R32G32_TYPELESS: footprint_format = DXGI_FORMAT_R32G32_FLOAT; bpp = 8; break;
+    case DXGI_FORMAT_R32G32B32A32_TYPELESS: footprint_format = DXGI_FORMAT_R32G32B32A32_FLOAT; bpp = 16; break;
+    case DXGI_FORMAT_R8_UNORM: case DXGI_FORMAT_A8_UNORM: bpp = 1; break;
+    case DXGI_FORMAT_B5G5R5A1_UNORM: case DXGI_FORMAT_B5G6R5_UNORM: case DXGI_FORMAT_B4G4R4A4_UNORM:
+    case DXGI_FORMAT_R16_UNORM: case DXGI_FORMAT_R16_FLOAT: case DXGI_FORMAT_R8G8_UNORM: bpp = 2; break;
+    case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_R10G10B10A2_UNORM: case DXGI_FORMAT_R16G16_UNORM: case DXGI_FORMAT_R16G16_FLOAT:
+    case DXGI_FORMAT_R32_FLOAT: case DXGI_FORMAT_R11G11B10_FLOAT: bpp = 4; break;
+    case DXGI_FORMAT_R16G16B16A16_UNORM: case DXGI_FORMAT_R16G16B16A16_FLOAT: case DXGI_FORMAT_R16G16B16A16_SNORM:
+    case DXGI_FORMAT_R32G32_FLOAT: bpp = 8; break;
+    case DXGI_FORMAT_R32G32B32A32_FLOAT: bpp = 16; break;
+    default: return false;
+  }
+  const uint32_t w = std::max<uint32_t>(1u, uint32_t(desc.Width) >> mip);
+  const uint32_t h = std::max<uint32_t>(1u, uint32_t(desc.Height) >> mip);
+  if (!cols) cols = w;
+  if (!rows) rows = h;
+  if (x0 + cols > w || y0 + rows > h) return false;
+  const uint32_t pitch = (cols * bpp + 255u) & ~255u;
+  if (!cols || !rows || uint64_t(pitch) * rows > slot_bytes) return false;
+  const D3D12_RESOURCE_STATES old_state = texture.SetResourceState(D3D12_RESOURCE_STATE_COPY_SOURCE);
+  command_processor_.PushTransitionBarrier(resource, old_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+  command_processor_.SubmitBarriers();
+  D3D12_TEXTURE_COPY_LOCATION src = {};
+  src.pResource = resource;
+  src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  src.SubresourceIndex = mip;
+  D3D12_TEXTURE_COPY_LOCATION dst = {};
+  dst.pResource = dest;
+  dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  dst.PlacedFootprint.Offset = dest_offset;
+  dst.PlacedFootprint.Footprint.Format = footprint_format;
+  dst.PlacedFootprint.Footprint.Width = cols;
+  dst.PlacedFootprint.Footprint.Height = rows;
+  dst.PlacedFootprint.Footprint.Depth = 1;
+  dst.PlacedFootprint.Footprint.RowPitch = pitch;
+  D3D12_BOX box = {x0, y0, 0u, x0 + cols, y0 + rows, 1u};
+  command_processor_.GetDeferredCommandList().D3DCopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+  texture.SetResourceState(old_state);
+  command_processor_.PushTransitionBarrier(resource, D3D12_RESOURCE_STATE_COPY_SOURCE, old_state);
+  info.texture = bound;
+  info.format = uint32_t(desc.Format);
+  info.width = w; info.height = h; info.x0 = x0; info.y0 = y0; info.cols = cols; info.rows = rows;
+  info.bpp = bpp; info.mip = mip; info.scaled = texture.key().scaled_resolve != 0;
+  return true;
 }
 
 void D3D12TextureCache::CreateCurrentScaledResolveRangeUintPow2SRV(
@@ -4445,6 +4616,12 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, 
                                          load_shader_info.source_bpe_log2)) {
         command_processor_.ReleaseScratchGPUBuffer(copy_buffer, copy_buffer_state);
         return false;
+      }
+      // [sentinel] mode 9: an explicit UAV barrier on the scaled buffer before the load's UAV->SRV transition (the
+      // morning's fix covers UAV->UAV between resolves; this is the edge the atlas load crosses).
+      if (FLAGS_ngpu_exp_atlas_sentinel_storage_() == 9) {
+        command_processor_.PushUAVBarrier(GetCurrentScaledResolveBuffer().resource());
+        ++::g_sentinel_fills;
       }
       TransitionCurrentScaledResolveRange(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
       assert_true(descriptor_write_index < descriptor_count);

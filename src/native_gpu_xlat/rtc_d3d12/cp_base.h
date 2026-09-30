@@ -273,6 +273,7 @@ class CommandProcessor {
 
   std::unique_ptr<rex::thread::Event> write_ptr_index_event_;
   std::atomic<uint32_t> write_ptr_index_;
+  std::atomic<uint32_t> cur_read_index_{0};   // [rl] the CP's read index inside the current batch (dwords)
 
   // Bumped every time the guest (re)initialises the ring. The worker runs a
   // pass against a read/write pair it captured before the pass started, so

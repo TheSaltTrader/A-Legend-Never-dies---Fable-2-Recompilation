@@ -1171,6 +1171,7 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
   reader.set_read_offset(read_index * sizeof(uint32_t));
   reader.set_write_offset(write_index * sizeof(uint32_t));
   do {
+    cur_read_index_.store(uint32_t(reader.read_offset() >> 2), std::memory_order_relaxed);   // [rl]
     if (!ExecutePacket(&reader)) {
       // This probably should be fatal - but we're going to continue anyways.
       REXGPU_ERROR("**** PRIMARY RINGBUFFER: Failed to execute packet.");

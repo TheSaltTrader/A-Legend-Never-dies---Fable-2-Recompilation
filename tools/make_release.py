@@ -130,16 +130,16 @@ KNOWN_ISSUES = [
     "2560 x 1440. The rest of the picture is unaffected.",
     "Brief violet flashes on tree canopies, near and far, camera still or moving, "
     "when the GPU is saturated (internal resolution 3x and above in woods). "
-    "1.3.6 turns the two-thread renderer split off by default: in six measured "
-    "sessions that left four with no flash at any size and two with a few "
-    "two-frame flashes about the size of the ones originally reported, against "
-    "the previous default, which flashed in essentially every session at about "
-    "ten times that size. Not removed: anything that disturbs a loading "
-    "screen's timing (a screen recorder running through the load did) can bring "
-    "them back at full strength, and a session that shows them keeps showing "
-    "them until the game is restarted. 2x, or a 30 fps cap, avoids them. The "
-    "underlying fault is a timing fault in the renderer and is still being "
-    "worked on; the split's default is a mitigation, not the fix.",
+    "1.3.7 paces the game's hand-over of drawing commands to the renderer "
+    "(setting ngpu_kick_pacing, on by default): in today's "
+    "measurements, three consecutive sessions in the conditions that flashed "
+    "114-153 times per 1,000 frames without it flashed 0, 0 and 0 times (big flashes 0, 0 and 0), and a "
+    "hand-driven pass through the Fairfax woods looking for them found none by "
+    "eye (two four-pixel events by the detector). "
+    "This makes them stop; it does not explain them. The cause is still not "
+    "identified, so the pacing may be masking the fault rather than repairing "
+    "it and may not hold in conditions not measured. The 1.3.6 mitigation (the "
+    "two-thread split off by default) stays. Cost at 1x: nothing the player can see (59 against 60 fps presented; the game thread has about 200 fps of headroom); on that one pair of sessions the paced one also had fewer long frames.",
 ]
 # One list, two outputs: README.txt's Known issues AND the release notes' Known issues are both rendered from
 # KNOWN_ISSUES, so a new issue cannot reach one and miss the other (1.2.0 and 1.3.0 each disclosed an issue in the
