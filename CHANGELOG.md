@@ -3,6 +3,31 @@
 All notable changes to fable2recomp. Versions follow the project's own
 numbering, not the game's.
 
+## 1.3.9 — 2026-09-30
+
+### Fixed — updating an install now refreshes its notes, checksums and version file
+
+- `tools/make_release.py --update <install>` wrote the new exe, the runtime files and VERSION.txt but left README.txt,
+  RELEASE_NOTES.md and SHA256SUMS as they were: an install updated through 1.3.7 and 1.3.8 still carried 1.3.6's notes.
+  It now copies the four text files from the staged release of the same version, and refuses to run unless that release
+  has been cut and its staged exe is byte-identical to the build being installed - so an install can no longer end up
+  with one build beside notes and checksums that describe another. The refusal is the fix; the copy is the mechanism.
+- The zip now carries VERSION.txt, so the in-game updater - which moves every file of the zip into place except the
+  game and DLC folders - refreshes it as well. An install updated in game since 1.0.3 still read "v1.0.3" there.
+
+### Changed — the F10 pacing note
+
+- The sentence that names `ngpu_kick_pacing_min_scale` (how to pace at every resolution) now also follows "Right now, at
+  Nx, pacing is off" when nothing else is selected, the commonest case; 1.3.8 attached it to the restart prediction only.
+
+### Checked before release, stated
+
+- No test sessions were run, by decision on the day. The menu change is a format-string change to one line, checked by
+  reading, not by displaying it; the F10 menu was offered to the user for a look before the push. The tool change was
+  run first on a throwaway copy of an install with a checksum manifest before and after (only the payload, the tools and
+  the four text files changed), then on the two real installs it was written for, whose four text files were checked
+  to read 1.3.9 afterwards and whose settings file and save files were checked unchanged.
+
 ## 1.3.8 — 2026-09-30
 
 ### Changed — kick pacing now applies at internal resolution 3x and above (`ngpu_kick_pacing_min_scale` default 3)

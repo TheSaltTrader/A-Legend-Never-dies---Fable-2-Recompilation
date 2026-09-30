@@ -98,6 +98,10 @@ TOOL_DIRS = [os.path.join(ROOT, "tools"), os.path.join(BUILD_DIR, "tools")]
 # What an install must already contain before --update will write into it.
 INSTALL_MARKERS = ["fable2.exe", "game", "fable2_settings.cfg"]
 
+# The release's own text files: staged into the zip, and copied by --update from the staged release of the
+# same version (1.3.9) so an updated install reads like a fresh one.
+RELEASE_TEXTS = ["README.txt", "RELEASE_NOTES.md", "SHA256SUMS", "VERSION.txt"]
+
 # Never touched by --update (nor by the in-game updater, which only moves the
 # zip's own files into place). Everything here is the player's.
 UPDATE_KEEPS = ["game", "dlc", "user", "logs", "cache", "shadow", "crashdumps",
@@ -415,8 +419,16 @@ def run_build():
         die("build failed (rc=%d) - not cutting a release from a broken build" % rc)
 
 
-def update_install(folder, version):
-    """Replace our files in an existing install, keeping the player's."""
+def update_install(folder, version, releases_dir):
+    """Replace our files in an existing install, keeping the player's.
+
+    The notes and checksums come from the staged release of this version
+    (releases_dir/v<version>), so an updated install carries exactly what the
+    zip carries - 1.3.9: before this, README.txt, RELEASE_NOTES.md and
+    SHA256SUMS were never refreshed, and an install updated through 1.3.7 and
+    1.3.8 still described 1.3.6. The staged exe must be the build being
+    installed, or the notes would describe a different binary.
+    """
     folder = os.path.abspath(folder)
     if not os.path.isdir(folder):
         die("no such folder: %s" % folder)
@@ -424,6 +436,15 @@ def update_install(folder, version):
         die("%s does not look like a fable2 install (no %s).\n"
             "       Refusing to write an executable into it."
             % (folder, ", ".join(INSTALL_MARKERS)))
+    staged = os.path.join(releases_dir, "v" + version)
+    for name in RELEASE_TEXTS:
+        if not os.path.isfile(os.path.join(staged, name)):
+            die("%s has no %s - cut the release first (python tools/make_release.py), so the\n"
+                "       install gets the same notes and checksums the zip carries" % (staged, name))
+    staged_exe, built_exe = os.path.join(staged, "fable2.exe"), os.path.join(BUILD_DIR, "fable2.exe")
+    if not os.path.isfile(staged_exe) or sha256(staged_exe) != sha256(built_exe):
+        die("the staged v%s exe is not the build in %s - re-cut the release from this build\n"
+            "       (or build the one that was cut) before updating an install with it" % (version, BUILD_DIR))
     print("=== Updating %s to v%s ===" % (folder, version))
     print("    keeping: %s" % ", ".join(UPDATE_KEEPS))
     for name in PAYLOAD:
@@ -442,8 +463,9 @@ def update_install(folder, version):
         shutil.copy2(source, os.path.join(folder, "tools", tool))
         print("  tools/%-18s %s" % (tool, human(os.path.getsize(source))))
     copy_tool_dirs(os.path.join(folder, "tools"))
-    with open(os.path.join(folder, "VERSION.txt"), "w") as f:
-        f.write("fable2recomp v%s\n" % version)
+    for name in RELEASE_TEXTS:   # README.txt, RELEASE_NOTES.md, SHA256SUMS, VERSION.txt - as the zip carries them
+        shutil.copy2(os.path.join(staged, name), os.path.join(folder, name))
+        print("  %-24s %s" % (name, human(os.path.getsize(os.path.join(staged, name)))))
     print("\n=== %s is now v%s ===" % (folder, version))
     print("Game data, DLC, saves and settings untouched.")
 
@@ -528,7 +550,7 @@ def main():
     if args.update:
         if args.build:
             run_build()
-        update_install(args.update, version)
+        update_install(args.update, version, args.releases_dir)
         return 0
 
     # Everything that can fail on human input fails here, before any work.
@@ -614,6 +636,10 @@ def main():
         f.write("# fable2recomp v%s\n\n%s\n" % (version, notes))
         if KNOWN_ISSUES:   # the same list README.txt carries (see KNOWN_ISSUES)
             f.write("\n### Known issues\n\n" + "\n".join("- " + issue for issue in KNOWN_ISSUES) + "\n")
+    # 1.3.9: VERSION.txt ships in the zip, so the in-game updater (which moves every file of the zip into
+    # place except game/ and dlc/) refreshes it; an install updated in game since 1.0.3 still read "v1.0.3".
+    with open(os.path.join(dest, "VERSION.txt"), "w", newline="\n") as f:
+        f.write("fable2recomp v%s\n" % version)
     write_provenance(os.path.join(dest, "provenance.txt"), version)
 
     engine_dir = os.path.normcase(os.path.join(dest, "tools", "upscaler"))

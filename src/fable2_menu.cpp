@@ -1349,7 +1349,9 @@ bool DrawSettings(Fable2Settings& s, const PageOptions& opts) {
         } else {
           const int running = started_with.resolution_scale;
           const bool on_now = running >= from_scale;
-          Muted("Right now, at %dx, pacing is %s.", running, on_now ? "ON" : "off");
+          // 1.3.9: the hint travels with whichever line describes the selection - this one when nothing is
+          // selected (the commonest case: a player at 2x reading that pacing is off), the restart line otherwise.
+          Muted("Right now, at %dx, pacing is %s.%s", running, on_now ? "ON" : "off", selected == running ? hint : "");
           if (selected != running)
             Muted("At the selected %dx it will be %s after the restart.%s", selected, on_selected ? "ON" : "off", hint);
         }
